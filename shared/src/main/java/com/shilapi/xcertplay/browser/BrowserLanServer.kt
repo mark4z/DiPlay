@@ -11,6 +11,10 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
+import java.io.SequenceInputStream
+import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicLong
 import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
@@ -26,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * A deliberately small, single-viewer LAN WebSocket endpoint. No HTTP files, discovery,
  * URL credentials, TLS fallback, compression, binary input or fragmented messages.
  *
- * The caller must provide a fresh random, URL-safe token and an exact trusted HTTPS
+ * Each connection requires an explicit foreground Android approval and the exact trusted HTTPS
  * origin. This is plaintext LAN transport: pairing does not protect against a hostile
  * LAN observer. A browser must independently permit HTTPS -> private-address ws://.
  *
@@ -34,17 +38,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  * called once for an authenticated session, including close()/timeouts. Sends copy
  * their payload and never do socket writes. Video pressure drops queued dependencies
  * until a fresh keyframe; a persistently blocked writer still closes on its deadline.
- * Create a new server (and token) after close().
+ * Create a new server after close().
  */
 class BrowserLanServer(
     private val bindAddress: InetAddress,
     private val allowedOrigin: String,
-    token: String,
+    private val onApprovalRequested: (BrowserApprovalRequest) -> Unit,
+    private val onApprovalFinished: (Long) -> Unit,
     private val onAuthenticated: () -> Unit,
     private val onText: (String) -> Unit,
     private val onDisconnected: () -> Unit,
 ) : AutoCloseable {
-    private val tokenBytes = token.toByteArray(Charsets.US_ASCII)
     private val lock = Any()
     private var listener: ServerSocket? = null
     private var closed = false
@@ -53,8 +57,7 @@ class BrowserLanServer(
 
     init {
         require(BrowserLanProtocol.isPrivateIpv4(bindAddress)) { "A private LAN IPv4 address is required" }
-        require(BrowserLanProtocol.isHttpsOrigin(allowedOrigin)) { "An exact HTTPS origin is required" }
-        require(token.matches(Regex("[A-Za-z0-9_-]{20,128}"))) { "A random URL-safe pairing token is required" }
+        require(allowedOrigin == "https://mark4z.github.io") { "The trusted viewer origin is required" }
     }
 
     /** Binds only an assigned, up, non-loopback RFC1918 IPv4 interface. */
@@ -103,7 +106,6 @@ class BrowserLanServer(
             listener = null
             watchdog?.shutdownNow()
             watchdog = null
-            tokenBytes.fill(0)
             session = owner
         }
         session?.stop()
@@ -122,7 +124,7 @@ class BrowserLanServer(
                 } else {
                     val session = BrowserLanConnection(
                         socket, "${bindAddress.hostAddress}:${server.localPort}", allowedOrigin,
-                        tokenBytes.copyOf(), onAuthenticated, onText, onDisconnected,
+                        onApprovalRequested, onApprovalFinished, onAuthenticated, onText, onDisconnected,
                     ) { finished -> synchronized(lock) { if (owner === finished) owner = null } }
                     owner = session
                     session.start()
@@ -132,18 +134,43 @@ class BrowserLanServer(
     }
 }
 
+/** A one-shot grant for one live connection. No device identity or credential is persisted. */
+class BrowserApprovalRequest internal constructor(
+    val id: Long,
+    val remoteAddress: String,
+    private val expiresAt: Long,
+    private val isActive: () -> Boolean = { true },
+) {
+    private var decision = 0 // pending, approved, rejected, consumed/closed
+    @Synchronized fun approve(): Boolean {
+        if (decision != 0 || !isActive() || monotonicMillis() >= expiresAt) return false
+        decision = 1
+        return true
+    }
+    @Synchronized fun reject() { if (decision in 0..1) decision = 2 }
+    @Synchronized internal fun takeDecision(): Int {
+        if (monotonicMillis() >= expiresAt && decision in 0..1) decision = 2
+        val result = decision
+        if (result != 0) decision = 3
+        return result
+    }
+    @Synchronized internal fun invalidate() { decision = 3 }
+}
+
 /** Internal connection seam lets JVM tests use loopback without relaxing the public LAN bind policy. */
 internal class BrowserLanConnection(
     private val socket: Socket,
     private val expectedHost: String,
     private val origin: String,
-    private val token: ByteArray,
+    private val onApprovalRequested: (BrowserApprovalRequest) -> Unit,
+    private val onApprovalFinished: (Long) -> Unit,
     private val onAuthenticated: () -> Unit,
     private val onText: (String) -> Unit,
     private val onDisconnected: () -> Unit,
     private val onFinished: (BrowserLanConnection) -> Unit,
 ) {
     private val stopped = AtomicBoolean(false)
+    private val approvalLock = Any()
     private val outbound = BrowserLanQueue()
     private val acceptedAt = monotonicMillis()
     @Volatile private var upgraded = false
@@ -152,6 +179,10 @@ internal class BrowserLanConnection(
     @Volatile private var lastRead = acceptedAt
     @Volatile private var lastPing = acceptedAt
     private var writer: Thread? = null
+    @Volatile private var approval: BrowserApprovalRequest? = null
+    @Volatile private var approvalStartedAt = 0L
+
+    companion object { private val nextRequestId = AtomicLong() }
 
     fun start() {
         Thread(::readLoop, "CarPlay-LAN-reader").apply { isDaemon = true; start() }
@@ -166,7 +197,10 @@ internal class BrowserLanConnection(
     }
 
     fun stop() {
-        if (!stopped.compareAndSet(false, true)) return
+        synchronized(approvalLock) {
+            if (!stopped.compareAndSet(false, true)) return
+            approval?.invalidate()
+        }
         outbound.close()
         runCatching { socket.close() }
     }
@@ -175,7 +209,8 @@ internal class BrowserLanConnection(
         if (stopped.get()) return
         val writeStart = writingSince
         if ((!upgraded && now - acceptedAt >= 5_000) ||
-            (!authenticated && now - acceptedAt >= 10_000) ||
+            (!authenticated && approvalStartedAt == 0L && now - acceptedAt >= 10_000) ||
+            (!authenticated && approvalStartedAt != 0L && now - approvalStartedAt >= 30_000) ||
             (authenticated && now - lastRead >= 30_000) ||
             (writeStart != 0L && now - writeStart >= 5_000)
         ) {
@@ -203,14 +238,29 @@ internal class BrowserLanConnection(
             upgraded = true
             writer = Thread({ writeLoop(output) }, "CarPlay-LAN-writer").apply { isDaemon = true; start() }
             val auth = BrowserLanProtocol.readFrame(input)
-            if (auth.opcode != 1 || !BrowserLanProtocol.authenticate(auth.payload, token)) {
-                throw BrowserLanProtocol.Failure(1008)
+            if (auth.opcode != 1 || !BrowserLanProtocol.requestsApproval(auth.payload)) {
+                failApproval("upgradeRequired")
+                return
             }
-            if (stopped.get()) return
-            authenticated = true
-            token.fill(0)
+            val request = synchronized(approvalLock) {
+                if (stopped.get()) return
+                approvalStartedAt = monotonicMillis()
+                BrowserApprovalRequest(nextRequestId.incrementAndGet(),
+                    socket.inetAddress?.hostAddress ?: "unknown", approvalStartedAt + 30_000,
+                    { !stopped.get() }).also { approval = it }
+            }
+            outbound.offer(1, "{\"type\":\"approvalPending\",\"version\":2}".toByteArray())
+            onApprovalRequested(request)
+            if (!awaitApproval(input, request)) return
+            synchronized(approvalLock) {
+                if (stopped.get()) return
+                authenticated = true
+            }
             lastRead = monotonicMillis()
             socket.soTimeout = 30_000
+            approval?.let { onApprovalFinished(it.id) }
+            approval = null
+            if (stopped.get()) return
             onAuthenticated()
             val messages = BrowserLanRateLimit(240, 1_000)
             while (!stopped.get()) {
@@ -235,9 +285,49 @@ internal class BrowserLanConnection(
             // Never log authentication tokens, request contents, touch input or video.
         } finally {
             stop()
-            token.fill(0)
-            try { if (authenticated) onDisconnected() } finally { onFinished(this) }
+            val request = approval
+            request?.invalidate()
+            try {
+                if (request != null) onApprovalFinished(request.id)
+                if (authenticated) onDisconnected()
+            } finally { onFinished(this) }
         }
+    }
+
+    /** Only the reader commits a UI decision, so auth/text/disconnect callbacks remain serial. */
+    private fun awaitApproval(input: BufferedInputStream, request: BrowserApprovalRequest): Boolean {
+        socket.soTimeout = 100
+        while (!stopped.get()) {
+            if (monotonicMillis() - approvalStartedAt >= 30_000) {
+                failApproval("approvalTimeout"); return false
+            }
+            when (request.takeDecision()) {
+                1 -> return true
+                2, 3 -> { failApproval("approvalRejected"); return false }
+            }
+            // Timeout applies only to the first byte. Once a frame begins it must finish
+            // with a one-second read inactivity limit plus the absolute approval watchdog;
+            // a partial frame is never reinterpreted as a new frame.
+            val first = try { input.read() } catch (_: SocketTimeoutException) { continue }
+            if (first < 0) return false
+            socket.soTimeout = 1_000
+            val frame = BrowserLanProtocol.readFrame(SequenceInputStream(ByteArrayInputStream(byteArrayOf(first.toByte())), input))
+            if (frame.opcode == 8) {
+                BrowserLanProtocol.validateClose(frame.payload)
+                gracefulClose(frame.payload)
+            } else {
+                failApproval("approvalRejected") // no commands or media before consent
+            }
+            return false
+        }
+        return false
+    }
+
+    private fun failApproval(code: String) {
+        // Write only a fixed protocol error before close, never session/media information.
+        outbound.offer(1, "{\"type\":\"error\",\"code\":\"$code\",\"version\":2}".toByteArray())
+        // finishWithClose discards queued controls, so encode the same public reason in close.
+        gracefulClose(byteArrayOf(3, 0xf0.toByte()) + code.toByteArray())
     }
 
     private fun gracefulClose(payload: ByteArray) {
@@ -393,17 +483,12 @@ internal object BrowserLanProtocol {
         utf8(payload.copyOfRange(2, payload.size))
     }
 
-    fun authenticate(payload: ByteArray, expected: ByteArray): Boolean {
-        val fields = AuthObject(utf8(payload)).parse() ?: return false
-        if (fields["type"] != "auth" || fields.size != 2) return false
-        val supplied = fields["token"]?.toByteArray(Charsets.UTF_8) ?: return false
-        // Fixed work for the configured token length. No string equality/early exit on token bytes.
-        var difference = expected.size xor supplied.size
-        for (index in expected.indices) {
-            difference = difference or (expected[index].toInt() xor (supplied.getOrNull(index)?.toInt() ?: 0))
-        }
-        supplied.fill(0)
-        return difference == 0
+    fun requestsApproval(payload: ByteArray): Boolean {
+        // Deliberately narrow v2 request grammar: exactly these two fields, either order.
+        // No old token, extra field, nested JSON, duplicate key or coercion can authorize.
+        val text = utf8(payload)
+        return Regex("""\s*\{\s*"type"\s*:\s*"requestApproval"\s*,\s*"version"\s*:\s*2\s*}\s*""").matches(text) ||
+            Regex("""\s*\{\s*"version"\s*:\s*2\s*,\s*"type"\s*:\s*"requestApproval"\s*}\s*""").matches(text)
     }
 
     private fun byte(input: InputStream): Int = input.read().also { if (it < 0) throw EOFException() }
@@ -417,62 +502,7 @@ internal object BrowserLanProtocol {
         }
     }
 
-    /** Strict, shallow JSON object; only two bounded string fields can be allocated. */
-    private class AuthObject(private val input: String) {
-        private var position = 0
-        fun parse(): Map<String, String>? = try {
-            val result = mutableMapOf<String, String>()
-            expect('{')
-            repeat(2) { index ->
-                if (index != 0) expect(',')
-                val key = string(16)
-                if (key != "type" && key != "token" || key in result) throw Failure()
-                expect(':')
-                result[key] = string(128)
-            }
-            expect('}')
-            whitespace()
-            if (position != input.length) throw Failure()
-            result
-        } catch (_: Failure) { null }
 
-        private fun whitespace() { while (position < input.length && input[position] in " \t\r\n") position++ }
-        private fun expect(character: Char) {
-            whitespace()
-            if (position >= input.length || input[position++] != character) throw Failure()
-        }
-        private fun string(limit: Int): String {
-            expect('"')
-            val value = StringBuilder()
-            while (position < input.length) {
-                var character = input[position++]
-                if (character == '"') return value.toString()
-                if (character.code < 32) throw Failure()
-                if (character == '\\') {
-                    if (position >= input.length) throw Failure()
-                    character = when (val escape = input[position++]) {
-                        '"', '\\', '/' -> escape
-                        'b' -> '\b'
-                        'f' -> '\u000c'
-                        'n' -> '\n'
-                        'r' -> '\r'
-                        't' -> '\t'
-                        'u' -> {
-                            if (position + 4 > input.length) throw Failure()
-                            val code = input.substring(position, position + 4).toIntOrNull(16) ?: throw Failure()
-                            position += 4
-                            code.toChar()
-                        }
-                        else -> throw Failure()
-                    }
-                }
-                if (character.isSurrogate()) throw Failure()
-                value.append(character)
-                if (value.length > limit) throw Failure()
-            }
-            throw Failure()
-        }
-    }
 }
 
 /**

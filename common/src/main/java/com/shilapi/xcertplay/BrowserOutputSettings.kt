@@ -2,7 +2,6 @@ package com.shilapi.xcertplay
 
 import android.app.AlertDialog
 import android.content.Context
-import android.text.InputType
 import android.view.View
 import android.widget.*
 import com.shilapi.xcertplay.browser.BrowserOutput
@@ -22,11 +21,12 @@ internal object BrowserOutputSettings {
             setPadding(28, 16, 28, 16)
         }
         fun label(value: String) = TextView(context).apply { text = value; body.addView(this) }
-        label("Video + two-finger touch only. Default OFF. Use only while parked, on a trusted private Wi-Fi network. The local video/control connection is unencrypted. No internet relay. While a viewer is connected it owns CarPlay touch; Android settings remain available.\n仅限停车使用；请使用可信局域网。视频和控制不经互联网中转，但局域网连接未加密。")
+        label("Video + two-finger touch only. Default OFF. Use only while parked, on a trusted private Wi-Fi network. The local video/control connection is unencrypted. No internet relay. Each browser connection needs approval on this Android screen. Viewing starts without touch ownership; the browser can enable touch separately after approval. Android settings remain available.\n仅限停车使用；请使用可信局域网。视频和控制不经互联网中转，但局域网连接未加密。")
         val current = BrowserOutput.endpoint
         if (current != null) {
-            label("Local endpoint / 本地地址:\n$current\n\nPairing token / 临时配对码:\n${BrowserOutput.pairingToken}").setTextIsSelectable(true)
-            label("Open your deployed HTTPS viewer, enter these values, confirm parked, and personally allow the browser's Local Network Access prompt. Closing this dialog keeps the session running; Stop revokes it.\n打开已部署的 HTTPS 播放页，输入地址和配对码，手动允许浏览器访问局域网。")
+            val endpoint = java.net.URI(current)
+            label("Android IP / 安卓 IP: ${endpoint.host}\nPort / 端口: ${endpoint.port}").setTextIsSelectable(true)
+            label("Open the HTTPS viewer at https://mark4z.github.io/tesla-browser-lab/browser-carplay/, enter this IP and port, confirm parked, and personally allow the browser's Local Network Access prompt. Keep this Android app in front and approve the connection request here. Closing these settings keeps the listener running; Stop revokes it.\n在 HTTPS 播放页输入 IP 和端口，手动允许浏览器访问局域网，然后在此安卓界面允许本次连接。每次重连都需重新确认。")
             AlertDialog.Builder(context).setTitle("Browser output is ON")
                 .setView(ScrollView(context).apply { addView(body) })
                 .setNegativeButton("Stop / 停止") { _, _ -> BrowserOutput.stop() }
@@ -47,12 +47,7 @@ internal object BrowserOutputSettings {
             adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, addresses.map { it.hostAddress })
             body.addView(this)
         }
-        label("Exact HTTPS viewer origin (for example https://your-name.github.io). Deploy site/browser-carplay first; no viewer has been published automatically.")
-        val origin = EditText(context).apply {
-            hint = "https://your-viewer.example"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            body.addView(this)
-        }
+        label("Allowed viewer origin / 允许的播放页来源: ${BrowserOutput.VIEWER_ORIGIN}\nEach connection must be approved here. No pairing code or remembered device.")
         val parked = CheckBox(context).apply {
             text = "I am parked and trust this network / 已停车并信任此网络"
             body.addView(this)
@@ -72,9 +67,9 @@ internal object BrowserOutputSettings {
                     return@setOnClickListener
                 }
                 try {
-                    BrowserOutput.start(addresses[address.selectedItemPosition], origin.text.toString().trim())
+                    BrowserOutput.start(addresses[address.selectedItemPosition])
                     dialog.dismiss(); show(context)
-                } catch (_: Exception) { error.text = "Could not start. Check the private IP and exact HTTPS origin; no path or query is allowed." }
+                } catch (_: Exception) { error.text = "Could not start. Check that the selected private Wi-Fi IP is still available." }
             }
         }
         dialog.show()

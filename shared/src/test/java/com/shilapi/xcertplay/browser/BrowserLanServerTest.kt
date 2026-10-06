@@ -33,8 +33,14 @@ class BrowserLanServerTest {
     @Test fun publicConstructorNeverAllowsWildcardLoopbackOrPublicBinding() {
         for (address in listOf("0.0.0.0", "127.0.0.1", "8.8.8.8", "::1")) {
             assertThrows(IllegalArgumentException::class.java) {
-                BrowserLanServer(InetAddress.getByName(address), origin, token, {}, {}, {})
+                BrowserLanServer(InetAddress.getByName(address), "https://mark4z.github.io", {}, {}, {}, {}, {})
             }
+        }
+    }
+
+    @Test fun publicServerPinsThePublishedViewerOrigin() {
+        assertThrows(IllegalArgumentException::class.java) {
+            BrowserLanServer(InetAddress.getByName("192.168.40.2"), origin, {}, {}, {}, {}, {})
         }
     }
 
@@ -82,24 +88,19 @@ class BrowserLanServerTest {
         }
     }
 
-    @Test fun authIsStrictJsonAndRequiresExactToken() {
-        fun auth(text: String) = BrowserLanProtocol.authenticate(text.toByteArray(), token.toByteArray())
-        assertTrue(auth("{\"type\":\"auth\",\"token\":\"$token\"}"))
-        assertTrue(auth(" \n{ \"token\" : \"$token\" , \"type\" : \"auth\" }\r\n"))
-        assertTrue(auth("{\"type\":\"\\u0061uth\",\"token\":\"$token\"}"))
+    @Test fun approvalRequestIsStrictAndLegacyTokensFailClosed() {
+        fun valid(text: String) = BrowserLanProtocol.requestsApproval(text.toByteArray())
+        assertTrue(valid("""{"type":"requestApproval","version":2}"""))
+        assertTrue(valid(""" { "version": 2, "type": "requestApproval" } """))
         for (bad in listOf(
-            "{\"type\":\"touch\",\"token\":\"$token\"}",
-            "{\"type\":\"auth\",\"token\":\"${token.dropLast(1)}\"}",
-            "{\"type\":\"auth\",\"token\":\"${token}x\"}",
-            "{\"type\":\"auth\",\"token\":\"x${token.drop(1)}\"}",
-            "{\"type\":\"auth\",\"token\":null}",
-            "{\"type\":\"auth\",\"token\":\"$token\",\"extra\":1}",
-            "{\"token\":\"$token\",\"token\":\"$token\"}",
-            "{\"type\":\"auth\",\"token\":\"$token\"} garbage",
-            "{\"type\":\"auth\",\"token\":\"${"a".repeat(129)}\"}",
-            "{\"type\":\"auth\",\"token\":\"\\ud800\"}",
-            "{type:'auth',token:'$token'}",
-        )) assertFalse(bad, auth(bad))
+            """{"type":"auth","token":"$token"}""",
+            """{"type":"requestApproval","version":1}""",
+            """{"type":"requestApproval","version":"2"}""",
+            """{"type":"requestApproval","version":2.0}""",
+            """{"type":"requestApproval","version":2,"extra":1}""",
+            """{"type":"requestApproval","type":"requestApproval"}""",
+            """{"type":"requestApproval","version":2} garbage""",
+        )) assertFalse(bad, valid(bad))
     }
 
     @Test fun readsMaskedTextAndControlFrames() {
@@ -232,11 +233,11 @@ class BrowserLanServerTest {
         }
     }
 
-    @Test fun wrongTokenClosesWithoutMediaOrDisconnectCallback() {
+    @Test fun legacyTokenClosesWithoutMediaOrDisconnectCallback() {
         Harness().use { harness ->
             harness.upgrade()
             harness.send(1, "{\"type\":\"auth\",\"token\":\"incorrect\"}".toByteArray())
-            assertEquals(8, harness.readServerFrame().opcode)
+            assertTrue(harness.readCloseReason().endsWith("upgradeRequired"))
             assertTrue(harness.finished.await(2, TimeUnit.SECONDS))
             assertEquals(0, harness.authenticatedCount.get())
             assertEquals(0, harness.disconnected.get())
@@ -248,10 +249,97 @@ class BrowserLanServerTest {
         Harness().use { harness ->
             harness.upgrade()
             harness.send(1, "{\"type\":\"touch\",\"x\":1}".toByteArray())
-            assertEquals(8, harness.readServerFrame().opcode)
+            assertTrue(harness.readCloseReason().endsWith("upgradeRequired"))
             assertTrue(harness.finished.await(2, TimeUnit.SECONDS))
             assertEquals(0, harness.textCount.get())
             assertEquals(0, harness.authenticatedCount.get())
+        }
+    }
+
+    @Test fun pendingApprovalHasNoMediaAndRejectIsOneShot() {
+        Harness(false).use { h ->
+            h.upgrade()
+            h.send(1, """{"type":"requestApproval","version":2}""".toByteArray())
+            assertTrue(h.approvalRequested.await(2, TimeUnit.SECONDS))
+            assertEquals("""{"type":"approvalPending","version":2}""", String(h.readServerFrame().payload))
+            assertFalse(h.connection.send(1, "private".toByteArray()))
+            assertFalse(h.connection.send(2, byteArrayOf(42), keyFrame = true))
+            assertEquals(0, h.authenticatedCount.get())
+            h.approvalRequest!!.reject()
+            assertFalse(h.approvalRequest!!.approve())
+            assertTrue(h.readCloseReason().endsWith("approvalRejected"))
+            assertTrue(h.finished.await(2, TimeUnit.SECONDS))
+            assertEquals(1, h.approvalFinished.get())
+            assertEquals(0, h.disconnected.get())
+        }
+    }
+
+    @Test fun pendingDisconnectInvalidatesExactRequestAndNewConnectionNeedsFreshApproval() {
+        var stale: BrowserApprovalRequest? = null
+        Harness(false).use { h ->
+            h.upgrade(); h.send(1, """{"type":"requestApproval","version":2}""".toByteArray())
+            assertTrue(h.approvalRequested.await(2, TimeUnit.SECONDS))
+            stale = h.approvalRequest
+            h.client.close()
+            assertTrue(h.finished.await(2, TimeUnit.SECONDS))
+            assertFalse(stale!!.approve())
+            assertEquals(1, h.approvalFinished.get())
+        }
+        Harness(false).use { h ->
+            h.upgrade(); h.send(1, """{"type":"requestApproval","version":2}""".toByteArray())
+            assertTrue(h.approvalRequested.await(2, TimeUnit.SECONDS))
+            h.readServerFrame()
+            assertTrue(h.approvalRequest!!.id != stale!!.id)
+            assertFalse(stale!!.approve())
+            assertEquals(0, h.authenticatedCount.get())
+            assertTrue(h.approvalRequest!!.approve())
+            assertFalse(h.approvalRequest!!.approve())
+            assertTrue(h.authenticated.await(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun preapprovalInputCancelsRequestAndNeverReachesApplication() {
+        Harness(false).use { h ->
+            h.upgrade(); h.send(1, """{"type":"requestApproval","version":2}""".toByteArray())
+            assertTrue(h.approvalRequested.await(2, TimeUnit.SECONDS)); h.readServerFrame()
+            h.send(1, """{"type":"touch","contacts":[]}""".toByteArray())
+            assertTrue(h.finished.await(2, TimeUnit.SECONDS))
+            assertFalse(h.approvalRequest!!.approve())
+            assertEquals(0, h.textCount.get()); assertEquals(0, h.authenticatedCount.get())
+        }
+    }
+
+    @Test fun stoppingFromFinishCallbackNeverAnnouncesAuthenticated() {
+        Harness().use { h ->
+            h.finishHook = { h.connection.stop() }
+            h.upgrade(); h.send(1, """{"type":"requestApproval","version":2}""".toByteArray())
+            assertTrue(h.finished.await(2, TimeUnit.SECONDS))
+            assertEquals(0, h.authenticatedCount.get())
+            assertEquals(1, h.approvalFinished.get())
+            assertFalse(h.approvalRequest!!.approve())
+            assertFalse(h.connection.send(2, byteArrayOf(42), keyFrame = true))
+        }
+    }
+
+    @Test fun stoppingFromRequestCallbackInvalidatesBeforeLateApproval() {
+        Harness().use { h ->
+            h.requestHook = { h.connection.stop() }
+            h.upgrade(); h.send(1, """{"type":"requestApproval","version":2}""".toByteArray())
+            assertTrue(h.finished.await(2, TimeUnit.SECONDS))
+            assertEquals(0, h.authenticatedCount.get())
+            assertEquals(1, h.approvalFinished.get())
+            assertFalse(h.approvalRequest!!.approve())
+            assertEquals(0, h.disconnected.get())
+        }
+    }
+
+    @Test fun pendingDeadlineClosesAndInvalidatesApproval() {
+        Harness(false).use { h ->
+            h.upgrade(); h.send(1, """{"type":"requestApproval","version":2}""".toByteArray())
+            assertTrue(h.approvalRequested.await(2, TimeUnit.SECONDS)); h.readServerFrame()
+            h.connection.checkDeadline(System.nanoTime() / 1_000_000 + 31_000)
+            assertTrue(h.finished.await(2, TimeUnit.SECONDS))
+            assertFalse(h.approvalRequest!!.approve()); assertEquals(0, h.authenticatedCount.get())
         }
     }
 
@@ -330,7 +418,12 @@ class BrowserLanServerTest {
         return output.toByteArray()
     }
 
-    private inner class Harness : AutoCloseable {
+    private inner class Harness(private val approveAutomatically: Boolean = true) : AutoCloseable {
+        var finishHook: () -> Unit = {}
+        var requestHook: () -> Unit = {}
+        @Volatile var approvalRequest: BrowserApprovalRequest? = null
+        val approvalRequested = CountDownLatch(1)
+        val approvalFinished = AtomicInteger()
         val authenticatedCount = AtomicInteger()
         val disconnected = AtomicInteger()
         val textCount = AtomicInteger()
@@ -344,7 +437,9 @@ class BrowserLanServerTest {
             val listener = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
             try {
                 client = Socket("127.0.0.1", listener.localPort).apply { soTimeout = 3000 }
-                connection = BrowserLanConnection(listener.accept(), host, origin, token.toByteArray(),
+                connection = BrowserLanConnection(listener.accept(), host, origin,
+                    { approvalRequest = it; approvalRequested.countDown(); requestHook(); if (approveAutomatically) it.approve() },
+                    { approvalFinished.incrementAndGet(); finishHook() },
                     { authenticatedCount.incrementAndGet(); authenticated.countDown() },
                     { textCount.incrementAndGet(); textReceived.countDown() },
                     { disconnected.incrementAndGet() }, { finished.countDown() })
@@ -365,11 +460,19 @@ class BrowserLanServerTest {
         }
 
         fun authenticate() {
-            send(1, "{\"type\":\"auth\",\"token\":\"$token\"}".toByteArray())
+            send(1, "{\"type\":\"requestApproval\",\"version\":2}".toByteArray())
+            assertEquals("{\"type\":\"approvalPending\",\"version\":2}", String(readServerFrame().payload))
             assertTrue(authenticated.await(2, TimeUnit.SECONDS))
         }
 
         fun send(opcode: Int, payload: ByteArray) { client.getOutputStream().write(masked(opcode, payload)) }
+
+        fun readCloseReason(): String {
+            var frame = readServerFrame()
+            if (frame.opcode == 1) frame = readServerFrame()
+            assertEquals(8, frame.opcode)
+            return String(frame.payload.drop(2).toByteArray())
+        }
 
         fun readServerFrame(): BrowserLanProtocol.Frame {
             val input = client.getInputStream()

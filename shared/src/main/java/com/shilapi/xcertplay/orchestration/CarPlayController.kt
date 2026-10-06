@@ -462,25 +462,69 @@ class CarPlayController(
 
     private val browserTouchLock = Any()
     private val browserTouchQueue = com.shilapi.xcertplay.browser.BrowserTouchQueue()
+    private val browserTouchOwnership = com.shilapi.xcertplay.browser.BrowserTouchOwnership()
+    private val browserTouchTransfers = com.shilapi.xcertplay.browser.BrowserTouchTransfers()
     private var browserTouchScheduled = false
     private var browserTouchSession: AirPlaySession? = null
     private var browserTouchToken: Any? = null
+    private var browserTouchQueueEpoch = 0L
+    private data class BrowserTouchSnapshot(val session: AirPlaySession?, val token: Any?,
+        val epoch: Long, val contacts: List<AirPlayContact>)
 
-    /** Revocation discards queued gestures; only a release may follow an in-flight send. */
-    fun cancelBrowserTouch() = synchronized(browserTouchLock) {
-        browserTouchQueue.clear()
-        sendBrowserTouch(emptyList())
+    /** Cancellation and ownership commit share the input executor, before any new-owner input. */
+    fun setBrowserTouchOwnership(enabled: Boolean, completed: (Boolean) -> Unit) {
+        val transfer = synchronized(browserTouchLock) {
+            browserTouchQueue.clear()
+            val epoch = browserTouchOwnership.request(enabled)
+            val next = com.shilapi.xcertplay.browser.BrowserTouchTransfer(epoch, enabled, completed)
+            if (!browserTouchTransfers.offer(next)) return
+            next
+        }
+        try {
+            touchExecutor.execute {
+                while (true) {
+                    val next = browserTouchTransfers.poll() ?: break
+                    if (!browserTouchOwnership.isCurrent(next.epoch)) continue
+                    val session = activeSession
+                    val token = session?.mainScreenSessionToken()
+                    val canEnable = !closed && session != null && token != null
+                    if (next.enabled && !canEnable) {
+                        browserTouchOwnership.fail(next.epoch)
+                        next.completed(false)
+                        continue
+                    }
+                    // Any input already in flight finishes first. Old queued native/remote input
+                    // was invalidated by request(), so no old DOWN may follow this release.
+                    val cancelled = if (!closed && session != null && token != null && activeSession === session) {
+                        runCatching { session.sendTouch(emptyList()) }.getOrDefault(false)
+                    } else false
+                    if (next.enabled && !cancelled) {
+                        browserTouchOwnership.fail(next.epoch)
+                        next.completed(false)
+                    } else next.completed(browserTouchOwnership.commit(next.epoch))
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            val pending = synchronized(browserTouchLock) {
+                (browserTouchTransfers.clear() ?: transfer).also { browserTouchOwnership.fail(it.epoch) }
+            }
+            pending.completed(false)
+        }
     }
+
+    fun cancelBrowserTouch() = setBrowserTouchOwnership(false) { }
 
     /** One worker and a bounded queue retaining DOWN/UP transitions; only moves coalesce. */
     fun sendBrowserTouch(contacts: List<AirPlayContact>) = synchronized(browserTouchLock) {
         if (closed) return@synchronized
+        val epoch = browserTouchOwnership.browserEpoch() ?: return@synchronized
         val session = activeSession ?: return@synchronized
         val token = session.mainScreenSessionToken() ?: return@synchronized
-        if (browserTouchSession !== session || browserTouchToken !== token) {
+        if (browserTouchSession !== session || browserTouchToken !== token || browserTouchQueueEpoch != epoch) {
             browserTouchQueue.clear()
             browserTouchSession = session
             browserTouchToken = token
+            browserTouchQueueEpoch = epoch
         }
         browserTouchQueue.offer(contacts)
         if (browserTouchScheduled) return@synchronized
@@ -489,17 +533,19 @@ class CarPlayController(
             touchExecutor.execute {
                 while (true) {
                     val next = synchronized(browserTouchLock) {
-                        val next = if (closed) null else browserTouchQueue.poll()
+                        val queuedEpoch = browserTouchQueueEpoch
+                        val next = if (closed || !browserTouchOwnership.acceptsBrowser(queuedEpoch)) null else browserTouchQueue.poll()
                         if (next == null) {
                             browserTouchQueue.clear()
                             browserTouchScheduled = false
                         }
-                        next?.let { Triple(browserTouchSession, browserTouchToken, it) }
+                        next?.let { BrowserTouchSnapshot(browserTouchSession, browserTouchToken, queuedEpoch, it) }
                     } ?: break
-                    val session = next.first
-                    if (!closed && session != null && activeSession === session &&
-                        session.mainScreenSessionToken() === next.second) {
-                        runCatching { session.sendTouch(next.third) }
+                    val session = next.session
+                    if (!closed && browserTouchOwnership.acceptsBrowser(next.epoch) &&
+                        session != null && activeSession === session &&
+                        session.mainScreenSessionToken() === next.token) {
+                        runCatching { session.sendTouch(next.contacts) }
                     }
                 }
             }
@@ -511,15 +557,17 @@ class CarPlayController(
 
     fun sendTouch(contacts: List<AirPlayContact>): Boolean {
         if (closed) return false
+        val epoch = browserTouchOwnership.nativeEpoch() ?: return false
         val session = activeSession ?: return false
+        val token = session.mainScreenSessionToken() ?: return false
         val capture = PerformanceDiagnostics.token()
         val enqueuedNs = PerformanceDiagnostics.now(capture)
         PerformanceDiagnostics.touchQueued(capture)
         return try {
             touchExecutor.execute {
-                // Ownership may change after the UI checks it but before this task runs.
-                // Browser cancellation is ordered on this same executor before remote input.
-                if (com.shilapi.xcertplay.browser.BrowserOutput.viewerConnected) return@execute
+                // A queued event never crosses a native/browser/native ownership round trip.
+                if (closed || !browserTouchOwnership.acceptsNative(epoch) ||
+                    activeSession !== session || session.mainScreenSessionToken() !== token) return@execute
                 val startedNs = PerformanceDiagnostics.now(capture)
                 PerformanceDiagnostics.touchStarted(capture)
                 PerformanceDiagnostics.record(PerformanceMetric.TOUCH_QUEUE_WAIT, startedNs - enqueuedNs, capture)

@@ -778,8 +778,11 @@ class CarPlayHostActivity : ComponentActivity() {
         homeScreenVisible = null
     }
 
+    private val browserApprovalUi by lazy { BrowserApprovalUi(this) }
+
     override fun onResume() {
         super.onResume()
+        browserApprovalUi.resume()
         val savedNightMode = AirPlayPersistence.loadCarPlayNightMode(this)
         val savedThreshold = AirPlayPersistence.loadAmbientLightThreshold(this)
         val savedDelay = AirPlayPersistence.loadAmbientDelaySeconds(this)
@@ -1161,6 +1164,7 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        browserApprovalUi.pause()
         nightModeController.pause()
         super.onPause()
     }
@@ -3730,9 +3734,14 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun createMediaEngine(sink: AndroidMediaSink, width: Int, height: Int): CarPlayMediaEngine =
         CarPlayMediaEngine(
             sink = BrowserOutput.tee(sink, width, height,
-                cancelTouches = { CarPlayBackgroundSession.snapshot()?.controller?.cancelBrowserTouch() }) { contacts ->
-                CarPlayBackgroundSession.snapshot()?.controller?.sendBrowserTouch(contacts)
-            },
+                cancelTouches = { CarPlayBackgroundSession.snapshot()?.controller?.cancelBrowserTouch() },
+                sendTouch = { contacts ->
+                    CarPlayBackgroundSession.snapshot()?.controller?.sendBrowserTouch(contacts)
+                },
+                setTouchOwnership = { enabled, completed ->
+                    val active = CarPlayBackgroundSession.snapshot()?.controller
+                    if (active == null) completed(false) else active.setBrowserTouchOwnership(enabled, completed)
+                }),
             microphoneEnabled = microphoneAvailable,
             audioCaptureDirectory = audioCaptureDirectory(),
         )
@@ -4660,7 +4669,7 @@ class CarPlayHostActivity : ComponentActivity() {
             }
             return true
         }
-        if (BrowserOutput.viewerConnected) return true
+        if (BrowserOutput.browserTouchOwned) return true
         val contacts = CarPlayTouchMapper.contacts(event, content)
         val queued = controller?.sendTouch(contacts) ?: false
         when (event.actionMasked) {

@@ -5,15 +5,23 @@ import com.shilapi.xcertplay.media.MediaCodecSupport
 import org.json.JSONObject
 import java.net.InetAddress
 import java.nio.ByteBuffer
-import java.security.SecureRandom
 
 /** Process-local, explicitly started video/input session. Never persists pairing credentials. */
 object BrowserOutput {
     private val lock = Any()
     @Volatile private var server: BrowserLanServer? = null
     @Volatile var endpoint: String? = null; private set
-    @Volatile var pairingToken: String? = null; private set
+    const val VIEWER_ORIGIN = "https://mark4z.github.io"
     @Volatile var viewerConnected = false; private set
+    @Volatile var browserTouchOwned = false; private set
+    private data class ApprovalUi(val owner: Any, val requested: (BrowserApprovalRequest) -> Unit,
+        val finished: (Long) -> Unit)
+    private var approvalUi: ApprovalUi? = null
+    private var pendingApproval: BrowserApprovalRequest? = null
+    private var viewerGeneration = 0L
+    private var touchGeneration = 0L
+    private var touchOwnershipRequested = false
+    private var lastOwnershipRequestId = 0L
     private var serverGeneration = 0L
     private var mediaGeneration = 0L
     private var streamId = 0L
@@ -24,6 +32,7 @@ object BrowserOutput {
     private var recovery: (() -> Unit)? = null
     private var cancelTouch: (() -> Unit)? = null
     private var touch: ((List<AirPlayContact>) -> Unit)? = null
+    private var setTouchOwnership: ((Boolean, (Boolean) -> Unit) -> Unit)? = null
     private var contacts = emptyList<AirPlayContact>()
     private var waitingForKey = true
     private val recoveryPending = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -34,55 +43,110 @@ object BrowserOutput {
     private val timestampOriginNs = System.nanoTime()
     private var lastTimestamp = 0L
 
-    fun start(address: InetAddress, origin: String): String = synchronized(lock) {
+    /** Only a resumed, visible Android host may approve a new connection. */
+    fun registerApprovalUi(owner: Any, onRequest: (BrowserApprovalRequest) -> Unit, onFinished: (Long) -> Unit) {
+        val previous = synchronized(lock) {
+            val old = approvalUi
+            val pending = pendingApproval
+            if (old?.owner !== owner) pendingApproval = null
+            approvalUi = ApprovalUi(owner, onRequest, onFinished)
+            if (old?.owner !== owner && pending != null) old to pending else null
+        }
+        previous?.let { (ui, request) -> request.reject(); ui?.finished?.invoke(request.id) }
+    }
+
+    fun unregisterApprovalUi(owner: Any) {
+        val previous = synchronized(lock) {
+            val ui = approvalUi ?: return
+            if (ui.owner !== owner) return
+            approvalUi = null
+            val request = pendingApproval
+            pendingApproval = null
+            ui to request
+        }
+        previous.second?.let { it.reject(); previous.first.finished(it.id) }
+    }
+
+    fun isApprovalPending(request: BrowserApprovalRequest): Boolean = synchronized(lock) {
+        pendingApproval === request && approvalUi != null
+    }
+
+    private fun requestApproval(request: BrowserApprovalRequest, generation: Long) {
+        val ui = synchronized(lock) {
+            if (generation != serverGeneration || approvalUi == null) null else {
+                pendingApproval = request
+                approvalUi
+            }
+        }
+        if (ui == null) request.reject() else try { ui.requested(request) } catch (_: Exception) { request.reject() }
+    }
+
+    private fun finishApproval(id: Long, generation: Long) {
+        val ui = synchronized(lock) {
+            if (generation != serverGeneration || pendingApproval?.id != id) return
+            pendingApproval = null
+            approvalUi
+        }
+        ui?.finished?.invoke(id)
+    }
+
+    fun start(address: InetAddress, origin: String = VIEWER_ORIGIN): String = synchronized(lock) {
         check(server == null) { "Stop the current browser session first" }
         val generation = ++serverGeneration
-        val token = ByteArray(24).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it.toInt() and 255) }
-        val transport = BrowserLanServer(address, origin, token,
+        val transport = BrowserLanServer(address, origin,
+            onApprovalRequested = { requestApproval(it, generation) },
+            onApprovalFinished = { finishApproval(it, generation) },
             onAuthenticated = { synchronized(lock) {
                 if (generation != serverGeneration) return@synchronized
+                ++viewerGeneration
                 viewerConnected = true
-                cancelTouch?.invoke()
+                lastOwnershipRequestId = 0L
+                browserTouchOwned = false
                 waitingForKey = true
-                server?.sendText("{\"type\":\"authenticated\"}")
+                server?.sendText("{\"type\":\"authenticated\",\"version\":2}")
                 sendConfig()
                 requestKeyframe()
             } },
             onText = { receive(it, generation) },
             onDisconnected = { synchronized(lock) {
                 if (generation != serverGeneration) return@synchronized
+                ++viewerGeneration
                 waitingForKey = true
-                releaseTouches(force = true)
+                releaseTouches()
                 viewerConnected = false
             } })
         server = transport
         try {
             val port = transport.start()
             endpoint = "ws://${address.hostAddress}:$port/carplay"
-            pairingToken = token
             endpoint!!
         } catch (e: Exception) { server = null; transport.close(); throw e }
     }
 
     fun stop() {
-        val old = synchronized(lock) {
+        val stopped = synchronized(lock) {
             val old = server
             ++serverGeneration
-            val wasConnected = viewerConnected
-            server = null; endpoint = null; pairingToken = null
-            waitingForKey = true; releaseTouches(force = wasConnected)
+            ++viewerGeneration
+            server = null; endpoint = null
+            waitingForKey = true; releaseTouches()
             viewerConnected = false
-            old
+            val pending = pendingApproval
+            pendingApproval = null
+            Triple(old, pending, approvalUi)
         }
-        old?.close()
+        stopped.second?.let { it.reject(); stopped.third?.finished?.invoke(it.id) }
+        stopped.first?.close()
     }
 
     /** Native sink continues unchanged; detached native surfaces do not close this tee. */
     fun tee(native: MediaSink, videoWidth: Int, videoHeight: Int,
-            cancelTouches: () -> Unit, sendTouch: (List<AirPlayContact>) -> Unit): MediaSink {
+            cancelTouches: () -> Unit, sendTouch: (List<AirPlayContact>) -> Unit,
+            setTouchOwnership: ((Boolean, (Boolean) -> Unit) -> Unit)? = null): MediaSink {
         val generation = synchronized(lock) {
             releaseTouches()
             width = videoWidth; height = videoHeight; touch = sendTouch; cancelTouch = cancelTouches
+            BrowserOutput.setTouchOwnership = setTouchOwnership
             format = null; waitingForKey = true; recovery = null
             ++streamId
             ++mediaGeneration
@@ -102,7 +166,7 @@ object BrowserOutput {
                     waitingForKey = true
                     if (format == null) {
                         releaseTouches()
-                        if (viewerConnected) server?.sendText("{\"type\":\"error\",\"code\":\"unsupported-config\"}", resetVideo = true)
+                        if (viewerConnected) server?.sendText("{\"type\":\"error\",\"code\":\"unsupported-config\",\"version\":2}", resetVideo = true)
                         return@synchronized
                     }
                     sendConfig()
@@ -123,7 +187,7 @@ object BrowserOutput {
                     if (generation != mediaGeneration) return@synchronized
                     ++streamId
                     format = null; recovery = null; waitingForKey = true; releaseTouches()
-                    server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
+                    if (viewerConnected) server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
                 }
             }
         }
@@ -180,8 +244,9 @@ object BrowserOutput {
             val json = JSONObject(message)
             when (json.getString("type")) {
                 "requestKeyframe" -> { waitingForKey = true; requestKeyframe() }
+                "setTouchOwnership" -> changeTouchOwnership(json)
                 "touch" -> {
-                    if (json.optLong("streamId", -1L) != streamId) return
+                    if (!browserTouchOwned || json.optLong("streamId", -1L) != streamId) return
                     if (format == null) { releaseTouches(); return }
                     val input = json.getJSONArray("contacts")
                     require(input.length() <= 2)
@@ -202,8 +267,51 @@ object BrowserOutput {
         } catch (_: Exception) { releaseTouches() }
     }
 
-    private fun releaseTouches(force: Boolean = false) {
-        if (force || viewerConnected || contacts.isNotEmpty()) cancelTouch?.invoke()
+    private fun changeTouchOwnership(json: JSONObject) {
+        if (json.optLong("streamId", -1L) != streamId) return
+        val id = json.get("requestId")
+        require(id is Number && id.toDouble().isFinite() && id.toDouble() == id.toLong().toDouble())
+        val requestId = id.toLong()
+        require(requestId in 1..9_007_199_254_740_991L)
+        if (requestId <= lastOwnershipRequestId) return
+        val enabled = json.get("enabled") as? Boolean ?: throw IllegalArgumentException("Boolean required")
+        lastOwnershipRequestId = requestId
+        val requested = enabled && format != null
+        val wasRequested = browserTouchOwned || touchOwnershipRequested
+        val generation = ++touchGeneration
+        val currentViewer = viewerGeneration
+        val currentStream = streamId
+        browserTouchOwned = false
+        touchOwnershipRequested = requested
         contacts = emptyList()
+        val complete: (Boolean) -> Unit = { applied -> synchronized(lock) {
+            if (generation == touchGeneration && currentViewer == viewerGeneration &&
+                currentStream == streamId && viewerConnected) {
+                browserTouchOwned = applied && requested
+                touchOwnershipRequested = browserTouchOwned
+                server?.sendText(JSONObject().put("type", "touchOwnership")
+                    .put("enabled", browserTouchOwned).put("streamId", currentStream)
+                    .put("requestId", requestId).toString())
+            }
+        } }
+        val change = setTouchOwnership
+        when {
+            !requested && !wasRequested -> complete(true)
+            change == null -> complete(false)
+            else -> change(requested, complete)
+        }
+    }
+
+    /** Viewing alone never cancels native input. Revocation also invalidates delayed ACKs. */
+    private fun releaseTouches() {
+        ++touchGeneration
+        val revoke = browserTouchOwned || touchOwnershipRequested || contacts.isNotEmpty()
+        browserTouchOwned = false
+        touchOwnershipRequested = false
+        contacts = emptyList()
+        if (revoke) {
+            val change = setTouchOwnership
+            if (change != null) change(false) { } else cancelTouch?.invoke()
+        }
     }
 }

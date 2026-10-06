@@ -40,7 +40,7 @@ class BrowserLanBackpressureTest {
             MemoryConnection().use { session ->
                 // Install an already-authenticated in-memory connection, without changing
                 // the public LAN bind policy or adding a production-only testing hook.
-                val server = BrowserLanServer(InetAddress.getByName("192.168.40.2"), ORIGIN, TOKEN, {}, {}, {})
+                val server = BrowserLanServer(InetAddress.getByName("192.168.40.2"), "https://mark4z.github.io", {}, {}, {}, {}, {})
                 BrowserLanServer::class.java.getDeclaredField("owner").apply { isAccessible = true }.set(server, session.connection)
                 outputField("server").set(null, server)
                 outputField("viewerConnected").setBoolean(null, true)
@@ -301,7 +301,7 @@ class BrowserLanBackpressureTest {
         val disconnected = AtomicInteger()
         val textReceived = CountDownLatch(1)
         private val authenticated = CountDownLatch(1)
-        val connection = BrowserLanConnection(socket, HOST, ORIGIN, TOKEN.toByteArray(),
+        val connection = BrowserLanConnection(socket, HOST, ORIGIN, { it.approve() }, {},
             { authenticated.countDown() }, { textReceived.countDown() },
             { disconnected.incrementAndGet() }, { finished.countDown() })
 
@@ -309,12 +309,13 @@ class BrowserLanBackpressureTest {
             socket.receive(("GET /carplay HTTP/1.1\r\nHost: $HOST\r\nOrigin: $ORIGIN\r\n" +
                 "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" +
                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").toByteArray() +
-                masked(1, "{\"type\":\"auth\",\"token\":\"$TOKEN\"}".toByteArray()))
+                masked(1, "{\"type\":\"requestApproval\",\"version\":2}".toByteArray()))
             connection.start()
             assertTrue(authenticated.await(2, TimeUnit.SECONDS))
             val upgrade = socket.writes.poll(2, TimeUnit.SECONDS)
             assertNotNull(upgrade)
             assertTrue(String(upgrade!!).startsWith("HTTP/1.1 101 "))
+            assertEquals("{\"type\":\"approvalPending\",\"version\":2}", String(nextFrame().payload))
         }
 
         fun blockWriter() { socket.holdWrites = true }
