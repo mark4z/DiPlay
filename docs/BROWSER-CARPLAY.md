@@ -1,4 +1,4 @@
-# Experimental browser output, phase 1
+# Experimental browser video, touch, and audio output
 
 Status: source implementation, **not verified on Android/Tesla hardware**. Native
 CarPlay remains the normal output. Browser output is off after process launch,
@@ -9,8 +9,9 @@ requires an explicit parked confirmation, and is never saved as a preference.
 An independently hosted **HTTPS** static page (`site/browser-carplay`) decodes
 CarPlay's existing compressed H.264/HEVC access units with WebCodecs. The Android
 app tees the main screen without decode/re-encode, preserving native video/audio.
-Only video and two-contact CarPlay touch are forwarded. No audio forwarding,
-vehicle-control integration, internet media relay, or bypass of driving restrictions.
+Video, two-contact CarPlay touch, and explicitly selected decoded PCM audio are forwarded.
+There is no browser microphone uplink, vehicle-control integration, internet media relay,
+or bypass of driving restrictions.
 CarPlay's current HID descriptor supports two contacts even if the browser supports more.
 
 WebCodecs requires a secure context; visiting a second device's plain HTTP IP is
@@ -53,9 +54,16 @@ port. User permission must be granted personally in the browser's normal prompt.
 5. After approval, viewing starts with a fresh config/keyframe. Native touch remains
    available until you explicitly enable browser touch control and Android acknowledges
    the ownership transfer. Disable it to restore native touch. Stream reconfiguration
-   and disconnection also revoke browser touch. The viewer closes on hiding/leaving
+   and decoder recovery immediately release contacts and revoke active ownership. The
+   viewer preserves the user’s touch choice during benign recovery on the same approved
+   connection, then requests a fresh ownership acknowledgment after video resumes.
+   Stream inactivity and real disconnection clear that choice. The viewer closes on hiding/leaving
    the page; reconnect is manual.
-6. In Android settings, **Stop** closes the listener, disconnects the viewer, and
+6. Click **Play audio here** in the approved viewer to move playback to the browser.
+   Audio starts only after a user gesture successfully starts Web Audio. Stop browser
+   audio to return sound to Android. Hiding/disconnecting the page or suspending the
+   browser audio context restores native playback. Microphone uplink is not included.
+7. In Android settings, **Stop** closes the listener, disconnects the viewer, and
    revokes the connection grant. App/session shutdown also stops browser output.
    Merely backgrounding/recreating the Activity does not kill the CarPlay session.
 
@@ -70,17 +78,27 @@ port. User permission must be granted personally in the browser's normal prompt.
   rate-limited. Touch ownership is separate from viewing and transferred serially
   on the input executor after releasing prior contacts. Native touch gestures for
   settings remain available while native CarPlay input is suppressed during remote ownership.
-- **The LAN WebSocket is unencrypted.** Pairing does not protect video/control
+- **The LAN WebSocket is unencrypted.** Pairing does not protect video/audio/control
   from an attacker on the network. Approval is not network encryption. Use only a trusted, access-controlled network.
   This version is unsuitable for hostile/shared Wi-Fi; it does not claim TLS security.
 - No session values are stored in preferences, URL query, local/session storage, or
   logs. No network discovery, telemetry, third-party JS, or automatic reconnection.
 - Video stays bounded to three frames / 8 MiB including the in-flight frame. Transient overflow discards queued dependencies and resumes only at a fresh keyframe, without disconnecting. Control messages have separate bounded credits; persistently blocked writes still disconnect after five seconds.
+  Decoder overload drops dependent compressed frames and waits for a new keyframe
+  while allowing existing decoder work to drain, rather than repeatedly destroying
+  the decoder before it can output. Identical video configs do not create new stream
+  generations. Audio uses separate bounded queues and cannot consume control credits.
   Decoder overload waits for a new keyframe. Socket deadlines, input size limits,
   frame validation, origin validation and rate limits restrict resource use.
 - Microsecond timestamps are monotonic Android receipt times: the existing media
   sink does not expose source presentation timestamps. Audio synchronization and
   B-frame reordering are not asserted. Real stream tests are required.
+- Browser audio reuses Android’s existing decoded PCM output for AAC/Opus/LPCM; it
+  does not depend on the browser implementing those compressed audio codecs. Native
+  playback is the default, and browser playback is a per-connection user choice.
+  Multiple streams are mixed locally with bounded buffering; no audio is sent before
+  Android approval. Actual hardware latency, navigation prompts, calls, and A/V sync
+  still need validation.
 - Source-only APKs contain no accessory identity and are **not standalone iPhone
   connection test packages**. No authentication assets are read or published here.
 
@@ -97,6 +115,14 @@ First use another Android Chromium browser, then the actual Tesla browser:
   disconnect/config change without displaying stale dependent frames.
 - 720p/1080p then intended higher resolution: measure actual latency, queue/drop
   behavior and long-running stability. No device performance claim is made here.
+- Compare 30fps and 60fps with frequent screen changes: no repeated decoder reset
+  starvation, bounded queues, held contacts released during recovery, and touch
+  restored only after fresh matching ownership acknowledgment. A real network
+  disconnect still requires new Android approval and a fresh touch choice.
+- Start/stop browser audio repeatedly; test media and navigation overlap, changing
+  tracks, prolonged silence, tab hide, AudioContext suspension, and real disconnect.
+  Native sound must return, stale PCM must not leak into a new connection, and
+  microphone access must never be requested.
 - One/two-finger down/move/up, one finger lifted while the other continues,
   pointer cancellation, outside-letterbox touch, tab hide, and network loss release
   all contacts. Settings gesture and Stop remain usable from Android.

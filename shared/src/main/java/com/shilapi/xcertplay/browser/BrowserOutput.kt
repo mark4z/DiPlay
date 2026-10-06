@@ -104,6 +104,9 @@ object BrowserOutput {
                 browserTouchOwned = false
                 waitingForKey = true
                 server?.sendText("{\"type\":\"authenticated\",\"version\":2}")
+                server?.bindAudioTransport()?.let {
+                    BrowserAudioOutput.connect(it.sendText, it.sendAudio, it.resetAudio)
+                }
                 sendConfig()
                 requestKeyframe()
             } },
@@ -113,6 +116,7 @@ object BrowserOutput {
                 ++viewerGeneration
                 waitingForKey = true
                 releaseTouches()
+                BrowserAudioOutput.disconnect()
                 viewerConnected = false
             } })
         server = transport
@@ -130,6 +134,7 @@ object BrowserOutput {
             ++viewerGeneration
             server = null; endpoint = null
             waitingForKey = true; releaseTouches()
+            BrowserAudioOutput.disconnect()
             viewerConnected = false
             val pending = pendingApproval
             pendingApproval = null
@@ -145,6 +150,10 @@ object BrowserOutput {
             setTouchOwnership: ((Boolean, (Boolean) -> Unit) -> Unit)? = null): MediaSink {
         val generation = synchronized(lock) {
             releaseTouches()
+            BrowserAudioOutput.attach(native)
+            if (viewerConnected && format != null) {
+                server?.sendText("{\"type\":\"status\",\"code\":\"waiting\"}", resetVideo = true)
+            }
             width = videoWidth; height = videoHeight; touch = sendTouch; cancelTouch = cancelTouches
             BrowserOutput.setTouchOwnership = setTouchOwnership
             format = null; waitingForKey = true; recovery = null
@@ -160,9 +169,15 @@ object BrowserOutput {
                 native.onVideoConfig(type, codecData)
                 if (type == 110) synchronized(lock) {
                     if (generation != mediaGeneration) return@synchronized
+                    val updated = BrowserVideoFormat.parse(codec, codecData)
+                    // Encoders may repeat SPS/PPS with every recovery keyframe. Those
+                    // bytes do not replace the media stream or its touch generation.
+                    val previous = format
+                    if (updated != null && previous != null && updated.codec == previous.codec &&
+                        updated.parameterSets.contentEquals(previous.parameterSets)) return@synchronized
                     ++streamId
                     releaseTouches()
-                    format = BrowserVideoFormat.parse(codec, codecData)
+                    format = updated
                     waitingForKey = true
                     if (format == null) {
                         releaseTouches()
@@ -187,6 +202,7 @@ object BrowserOutput {
                     if (generation != mediaGeneration) return@synchronized
                     ++streamId
                     format = null; recovery = null; waitingForKey = true; releaseTouches()
+                    BrowserAudioOutput.setEnabled(false)
                     if (viewerConnected) server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
                 }
             }
@@ -245,6 +261,13 @@ object BrowserOutput {
             when (json.getString("type")) {
                 "requestKeyframe" -> { waitingForKey = true; requestKeyframe() }
                 "setTouchOwnership" -> changeTouchOwnership(json)
+                "audioMode" -> {
+                    val id = json.get("requestId")
+                    require(id is Number && id.toDouble().isFinite() && id.toDouble() == id.toLong().toDouble())
+                    require(id.toLong() in 1..9_007_199_254_740_991L)
+                    BrowserAudioOutput.setEnabled(json.get("enabled") as? Boolean
+                        ?: throw IllegalArgumentException("Boolean required"), id.toLong())
+                }
                 "touch" -> {
                     if (!browserTouchOwned || json.optLong("streamId", -1L) != streamId) return
                     if (format == null) { releaseTouches(); return }

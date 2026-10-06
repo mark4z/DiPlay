@@ -74,7 +74,7 @@ class BrowserOutputOwnershipTest {
         ownership(true, 1)
         val oldEnable = transfers.last()
         val oldStream = stream()
-        configure()
+        configure(2)
         assertFalse(transfers.last().enabled)
         oldEnable.complete(true)
         assertFalse(BrowserOutput.browserTouchOwned)
@@ -112,8 +112,42 @@ class BrowserOutputOwnershipTest {
         assertTrue(touches.isEmpty())
     }
 
-    private fun configure() = tee.onVideoConfig(110,
-        byteArrayOf(1,100,0,42,-1,-31,0,4,103,100,0,42,1,0,2,104,1))
+    @Test fun repeatedParameterSetsDoNotRevokeOwnershipOrInvalidatePendingAck() {
+        ownership(true, 1)
+        val pending = transfers.single()
+        val originalStream = stream()
+        repeat(60) { configure() }
+        assertEquals(originalStream, stream())
+        assertEquals(1, transfers.size)
+        pending.complete(true)
+        assertTrue(BrowserOutput.browserTouchOwned)
+        touch()
+        assertEquals(1, touches.size)
+        repeat(60) { configure() }
+        assertTrue(BrowserOutput.browserTouchOwned)
+        assertEquals(1, transfers.size)
+        assertEquals(originalStream, stream())
+    }
+
+    @Test fun changedParameterSetsRevokeHeldContactsAndRequireFreshGenerationAck() {
+        ownership(true, 1)
+        transfers.last().complete(true)
+        touch()
+        val originalStream = stream()
+        configure(2)
+        assertFalse(BrowserOutput.browserTouchOwned)
+        assertFalse(transfers.last().enabled)
+        assertTrue(stream() > originalStream)
+        ownership(true, 2, originalStream)
+        assertEquals(2, transfers.size)
+        ownership(true, 3)
+        assertFalse(BrowserOutput.browserTouchOwned)
+        transfers.last().complete(true)
+        assertTrue(BrowserOutput.browserTouchOwned)
+    }
+
+    private fun configure(pps: Byte = 1) = tee.onVideoConfig(110,
+        byteArrayOf(1,100,0,42,-1,-31,0,4,103,100,0,42,1,0,2,104,pps))
 
     private fun ownership(enabled: Boolean, request: Long, stream: Long = stream()) =
         receive("{\"type\":\"setTouchOwnership\",\"enabled\":$enabled,\"requestId\":$request,\"streamId\":$stream}")

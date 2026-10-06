@@ -16,6 +16,8 @@ import android.util.Log
 import android.view.Surface
 import com.shilapi.xcertplay.airplay.AudioCodecKind
 import com.shilapi.xcertplay.airplay.AudioFormat
+import com.shilapi.xcertplay.airplay.DecodedAudioFormat
+import com.shilapi.xcertplay.airplay.DecodedAudioOutput
 import com.shilapi.xcertplay.airplay.AudioStreamId
 import com.shilapi.xcertplay.airplay.MediaSink
 import com.shilapi.xcertplay.airplay.MicrophoneConfig
@@ -41,12 +43,13 @@ internal class AudioFocusCoordinator(
     private val enabled: Boolean,
     private val report: (String) -> Unit = {},
 ) {
-    private data class Entry(val channel: AudioChannel, val attributes: AudioAttributes)
+    private data class Entry(val channel: AudioChannel, val attributes: AudioAttributes, val gainChanged: (Float) -> Unit)
 
     private val manager = context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private val active = LinkedHashMap<AudioTrack, Entry>()
     private var request: AudioFocusRequest? = null
     private var requestedChannel: AudioChannel? = null
+    private var currentGain = FULL_VOLUME
     private val listener = AudioManager.OnAudioFocusChangeListener { change ->
         synchronized(this) {
             runCatching { report("Audio: focus change=$change activeTracks=${active.size}") }
@@ -60,9 +63,11 @@ internal class AudioFocusCoordinator(
     }
 
     @Synchronized
-    fun acquire(track: AudioTrack, channel: AudioChannel, attributes: AudioAttributes) {
+    fun acquire(track: AudioTrack, channel: AudioChannel, attributes: AudioAttributes,
+                gainChanged: (Float) -> Unit = { gain -> track.setStereoVolume(gain, gain) }) {
         if (!enabled || manager == null || channel == AudioChannel.NAVIGATION) return
-        active[track] = Entry(channel, attributes)
+        active[track] = Entry(channel, attributes, gainChanged)
+        gainChanged(currentGain)
         refreshRequest()
     }
 
@@ -77,6 +82,7 @@ internal class AudioFocusCoordinator(
             request?.let { manager?.abandonAudioFocusRequest(it) }
             request = null
             requestedChannel = null
+            currentGain = FULL_VOLUME
             return
         }
         if (request != null && requestedChannel == primary.channel) return
@@ -100,7 +106,8 @@ internal class AudioFocusCoordinator(
     }
 
     private fun setVolume(volume: Float) {
-        active.keys.forEach { track -> runCatching { track.setStereoVolume(volume, volume) } }
+        currentGain = volume
+        active.values.forEach { entry -> runCatching { entry.gainChanged(volume) } }
     }
 
     private fun AudioChannel.focusPriority(): Int = when (this) {
@@ -157,6 +164,19 @@ class AndroidMediaSink(
     private val mediaAudioTypes = mutableSetOf<AudioStreamId>()
     private val audioRenderers = ConcurrentHashMap<AudioStreamId, AudioRenderer>()
     private val microphoneUplinks = ConcurrentHashMap<AudioStreamId, MicrophoneUplink>()
+    @Volatile private var decodedAudioOutput: DecodedAudioOutput? = null
+    @Volatile private var nativeAudioEnabled = true
+
+    override fun setDecodedAudioOutput(output: DecodedAudioOutput?): Boolean {
+        decodedAudioOutput = output
+        if (output == null) setNativeAudioEnabled(true)
+        return true
+    }
+
+    override fun setNativeAudioEnabled(enabled: Boolean) {
+        nativeAudioEnabled = enabled
+        audioRenderers.values.forEach { it.refreshVolume() }
+    }
     private val audioModeLock = Any()
     private var communicationModeStream: AudioStreamId? = null
     private var savedAudioMode = AudioManager.MODE_NORMAL
@@ -340,6 +360,8 @@ class AndroidMediaSink(
     }
 
     fun close() {
+        decodedAudioOutput = null
+        nativeAudioEnabled = true
         synchronized(screenStateLock) {
             activeScreenTypes.forEach { screenStreamActiveChanged?.invoke(it, false) }
             activeScreenTypes.clear()
@@ -387,6 +409,7 @@ class AndroidMediaSink(
         if (existing?.format == format) return existing
         existing?.close()
         return AudioRenderer(
+            id,
             format,
             advancedAudioChannelMapping,
             audioFocusEnabled,
@@ -396,6 +419,8 @@ class AndroidMediaSink(
             navigationStreamType,
             mediaBufferMillis,
             onAudioDiagnostic,
+            { decodedAudioOutput },
+            { nativeAudioEnabled },
         ).also { audioRenderers[id] = it }
     }
 }
@@ -931,6 +956,7 @@ private fun MediaFormat.intOrNull(key: String): Int? =
 
 /** Decodes AAC-LC/Opus to PCM and plays it, or plays wired LPCM directly. */
 private class AudioRenderer(
+    private val id: AudioStreamId,
     val format: AudioFormat,
     private val advancedAudioChannelMapping: Boolean,
     private val audioFocusEnabled: Boolean,
@@ -940,7 +966,19 @@ private class AudioRenderer(
     private val navigationStreamType: Int,
     private val mediaBufferMillis: Int,
     private val report: (String) -> Unit,
+    private val decodedOutput: () -> DecodedAudioOutput?,
+    private val nativeEnabled: () -> Boolean,
 ) : Closeable {
+    private val outputStream = nextOutputStream.incrementAndGet()
+    private var outputSamples = 0L
+    private var outputFormat = DecodedAudioFormat(format.sampleRate, format.channels)
+    @Volatile private var focusGain = 1f
+    private val volumeLock = Any()
+    fun refreshVolume() = synchronized(volumeLock) {
+        val gain = if (nativeEnabled()) focusGain else 0f
+        runCatching { track?.setStereoVolume(gain, gain) }
+    }
+
     private data class AudioPacket(val rtp: ByteArray, val sample: Int)
 
     private var trackAttributes: AudioAttributes? = null
@@ -949,7 +987,7 @@ private class AudioRenderer(
     @Volatile private var running = true
     @Volatile private var started = false
     private var codec: MediaCodec? = null
-    private var track: AudioTrack? = null
+    @Volatile private var track: AudioTrack? = null
     private var pcm = ByteArray(64 * 1024)
     private var playbackStarted = false
     private var prebufferBytes = 0
@@ -1163,6 +1201,7 @@ private class AudioRenderer(
             )
         }
         track = built
+        refreshVolume()
         diagnosticStage = "track-attributes"
         trackAttributes = audioTrackAttributesForFocus(built, attributes)
         diagnosticStage = "track-capacity"
@@ -1254,7 +1293,10 @@ private class AudioRenderer(
             Log.i(TAG, "audio focus skipped channel=NAVIGATION; overlays without ducking")
             return
         }
-        track?.let { audioFocusCoordinator.acquire(it, channel, attributes) }
+        track?.let { audioFocusCoordinator.acquire(it, channel, attributes) { gain ->
+            focusGain = gain
+            refreshVolume()
+        } }
     }
 
     private fun abandonAudioFocus() {
@@ -1414,6 +1456,12 @@ private class AudioRenderer(
             when {
                 index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    // Honor actual decoder output; unknown encodings are never labelled PCM16.
+                    outputFormat = runCatching { codec.outputFormat.let { actual ->
+                        DecodedAudioFormat(actual.intOrNull(MediaFormat.KEY_SAMPLE_RATE) ?: format.sampleRate,
+                            actual.intOrNull(MediaFormat.KEY_CHANNEL_COUNT) ?: format.channels,
+                            actual.intOrNull(MediaFormat.KEY_PCM_ENCODING) ?: AndroidAudioFormat.ENCODING_PCM_16BIT)
+                    } }.getOrElse { DecodedAudioFormat(0, 0, 0) }
                     // Vendor metadata inspection must not interrupt otherwise working playback.
                     if (decoderOutputReports < 4) runCatching {
                         val outputFormat = codec.outputFormat
@@ -1459,7 +1507,6 @@ private class AudioRenderer(
     }
 
     private fun writePcm(data: ByteArray, offset: Int = 0, length: Int = data.size) {
-        val track = track ?: return
         diagnosticStage = "track-write"
         if (!firstPcmLogged && length > 0) {
             firstPcmLogged = true
@@ -1472,6 +1519,11 @@ private class AudioRenderer(
             applyFadeIn(data, offset, length)
             fadeApplied = true
         }
+        val sample = outputSamples
+        if (outputFormat.supported) outputSamples += length / (outputFormat.channels * 2)
+        // The tap copies to a bounded queue and never writes the socket on this worker.
+        runCatching { decodedOutput()?.pcm(outputStream, id, outputFormat, sample, data, offset, length, focusGain) }
+        val track = track ?: return
         var written = 0
         while (written < length && running) {
             val writeLength = if (playbackStarted) {
@@ -1615,6 +1667,7 @@ private class AudioRenderer(
 
     @Synchronized
     private fun release() {
+        runCatching { decodedOutput()?.stopped(outputStream, outputSamples) }
         abandonAudioFocus()
         val codec = codec
         this.codec = null
@@ -1652,6 +1705,7 @@ private class AudioRenderer(
     }
 
     private companion object {
+        private val nextOutputStream = AtomicLong()
         const val TAG = "xcertplay-usb"
         const val AAC_OBJECT_TYPE_LC = 2
         const val MIN_OPUS_PACKET_BYTES = 4
