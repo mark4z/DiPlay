@@ -11,7 +11,7 @@ SAFE_PATHS = [
     '${{ env.GRADLE_USER_HOME }}/caches/modules-2',
     '${{ env.GRADLE_USER_HOME }}/caches/build-cache-1',
 ]
-TRUSTED_GATE = "github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/refactor/remove-byd-hardware')"
+TRUSTED_GATE = "github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/browser-carplay')"
 FINGERPRINT = "${{ hashFiles('**/*.gradle*', '**/gradle.properties', 'gradle/**', 'scripts/gradle-readonly-cache.init.gradle') }}"
 PREFIX = 'auth-source-original-v1-${{ runner.os }}-${{ runner.arch }}-jdk25-mobile-' + FINGERPRINT + '-'
 
