@@ -514,7 +514,7 @@ class BrowserLanBackpressureTest {
     companion object {
         private fun outputField(name: String) = BrowserOutput::class.java.getDeclaredField(name).apply { isAccessible = true }
         private const val HOST = "192.168.40.2:41234"
-        private const val ORIGIN = "https://viewer.example.com"
+        private const val ORIGIN = BrowserOutput.VIEWER_ORIGIN
         private const val TOKEN = "synthetic-token-0123456789"
         private fun masked(opcode: Int, payload: ByteArray): ByteArray {
             require(payload.size < 126)
