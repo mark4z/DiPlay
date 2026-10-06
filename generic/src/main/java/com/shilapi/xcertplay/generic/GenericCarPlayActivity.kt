@@ -3,6 +3,7 @@ package com.shilapi.xcertplay.generic
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -43,7 +44,7 @@ import java.util.concurrent.Executors
 class GenericCarPlayActivity : Activity() {
     private lateinit var persistence: GenericPersistence
     private lateinit var settings: GenericSettings
-    private lateinit var video: TextureView
+    private lateinit var video: GenericVideoTexture
     private lateinit var status: TextView
     private lateinit var startButton: Button
     private lateinit var idle: TextView
@@ -126,11 +127,15 @@ class GenericCarPlayActivity : Activity() {
         button("Settings") { showSettings() }
         root.addView(toolbar)
         val frame = FrameLayout(this)
-        video = TextureView(this).apply {
+        video = GenericVideoTexture(this).apply {
             isFocusable = true; isFocusableInTouchMode = true
             contentDescription = "CarPlay screen. Menu key opens connection settings."
             surfaceTextureListener = textureListener
-            setOnTouchListener { _, event -> handleTouch(event) }
+            setOnTouchListener { view, event ->
+                val handled = handleTouch(event)
+                if (handled && event.actionMasked == MotionEvent.ACTION_UP) view.performClick()
+                handled
+            }
         }
         frame.addView(video, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         idle = TextView(this).apply {
@@ -546,6 +551,11 @@ class GenericCarPlayActivity : Activity() {
         private const val VPN_CONSENT = 101
         private const val MAIN_SCREEN = 110
     }
+}
+
+/** Keeps Android's accessibility click event without synthesizing another phone touch. */
+internal class GenericVideoTexture(context: Context) : TextureView(context) {
+    override fun performClick(): Boolean = super.performClick()
 }
 
 /** Serializes resource teardown and provisioning across framework Activity recreation. */

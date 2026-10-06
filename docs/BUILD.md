@@ -41,8 +41,11 @@ Update the existing test app without uninstalling it to preserve its settings.
 ## Manual GitHub Actions authenticated debug build
 
 The **Build authenticated debug APK** workflow is manual-only and runs only on
-`main`. Ordinary **Android checks** and **Build DiPlay Android TV source APK**
-remain source-only and never reference these Secrets.
+`main` or the reviewed `refactor/generic-android-variant` branch. Its `target`
+choice defaults to `mobile`; select `generic` for the independent generic Android
+app. No other targets or refs are accepted. Ordinary **Android checks** and
+**Build DiPlay Android TV source APK** remain source-only and never reference
+these Secrets.
 
 ### Important boundaries
 
@@ -58,7 +61,7 @@ remain source-only and never reference these Secrets.
   the APK; there is no download. Turning it on explicitly publishes one APK
   artifact with **1-day retention**. Expiry/deletion cannot revoke copies already
   downloaded. The workflow does not create a GitHub Release.
-- Review the current `main` commit and workflow before running. Anyone who can
+- Review the selected branch's current commit and workflow before running. Anyone who can
   change trusted workflow/build code may cause Secrets to be disclosed. Do not
   add pull-request triggers or run unreviewed code with credentials.
 
@@ -112,27 +115,48 @@ workflow uses `contents: read` and a checkout without persisted credentials.
 
 ### 3. Start the workflow yourself
 
-Open **Actions → Build authenticated debug APK → Run workflow**, select `main`,
-review the current source, and choose whether to enable `publish_apk` after
-reading the disclosure warning above. Click **Run workflow** yourself. If you
-choose publication and the run succeeds, download
-`DiPlay-authenticated-debug-<run ID>` from that run's **Artifacts** section before
-it expires. It contains `DiPlay-standalone-debug.apk`.
+Open **Actions → Build authenticated debug APK → Run workflow**, select `main`
+or `refactor/generic-android-variant`, and review that branch's current source.
+Choose `target=mobile` (the existing host) or `target=generic` (the independent
+generic Android app). Choose whether to enable `publish_apk` after reading the
+disclosure warning above. Click **Run workflow** yourself. If you choose
+publication and the run succeeds, download
+`DiPlay-<target>-authenticated-debug-<run ID>` from that run's **Artifacts** section
+before it expires. The mobile artifact contains `DiPlay-standalone-debug.apk`;
+the generic artifact contains `DiPlay-generic-standalone-debug.apk`.
 
 For this fork: [manual build workflow](https://github.com/mark4z/DiPlay/actions/workflows/build-authenticated-debug.yml).
 
+If the web form still shows only the default branch's older inputs, the owner can
+use an already authenticated GitHub CLI to select the reviewed branch and target
+explicitly. This example verifies the build and deletes its APK; it does **not**
+publish the extractable identity:
+
+```sh
+gh workflow run build-authenticated-debug.yml --repo mark4z/DiPlay \
+  --ref refactor/generic-android-variant -f target=generic -f publish_apk=false
+```
+
+Publishing requires a separate deliberate `publish_apk=true` choice after reading
+the disclosure warning. Never put identity bytes in CLI arguments or workflow inputs.
+
 ### What the workflow verifies and removes
 
-First it rejects credentials in tracked source, tests the helpers using synthetic
-bytes, then runs `:shared:testDebugUnitTest`, `:common:testDebugUnitTest` and
-`:mobile:lintDebug` **without either Secret**. Only after those pass does it decode
-the two Secrets into a mode-0700 directory outside the checkout (files mode 0600),
-set `DIPLAY_AUTH_ASSETS_DIR`, and run `:mobile:assembleStandaloneDebug`. Empty,
+First it validates the fixed target choice, rejects credentials in tracked source,
+checks the generic source boundary, and tests both helper target paths using
+synthetic bytes. It then runs `:shared:testDebugUnitTest` and
+`:common:testDebugUnitTest`, plus `:mobile:lintDebug` for mobile or
+`:generic:testDebugUnitTest` and `:generic:lintDebug` for generic,
+**without either Secret**. Only after those pass does it decode the two Secrets
+into a mode-0700 directory outside the checkout (files mode 0600), set
+`DIPLAY_AUTH_ASSETS_DIR`, and run `:mobile:assembleStandaloneDebug` or
+`:generic:assembleStandaloneDebug`, as selected. Empty,
 invalid Base64 and oversized values fail with fixed messages that contain no
 values. Decoding does not prove the identity/certificate pair is valid or accepted
 by an iPhone.
 
-The build verifies exactly one APK and byte-for-byte matching, uniquely named
+The build verifies exactly one APK in the selected target's output directory and
+byte-for-byte matching, uniquely named
 `assets/offline-mfi/identity.pk8` and `assets/offline-mfi/certificate.p7b` entries.
 Credential-stage tool output is suppressed, including failures; no secret values,
 checksums or sensitive build logs are published. If that stage fails, check the
@@ -140,14 +164,15 @@ source-only test/lint logs, then verify your selected inputs privately.
 
 No shared Gradle/cache action is used. The isolated Gradle user home is discarded;
 build/configuration caches and Gradle scans are disabled. The helper removes
-identity files and build intermediates on success, failure and ordinary
+identity files and both targets' build intermediates on success, failure and ordinary
 cancellation, and an `always()` step also removes the staged APK and caches. A
 hard-killed runner cannot guarantee cleanup steps execute, so this workflow uses
 GitHub-hosted ephemeral runners, never a persistent self-hosted runner. Only the
 explicitly requested uploaded APK survives the runner.
 
-This is the `.hudtest` debug application, signed with a newly generated runner
-**debug key**. It may not update an existing app signed by a different key; do not
+The mobile target is the `com.shihab.diplay.hudtest` debug application; the generic
+target is `com.shihab.diplay.generic`. Both are signed with a newly generated runner
+**debug key**. They may not update an existing app signed by a different key; do not
 uninstall an existing test app casually because that loses its data/settings.
 No Android signing key or signing password is saved, restored, or supplied by
 this workflow. A successful build is not a physical CarPlay connectivity test.

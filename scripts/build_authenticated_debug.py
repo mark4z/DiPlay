@@ -18,7 +18,11 @@ SECRET_FILES = {
     "DIPLAY_MFI_CERT_B64": "certificate.p7b",
 }
 MAX_BYTES = 16 * 1024
-BUILD_DIRS = (".gradle", ".kotlin", "mobile/build", "common/build", "shared/build", "shared/.cxx")
+BUILD_TARGETS = {
+    "mobile": (":mobile:assembleStandaloneDebug", "mobile/build/outputs/apk/debug", "DiPlay-standalone-debug.apk"),
+    "generic": (":generic:assembleStandaloneDebug", "generic/build/outputs/apk/debug", "DiPlay-generic-standalone-debug.apk"),
+}
+BUILD_DIRS = (".gradle", ".kotlin", "mobile/build", "generic/build", "common/build", "shared/build", "shared/.cxx")
 
 
 class BuildError(Exception):
@@ -70,7 +74,11 @@ def cleanup_build(root):
         raise BuildError("Some build intermediates could not be removed; runner cleanup is required.")
 
 
-def build(root, work_dir, environment, publish_dir=None):
+def build(root, work_dir, environment, publish_dir=None, target="mobile"):
+    # Select only fixed tasks/paths; never interpolate arbitrary input into a command or path.
+    if target not in BUILD_TARGETS:
+        raise BuildError("Unsupported build target; choose mobile or generic.")
+    task, apk_directory, apk_name = BUILD_TARGETS[target]
     # Work/publish directories must be outside the checkout to avoid source uploads.
     root = root.resolve()
     work_dir = work_dir.resolve()
@@ -99,21 +107,21 @@ def build(root, work_dir, environment, publish_dir=None):
                     os.fchmod(stream.fileno(), 0o600)
                     stream.write(payload)
             environment["DIPLAY_AUTH_ASSETS_DIR"] = str(auth_dir)
-            command = [str(root / "gradlew"), ":mobile:assembleStandaloneDebug", "--no-daemon",
+            command = [str(root / "gradlew"), task, "--no-daemon",
                        "--no-build-cache", "--no-configuration-cache", "--no-scan", "--console=plain"]
             # Do not retain build output: a failed tool/plugin could print transformed secrets.
             completed = subprocess.run(command, cwd=root, env=environment, stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL, check=False)
             if completed.returncode:
                 raise BuildError("Authenticated build failed. Sensitive-stage output was suppressed; inspect the source-only checks first.")
-            apks = list((root / "mobile/build/outputs/apk/debug").glob("*.apk"))
+            apks = list((root / apk_directory).glob("*.apk"))
             if len(apks) != 1:
                 raise BuildError("Expected exactly one debug APK.")
             verify_apk(apks[0], expected)
             if publish_dir is not None:
                 publish_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
                 publish_created = True
-                destination = publish_dir / "DiPlay-standalone-debug.apk"
+                destination = publish_dir / apk_name
                 with apks[0].open("rb") as source, destination.open("xb") as output:
                     os.fchmod(output.fileno(), 0o600)
                     shutil.copyfileobj(source, output)
@@ -145,13 +153,14 @@ def build(root, work_dir, environment, publish_dir=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", choices=BUILD_TARGETS, default="mobile")
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--publish-dir", type=Path)
     args = parser.parse_args(argv)
     # A normal cancellation executes finally; always() is the second cleanup layer.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
-        build(Path(__file__).resolve().parents[1], args.work_dir, os.environ, args.publish_dir)
+        build(Path(__file__).resolve().parents[1], args.work_dir, os.environ, args.publish_dir, args.target)
     except BuildError as error:
         print(str(error), file=sys.stderr)
         return 1
