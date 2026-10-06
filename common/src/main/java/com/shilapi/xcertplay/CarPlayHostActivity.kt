@@ -74,6 +74,7 @@ import com.shilapi.xcertplay.location.AndroidCarPlayLocationProvider
 import com.shilapi.xcertplay.media.AndroidMediaSink
 import com.shilapi.xcertplay.media.CarPlayTouchMapper
 import com.shilapi.xcertplay.media.CarPlayVideoLayout
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
 import com.shilapi.xcertplay.network.CarPlayVpnService
 import com.shilapi.xcertplay.orchestration.CarPlayController
 import com.shilapi.xcertplay.orchestration.CarPlayRuntimeConfig
@@ -337,6 +338,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private var advancedAudioChannelMapping = false
     private var navigationStreamType = 14
     private var debugLogsEnabled = false
+    private var performanceDiagnosticsEnabled = false
     private var autoStartOnBoot = false
     private var manufacturer = AirPlayPersistence.DEFAULT_MANUFACTURER
     private var model = AirPlayPersistence.DEFAULT_MODEL
@@ -583,6 +585,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 AirPlayPersistence.loadAdvancedAudioChannelMapping(this)
         navigationStreamType = AirPlayPersistence.loadNavigationStreamType(this)
         debugLogsEnabled = AirPlayPersistence.loadDebugLogsEnabled(this)
+        loadPerformanceDiagnosticsSetting()
         autoStartOnBoot = AirPlayPersistence.loadAutoStartOnBoot(this)
         manufacturer = AirPlayPersistence.loadManufacturer(this)
         model = AirPlayPersistence.loadModel(this)
@@ -601,6 +604,11 @@ class CarPlayHostActivity : ComponentActivity() {
         locationPermissionAvailable = hasFineLocationPermission()
         loadConnectionSettings()
         wirelessPermissionsReady = !wirelessEnabled || hasRequiredWirelessPermissions()
+    }
+
+    private fun loadPerformanceDiagnosticsSetting() {
+        performanceDiagnosticsEnabled = AirPlayPersistence.loadPerformanceDiagnosticsEnabled(this)
+        PerformanceDiagnostics.setEnabled(performanceDiagnosticsEnabled)
     }
 
     /**
@@ -769,7 +777,10 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         // The settings screen returns here with FLAG_ACTIVITY_REORDER_TO_FRONT, so this screen is
         // resumed, not recreated: refresh what that screen can change before it is used again.
-        if (!menuOpen) loadConnectionSettings()
+        if (!menuOpen) {
+            loadConnectionSettings()
+            loadPerformanceDiagnosticsSetting()
+        }
         locationPermissionAvailable = hasFineLocationPermission()
         if (locationReportingEnabled && !locationPermissionAvailable && !menuOpen) {
             requestLocationPermission()
@@ -1862,6 +1873,13 @@ class CarPlayHostActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(12) },
         )
+        content.addView(
+            buildPerformanceDiagnosticsSection(),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(12) },
+        )
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             content.addView(
@@ -2051,6 +2069,7 @@ class CarPlayHostActivity : ComponentActivity() {
         AirPlayPersistence.saveModel(this, model)
         AirPlayPersistence.saveOemLabel(this, oemLabel)
         AirPlayPersistence.saveDebugLogsEnabled(this, debugLogsEnabled)
+        AirPlayPersistence.savePerformanceDiagnosticsEnabled(this, performanceDiagnosticsEnabled)
         AirPlayPersistence.saveRightHandDrive(this, rightHandDrive)
         CarPlayDock.save(this, carPlayDock)
         AirPlayPersistence.saveHideTopBar(this, hideTopBar)
@@ -2384,6 +2403,16 @@ class CarPlayHostActivity : ComponentActivity() {
             debugLogsEnabled = checked
             appendLog("Debug logs ${if (debugLogsEnabled) "enabled" else "disabled"}")
             updateDebugOverlays()
+        }
+
+    private fun buildPerformanceDiagnosticsSection(): View =
+        settingsSwitchRow(
+            label = getString(R.string.performance_diagnostics),
+            checked = performanceDiagnosticsEnabled,
+            description = getString(R.string.performance_diagnostics_description),
+        ) { checked ->
+            performanceDiagnosticsEnabled = checked
+            PerformanceDiagnostics.setEnabled(checked)
         }
 
     private fun buildStepSliderSection(

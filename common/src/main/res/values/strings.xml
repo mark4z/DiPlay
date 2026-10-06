@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="existing_wifi_title">Existing Wi-Fi / Same LAN</string>
     <string name="existing_wifi_description">Use an existing router or portable Wi-Fi. Keep the iPhone and car on the same network with Internet access.</string>
     <string name="existing_wifi_hint">Existing Wi-Fi · Keep both devices on the same Wi-Fi and Bluetooth on. No car hotspot is needed.</string>
@@ -186,6 +186,8 @@
     <string name="could_not_start_carplay_return_to_diplay_and_check_app_per">Could not start CarPlay. Return to DiPlay and check app permissions.</string>
     <string name="custom_1_1_icon">Custom 1:1 icon</string>
     <string name="debug_logs">Debug logs</string>
+    <string name="performance_diagnostics" tools:ignore="MissingTranslation">Performance diagnostics</string>
+    <string name="performance_diagnostics_description" tools:ignore="MissingTranslation">Record video and touch timing to investigate delays. Reproduce the issue, then save a diagnostic report. Local only; turn off when finished.</string>
     <string name="default_icon">Default icon</string>
     <string name="default_placeholder_icon">Default placeholder icon</string>
     <string name="diagnostic_report_saved">Diagnostic report saved</string>

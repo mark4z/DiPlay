@@ -9,6 +9,7 @@ import android.widget.TextView
 import androidx.activity.result.ActivityResultLauncher
 import androidx.core.app.ActivityOptionsCompat
 import com.shilapi.xcertplay.host.R
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,6 +41,10 @@ class DiagnosticExportUiTest {
         }
         ReflectionHelpers.setField(activity, "export", missingPicker)
         try {
+            // A stopped capture is stable while the export is written in the background.
+            PerformanceDiagnostics.setEnabled(true)
+            PerformanceDiagnostics.setEnabled(false)
+            val performanceSnapshot = PerformanceDiagnostics.snapshot()
             ReflectionHelpers.callInstanceMethod<Unit>(activity, "chooseReportDestination")
             val deadline = System.nanoTime() + 5_000_000_000L
             while (ShadowAlertDialog.getLatestAlertDialog() == null && System.nanoTime() < deadline) {
@@ -53,6 +58,11 @@ class DiagnosticExportUiTest {
             assertTrue(descendants(saved.window!!.decorView).filterIsInstance<TextView>()
                 .any { it.text.contains(file.absolutePath) })
             assertTrue(file.readText().contains("Android 9 / API 28"))
+            assertTrue(file.readText().contains("--- Performance diagnostics ---"))
+            assertTrue(file.readText().contains("Performance diagnostics: OFF (last capture retained)"))
+            assertTrue(file.readText().contains("touch_queue_wait n=0 window=0 (not observed)"))
+            assertTrue("Every performance metric, counter and interpretation note must reach the saved report",
+                file.readText().contains(performanceSnapshot))
             saved.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
             shadowOf(Looper.getMainLooper()).idle()
             val viewer = ShadowAlertDialog.getLatestAlertDialog()

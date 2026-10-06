@@ -1,5 +1,8 @@
 package com.shilapi.xcertplay.orchestration
 
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
+import com.shilapi.xcertplay.media.PerformanceMetric
+
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothA2dp
@@ -287,6 +290,7 @@ class CarPlayController(
         override fun onSessionActive(session: AirPlaySession) {
             val replacement = activeSession !== session
             if (replacement) {
+                PerformanceDiagnostics.resetSession()
                 BydNavigationOutputs.start(appContext)
                 com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(true)
                 // The gear may have changed since /info.
@@ -306,6 +310,7 @@ class CarPlayController(
 
         override fun onSessionEnded(session: AirPlaySession) {
             if (activeSession === session) {
+                PerformanceDiagnostics.resetSession()
                 activeSession = null
                 BydNavigationOutputs.endNow(preserveTurnOverlay = !closed && config.transport == CarPlayTransport.WIRELESS)
                 com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(false)
@@ -457,10 +462,25 @@ class CarPlayController(
     fun sendTouch(contacts: List<AirPlayContact>): Boolean {
         if (closed) return false
         val session = activeSession ?: return false
+        val capture = PerformanceDiagnostics.token()
+        val enqueuedNs = PerformanceDiagnostics.now(capture)
+        PerformanceDiagnostics.touchQueued(capture)
         return try {
-            touchExecutor.execute { session.sendTouch(contacts) }
+            touchExecutor.execute {
+                val startedNs = PerformanceDiagnostics.now(capture)
+                PerformanceDiagnostics.touchStarted(capture)
+                PerformanceDiagnostics.record(PerformanceMetric.TOUCH_QUEUE_WAIT, startedNs - enqueuedNs, capture)
+                try {
+                    session.sendTouch(contacts, capture)
+                } finally {
+                    val completedNs = PerformanceDiagnostics.now(capture)
+                    PerformanceDiagnostics.record(PerformanceMetric.TOUCH_WORKER, completedNs - startedNs, capture)
+                    PerformanceDiagnostics.record(PerformanceMetric.TOUCH_ENQUEUE_TO_COMPLETE, completedNs - enqueuedNs, capture)
+                }
+            }
             true
         } catch (_: Exception) {
+            PerformanceDiagnostics.touchRejected(capture)
             false
         }
     }

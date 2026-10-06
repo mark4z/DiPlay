@@ -1,5 +1,9 @@
 package com.shilapi.xcertplay.airplay
 
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
+import com.shilapi.xcertplay.media.PerformanceMetric
+import com.shilapi.xcertplay.media.PerformanceCounter
+
 import android.util.Log
 import com.shilapi.xcertplay.mfi.MfiAuthenticator
 import com.shilapi.xcertplay.transport.BlockingDuplexByteStream
@@ -330,13 +334,20 @@ class AirPlaySession(
         }
     }
 
-    fun sendTouch(contacts: List<AirPlayContact>): Boolean {
+    fun sendTouch(contacts: List<AirPlayContact>, diagnosticCapture: Long = PerformanceDiagnostics.token()): Boolean {
         val scaled = contacts.map {
             it.copy(x = it.x * config.main.widthPixels, y = it.y * config.main.heightPixels)
         }
         val report = AirPlayHid.touchReport(scaled)
+        val capture = diagnosticCapture
         val sendStartNs = System.nanoTime()
         val sent = sendHidReport(AirPlayHid.TOUCH_HID_UID, report)
+        if (capture != 0L) {
+            val completedNs = PerformanceDiagnostics.now(capture)
+            PerformanceDiagnostics.record(PerformanceMetric.TOUCH_SEND, completedNs - sendStartNs, capture)
+            PerformanceDiagnostics.count(if (sent) PerformanceCounter.TOUCH_SENT else PerformanceCounter.TOUCH_FAILED, capture)
+            if (sent) PerformanceDiagnostics.touchSent(capture, completedNs)
+        }
         if (sent) com.shilapi.xcertplay.media.TouchLatencyProbe.onTouchSent(sendStartNs, System.nanoTime() - sendStartNs)
         if (sent && firstTouchSendLogged.compareAndSet(false, true)) {
             val first = scaled.firstOrNull()

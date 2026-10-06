@@ -402,7 +402,7 @@ class AndroidMediaSink(
 
 /** Serial MediaCodec video decoder: one worker owns configure and frame feeding. */
 private class VideoDecoder(
-    streamType: Int,
+    private val streamType: Int,
     surface: Surface?,
     private val width: Int,
     private val height: Int,
@@ -422,6 +422,15 @@ private class VideoDecoder(
     private var failureReports = 0
     private val referenceChain = VideoReferenceChain()
     private var lastKeyFrameRequestNs = 0L
+    private val measuresMainStream = streamType == 110 && statsLabel == null
+    private val receiveTimingLock = Any()
+    private var receiveToken = 0L
+    private var lastReceiveNs = 0L
+    private var timingToken = 0L
+    private var timingCodec: MediaCodec? = null
+    @Volatile private var timingTracker: VideoTimingTracker? = null
+    private var renderCallbackAvailable = false
+    private var renderListenerAttempted = false
     // The main screen keeps the historical log format; other screens are labelled.
     private val stats = VideoStats(statsLabel ?: if (streamType == 110) "" else " stream=$streamType")
     private val thread = Thread(::run, "carplay-video").apply { isDaemon = true; start() }
@@ -432,7 +441,23 @@ private class VideoDecoder(
 
     fun submit(nalus: ByteArray) {
         stats.onReceived(nalus.size)
-        queue.offer(VideoJob.Frame(nalus))
+        val token = PerformanceDiagnostics.token()
+        val frame = VideoJob.Frame(nalus, performanceToken = token)
+        if (token != 0L) {
+            PerformanceDiagnostics.count(PerformanceCounter.VIDEO_RECEIVED, token)
+            synchronized(receiveTimingLock) {
+                if (receiveToken != token) {
+                    receiveToken = token
+                    lastReceiveNs = 0L
+                }
+                if (lastReceiveNs != 0L) {
+                    PerformanceDiagnostics.record(PerformanceMetric.VIDEO_RECEIVE_GAP, frame.receivedNs - lastReceiveNs, token)
+                }
+                lastReceiveNs = frame.receivedNs
+            }
+            if (measuresMainStream) PerformanceDiagnostics.onMainFrameReceived(token, frame.receivedNs)
+        }
+        queue.offer(frame)
     }
 
     fun setSurface(surface: Surface?) {
@@ -449,13 +474,21 @@ private class VideoDecoder(
             while (running) {
                 val job = queue.poll(5)
                 try {
+                    updateVideoTiming(decoder)
                     when (job) {
                         is VideoJob.Config -> configureDecoder(job)
                         is VideoJob.Frame -> {
-                            if (System.nanoTime() - job.receivedNs > MAX_FRAME_AGE_NS) {
-                                queue.discardFrames()
+                            val workerNs = System.nanoTime()
+                            if (job.performanceToken != 0L) {
+                                PerformanceDiagnostics.record(PerformanceMetric.VIDEO_QUEUE_WAIT, workerNs - job.receivedNs, job.performanceToken)
+                            }
+                            if (workerNs - job.receivedNs > MAX_FRAME_AGE_NS) {
+                                if (job.performanceToken != 0L) {
+                                    PerformanceDiagnostics.count(PerformanceCounter.VIDEO_STALE_DROPPED, job.performanceToken)
+                                }
+                                queue.discardFrames(PerformanceCounter.VIDEO_STALE_DROPPED)
                                 recover("video backlog exceeded 250 ms")
-                            } else feed(job.nalus)
+                            } else feed(job, workerNs)
                         }
                         is VideoJob.SurfaceChanged -> changeSurface(job.surface)
                         is VideoJob.Resync -> recover("video queue overflow")
@@ -463,14 +496,20 @@ private class VideoDecoder(
                     }
                     decoder?.let(::drainOutput)
                     stats.logIfDue()?.let(report)
+                    PerformanceDiagnostics.logIfDue()?.lineSequence()?.forEach { line ->
+                        Log.i(TAG, line)
+                        report(line)
+                    }
                     if (referenceChain.needsKeyFrame && lastConfig != null && outputSurface != null) requestKeyFrameIfDue()
                 } catch (error: Exception) {
+                    PerformanceDiagnostics.count(PerformanceCounter.VIDEO_CODEC_FAILURE, PerformanceDiagnostics.token())
                     if (running) Log.e(TAG, "video decoder job failed: ${job?.javaClass?.simpleName}", error)
                     if (running) reportFailure("stage=${job?.javaClass?.simpleName ?: "drain"}", error)
                     releaseDecoder()
                     referenceChain.reset()
                     requestKeyFrameIfDue()
                 } catch (error: LinkageError) {
+                    PerformanceDiagnostics.count(PerformanceCounter.VIDEO_CODEC_FAILURE, PerformanceDiagnostics.token())
                     if (running) reportFailure("stage=${job?.javaClass?.simpleName ?: "drain"}", error)
                     throw error
                 }
@@ -571,6 +610,7 @@ private class VideoDecoder(
             codec
         } catch (error: Exception) {
             runCatching { candidate?.release() }
+            PerformanceDiagnostics.count(PerformanceCounter.VIDEO_CODEC_FAILURE, PerformanceDiagnostics.token())
             reportFailure("stage=configure tuned=${attempt.tuned} mime=$mime", error)
             Log.w(
                 TAG,
@@ -630,17 +670,32 @@ private class VideoDecoder(
         lastConfig?.let(::configureDecoder)
     }
 
-    private fun feed(nalus: ByteArray) {
+    private fun feed(frame: VideoJob.Frame, workerNs: Long) {
+        val nalus = frame.nalus
+        val token = frame.performanceToken
         val annexB = MediaCodecSupport.toAnnexB(nalus)
-        val config = lastConfig ?: return
-        if (outputSurface == null) return
-        if (annexB.isEmpty()) { recover("invalid video access unit"); return }
+        val config = lastConfig
+        if (config == null || outputSurface == null) {
+            if (token != 0L) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_UNAVAILABLE_DROPPED, token)
+            return
+        }
+        if (annexB.isEmpty()) {
+            if (token != 0L) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_INVALID_DROPPED, token)
+            recover("invalid video access unit")
+            return
+        }
         if (!referenceChain.accepts(annexB, config.codec)) {
+            if (token != 0L) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_REFERENCE_DROPPED, token)
             requestKeyFrameIfDue()
             return
         }
         if (decoder == null) configureDecoder(config)
-        val codec = decoder ?: return
+        val codec = decoder
+        if (codec == null) {
+            if (token != 0L) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_UNAVAILABLE_DROPPED, token)
+            return
+        }
+        updateVideoTiming(codec)
         if (!submittedFrameLogged) {
             submittedFrameLogged = true
             Log.i(
@@ -648,18 +703,38 @@ private class VideoDecoder(
                 "video decoder first input avcc=${nalus.size} annexB=${annexB.size}",
             )
         }
+        val acquireNs = PerformanceDiagnostics.now(token)
         val index = VideoInputPump.acquire(
             running = { running }, drain = { drainOutput(codec) },
             dequeue = { codec.dequeueInputBuffer(INPUT_TIMEOUT_US) },
         )
-        if (index < 0) { recover("video decoder input stalled"); return }
+        if (acquireNs != 0L) {
+            PerformanceDiagnostics.record(PerformanceMetric.VIDEO_INPUT_ACQUIRE, PerformanceDiagnostics.now(token) - acquireNs, token)
+        }
+        if (index < 0) {
+            if (token != 0L) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_INPUT_STALL, token)
+            recover("video decoder input stalled")
+            return
+        }
         val input = checkNotNull(codec.getInputBuffer(index)) { "Decoder input buffer unavailable" }
         input.clear()
         if (annexB.size <= input.remaining()) {
             input.put(annexB)
-            codec.queueInputBuffer(index, 0, annexB.size, System.nanoTime() / 1000, 0)
+            // Keep the original monotonic microsecond PTS unchanged, including duplicates.
+            val ptsUs = System.nanoTime() / 1000
+            codec.queueInputBuffer(index, 0, annexB.size, ptsUs, 0)
+            val fedNs = PerformanceDiagnostics.now(token)
+            if (fedNs != 0L && token == timingToken && timingCodec === codec) {
+                timingTracker?.onInput(ptsUs, frame.receivedNs, fedNs)?.let { added ->
+                    if (added.ambiguous) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_PTS_AMBIGUOUS, token)
+                    if (added.evicted != 0) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_TRACKING_EVICTED, token, added.evicted.toLong())
+                }
+                PerformanceDiagnostics.record(PerformanceMetric.VIDEO_WORKER_TO_FEED, fedNs - workerNs, token)
+                PerformanceDiagnostics.count(PerformanceCounter.VIDEO_FED, token)
+            }
             referenceChain.onQueued()
         } else {
+            if (token != 0L) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_CAPACITY_DROPPED, token)
             recover("video frame exceeded codec input capacity")
             return
         }
@@ -669,6 +744,7 @@ private class VideoDecoder(
     private fun recover(reason: String) {
         Log.w(TAG, "Video recovery: $reason; waiting for keyframe")
         stats.onRecovery()
+        PerformanceDiagnostics.count(PerformanceCounter.VIDEO_RECOVERY, PerformanceDiagnostics.token())
         report("recovery: $reason; waiting for keyframe")
         // Recreate with codec-specific data: flush can discard CSD before the first output.
         releaseDecoder()
@@ -680,6 +756,7 @@ private class VideoDecoder(
         val now = System.nanoTime()
         if (lastKeyFrameRequestNs != 0L && now - lastKeyFrameRequestNs < 1_000_000_000L) return
         lastKeyFrameRequestNs = now
+        PerformanceDiagnostics.count(PerformanceCounter.VIDEO_KEYFRAME_REQUEST, PerformanceDiagnostics.token())
         requestKeyFrame()
     }
 
@@ -692,7 +769,31 @@ private class VideoDecoder(
                 index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> logOutputFormat(codec.outputFormat)
                 index >= 0 -> {
                     val render = outputSurface != null
+                    val token = timingToken
+                    val releasedNs = PerformanceDiagnostics.now(token)
+                    // Codec config output is not a video frame and must never correlate by PTS.
+                    val videoOutput = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
+                        (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM == 0 || info.size > 0)
+                    if (releasedNs != 0L && !videoOutput && timingCodec === codec) {
+                        val evicted = timingTracker?.excludeOutput(info.presentationTimeUs) ?: 0
+                        if (evicted != 0) PerformanceDiagnostics.count(PerformanceCounter.VIDEO_TRACKING_EVICTED, token, evicted.toLong())
+                    }
+                    val observed = if (releasedNs != 0L && videoOutput && timingCodec === codec) {
+                        timingTracker?.onRelease(info.presentationTimeUs, releasedNs, render && renderCallbackAvailable)
+                    } else null
                     codec.releaseOutputBuffer(index, render)
+                    if (observed != null) {
+                        PerformanceDiagnostics.count(PerformanceCounter.VIDEO_RELEASED, token)
+                        if (observed.gapNs > 0) PerformanceDiagnostics.record(PerformanceMetric.VIDEO_RELEASE_GAP, observed.gapNs, token)
+                        val timing = observed.timing
+                        if (timing != null) {
+                            // This is the release request, not proof of surface presentation.
+                            PerformanceDiagnostics.record(PerformanceMetric.VIDEO_FEED_TO_RELEASE, releasedNs - timing.fedNs, token)
+                            PerformanceDiagnostics.record(PerformanceMetric.VIDEO_RECEIVE_TO_RELEASE, releasedNs - timing.receivedNs, token)
+                        } else {
+                            PerformanceDiagnostics.count(PerformanceCounter.VIDEO_OUTPUT_UNMATCHED, token)
+                        }
+                    }
                     if (render) stats.onRendered()
                     if (render && !renderedFrameLogged) {
                         renderedFrameLogged = true
@@ -726,6 +827,61 @@ private class VideoDecoder(
         )
     }
 
+    /** The optional listener observes the existing codec; it never changes render scheduling. */
+    private fun updateVideoTiming(codec: MediaCodec?) {
+        val token = PerformanceDiagnostics.token()
+        if (timingToken == token && timingCodec === codec) return
+        clearVideoTiming()
+        timingToken = token
+        timingCodec = codec
+        if (token == 0L || codec == null) return
+        val tracker = VideoTimingTracker()
+        timingTracker = tracker
+        try {
+            renderListenerAttempted = true
+            codec.setOnFrameRenderedListener({ source, presentationTimeUs, renderedNs ->
+                // The closed-over tracker is also the codec generation. Recreate it on toggle,
+                // session reset, or codec replacement so late callbacks cannot cross a reset.
+                if (PerformanceDiagnostics.token() == token && source === decoder &&
+                    timingTracker === tracker) {
+                    val observed = tracker.onRender(presentationTimeUs, renderedNs)
+                    if (!observed.excluded) {
+                        PerformanceDiagnostics.count(PerformanceCounter.VIDEO_RENDERED, token)
+                        if (observed.gapNs > 0) PerformanceDiagnostics.record(PerformanceMetric.VIDEO_RENDER_GAP, observed.gapNs, token)
+                        val timing = observed.timing
+                        if (timing != null) {
+                            PerformanceDiagnostics.record(PerformanceMetric.VIDEO_RELEASE_TO_RENDER, renderedNs - timing.releasedNs, token)
+                            PerformanceDiagnostics.record(PerformanceMetric.VIDEO_RECEIVE_TO_RENDER, renderedNs - timing.receivedNs, token)
+                        } else {
+                            PerformanceDiagnostics.count(PerformanceCounter.VIDEO_RENDER_UNMATCHED, token)
+                        }
+                    }
+                }
+            }, Handler(Looper.getMainLooper()))
+            renderCallbackAvailable = true
+        } catch (_: Exception) {
+            // Diagnostic support varies between codecs. Playback must continue unchanged.
+            PerformanceDiagnostics.count(PerformanceCounter.VIDEO_CALLBACK_UNAVAILABLE, token)
+        } catch (_: LinkageError) {
+            PerformanceDiagnostics.count(PerformanceCounter.VIDEO_CALLBACK_UNAVAILABLE, token)
+        }
+    }
+
+    private fun clearVideoTiming() {
+        val oldTracker = timingTracker
+        timingTracker = null
+        oldTracker?.invalidate()
+        if (renderListenerAttempted) {
+            try { timingCodec?.setOnFrameRenderedListener(null, null) }
+            catch (_: Exception) { /* A diagnostic cleanup failure must not affect playback. */ }
+            catch (_: LinkageError) { /* Vendor API mismatch. */ }
+        }
+        renderListenerAttempted = false
+        renderCallbackAvailable = false
+        timingCodec = null
+        timingToken = 0L
+    }
+
     private fun reportFailure(context: String, error: Throwable) {
         // A bad decoder can fail again on every frame; exported detail stays bounded per worker.
         if (failureReports >= 8) return
@@ -738,6 +894,7 @@ private class VideoDecoder(
     private fun releaseDecoder() {
         val codec = decoder
         decoder = null
+        clearVideoTiming()
         if (codec != null) {
             try {
                 codec.stop()

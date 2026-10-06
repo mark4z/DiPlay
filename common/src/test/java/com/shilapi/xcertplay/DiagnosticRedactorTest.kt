@@ -1,10 +1,32 @@
 package com.shilapi.xcertplay
 
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.file.Files
 
 class DiagnosticRedactorTest {
+    @Test fun everyPerformanceSnapshotLineAndPopulatedMetricSurvivesRedactionIntact() {
+        PerformanceDiagnostics.setEnabled(false)
+        PerformanceDiagnostics.setEnabled(true)
+        PerformanceDiagnostics.setEnabled(false)
+        val lines = PerformanceDiagnostics.snapshot().lineSequence().filter { it.isNotEmpty() }.toList()
+        assertTrue(lines.any { it.startsWith("touch_queue_wait ") })
+        assertTrue(lines.any { it.startsWith("video_receive_to_render ") })
+        assertTrue(lines.any { it.startsWith("video_queue_dropped=") })
+        assertTrue(lines.any { it.startsWith("touch_queue_depth=") })
+        for (line in lines) {
+            assertTrue("Performance snapshot line must fit the export cap: $line", line.length < 700)
+            assertEquals("Performance snapshot line was filtered: $line", line, DiagnosticRedactor.redact(line))
+            // Include the sampled form of every metric, not just the empty-capture form.
+            if (line.contains(" n=0 window=0 ")) {
+                val populated = line.substringBefore(' ') +
+                    " n=1000 window=512 p50=12.345 p95=260.123 p99=2100.456 max=3200.789 over250ms=50 over2000ms=12"
+                assertEquals(populated, DiagnosticRedactor.redact(populated))
+            }
+        }
+    }
+
     @Test fun additionalTroubleshootingMetadataSurvivesSavedReportWithoutPayloads() {
         val lines = listOf(
             "wireless startup elapsedMs=10000 authenticated=true wifiConfigs=2 startRequests=1 tcpAccepted=0 sessionActive=false waitingFor=WiFi_discovery_or_AirPlay_TCP startRequestAgeMs=9000 firstTcpAfterStartMs=none",
