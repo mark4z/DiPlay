@@ -71,6 +71,7 @@ import com.shilapi.xcertplay.airplay.CarPlayMediaEngine
 import com.shilapi.xcertplay.airplay.SafeAreaRect
 import com.shilapi.xcertplay.host.R
 import com.shilapi.xcertplay.location.AndroidCarPlayLocationProvider
+import com.shilapi.xcertplay.browser.BrowserOutput
 import com.shilapi.xcertplay.media.AndroidMediaSink
 import com.shilapi.xcertplay.media.CarPlayTouchMapper
 import com.shilapi.xcertplay.media.CarPlayVideoLayout
@@ -1880,6 +1881,10 @@ class CarPlayHostActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(12) },
         )
+
+        content.addView(BrowserOutputSettings.create(this), LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(20) })
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             content.addView(
@@ -3692,9 +3697,12 @@ class CarPlayHostActivity : ComponentActivity() {
         )
     }
 
-    private fun createMediaEngine(sink: AndroidMediaSink): CarPlayMediaEngine =
+    private fun createMediaEngine(sink: AndroidMediaSink, width: Int, height: Int): CarPlayMediaEngine =
         CarPlayMediaEngine(
-            sink = sink,
+            sink = BrowserOutput.tee(sink, width, height,
+                cancelTouches = { CarPlayBackgroundSession.snapshot()?.controller?.cancelBrowserTouch() }) { contacts ->
+                CarPlayBackgroundSession.snapshot()?.controller?.sendBrowserTouch(contacts)
+            },
             microphoneEnabled = microphoneAvailable,
             audioCaptureDirectory = audioCaptureDirectory(),
         )
@@ -3943,7 +3951,7 @@ class CarPlayHostActivity : ComponentActivity() {
         currentSurface?.let(::attachSurface)
         clusterSurface?.let { renderer.setSurface(SCREEN_TYPE_ALT, it) }
         MapMirrors.reapply()
-        val media = createMediaEngine(renderer)
+        val media = createMediaEngine(renderer, airPlayConfig.main.widthPixels, airPlayConfig.main.heightPixels)
         val pairings = AirPlayPersistence.loadPairings(this) { id, key ->
             AirPlayPersistence.savePairing(this, id, key)
         }
@@ -4455,6 +4463,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun shutdown(terminateProcess: Boolean, reason: String, completion: () -> Unit = {}) {
         if (!shuttingDown.compareAndSet(false, true)) { completion(); return }
+        BrowserOutput.stop()
         resetSidePanel()
         startupRetryBudget.disconnected()
         restartGeneration += 1
@@ -4555,6 +4564,7 @@ class CarPlayHostActivity : ComponentActivity() {
             }
             return true
         }
+        if (BrowserOutput.viewerConnected) return true
         val contacts = CarPlayTouchMapper.contacts(event, content)
         val queued = controller?.sendTouch(contacts) ?: false
         when (event.actionMasked) {

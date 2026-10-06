@@ -459,6 +459,55 @@ class CarPlayController(
         }
     }
 
+    private val browserTouchLock = Any()
+    private val browserTouchQueue = com.shilapi.xcertplay.browser.BrowserTouchQueue()
+    private var browserTouchScheduled = false
+    private var browserTouchSession: AirPlaySession? = null
+    private var browserTouchToken: Any? = null
+
+    /** Revocation discards queued gestures; only a release may follow an in-flight send. */
+    fun cancelBrowserTouch() = synchronized(browserTouchLock) {
+        browserTouchQueue.clear()
+        sendBrowserTouch(emptyList())
+    }
+
+    /** One worker and a bounded queue retaining DOWN/UP transitions; only moves coalesce. */
+    fun sendBrowserTouch(contacts: List<AirPlayContact>) = synchronized(browserTouchLock) {
+        if (closed) return@synchronized
+        val session = activeSession ?: return@synchronized
+        val token = session.mainScreenSessionToken() ?: return@synchronized
+        if (browserTouchSession !== session || browserTouchToken !== token) {
+            browserTouchQueue.clear()
+            browserTouchSession = session
+            browserTouchToken = token
+        }
+        browserTouchQueue.offer(contacts)
+        if (browserTouchScheduled) return@synchronized
+        browserTouchScheduled = true
+        try {
+            touchExecutor.execute {
+                while (true) {
+                    val next = synchronized(browserTouchLock) {
+                        val next = if (closed) null else browserTouchQueue.poll()
+                        if (next == null) {
+                            browserTouchQueue.clear()
+                            browserTouchScheduled = false
+                        }
+                        next?.let { Triple(browserTouchSession, browserTouchToken, it) }
+                    } ?: break
+                    val session = next.first
+                    if (!closed && session != null && activeSession === session &&
+                        session.mainScreenSessionToken() === next.second) {
+                        runCatching { session.sendTouch(next.third) }
+                    }
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            browserTouchQueue.clear()
+            browserTouchScheduled = false
+        }
+    }
+
     fun sendTouch(contacts: List<AirPlayContact>): Boolean {
         if (closed) return false
         val session = activeSession ?: return false
@@ -467,6 +516,9 @@ class CarPlayController(
         PerformanceDiagnostics.touchQueued(capture)
         return try {
             touchExecutor.execute {
+                // Ownership may change after the UI checks it but before this task runs.
+                // Browser cancellation is ordered on this same executor before remote input.
+                if (com.shilapi.xcertplay.browser.BrowserOutput.viewerConnected) return@execute
                 val startedNs = PerformanceDiagnostics.now(capture)
                 PerformanceDiagnostics.touchStarted(capture)
                 PerformanceDiagnostics.record(PerformanceMetric.TOUCH_QUEUE_WAIT, startedNs - enqueuedNs, capture)
