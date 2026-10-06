@@ -1,7 +1,9 @@
 name: Build authenticated debug APK
 
 on:
-  # Every manual run publishes an APK containing EXTRACTABLE identity for 1 day.
+  push:
+    branches: [main, feature/browser-carplay]
+  pull_request:
   workflow_dispatch:
 
 permissions:
