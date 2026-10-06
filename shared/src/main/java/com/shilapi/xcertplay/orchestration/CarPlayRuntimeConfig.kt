@@ -68,6 +68,10 @@ class CarPlayRuntimeConfig(
     val wifiP2pPreferredChannel: Int = WifiP2pChannels.AUTO,
     val existingWifiSsid: String = "",
     val existingWifiPassphrase: String = "",
+    /** Optional Android shell enhancement; core connections do not require ADB. */
+    val allowAdbWifiScanPause: Boolean = false,
+    /** Background-capable hosts may return to Android Home; foreground hosts handle the callback. */
+    val launchSystemHomeOnHostUiRequest: Boolean = true,
 ) {
     init {
         require(iphoneDevices.all { it.vendorId == APPLE_VENDOR_ID }) {

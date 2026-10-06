@@ -1,5 +1,12 @@
 # DiPlay
 
+> **此 fork 新增实验性的通用 Android 构建目标。** 使用 `:generic:assembleDebug` 构建独立安装的
+> 通用接收端（`com.shihab.diplay.generic`），不打包 BYD 适配、HUD 图标和专属设置。
+> 原有 mobile/automotive 构建保留 BYD 功能。详见[范围、构建和验证说明](docs/GENERIC_ANDROID.md)。
+> 默认源码 APK 不含认证身份，尚不能据此保证真实设备兼容性。
+
+以下内容为保留的 BYD 版本说明。
+
 为兼容的比亚迪安卓车机提供有线及无线 CarPlay，采用 DiAuto 风格界面。
 
 > 这些项目专注于比亚迪汽车。它们可能在其他品牌上运行，但其他品牌不在支持范围内，也没有增加支持或修复其品牌特定兼容性问题的计划。

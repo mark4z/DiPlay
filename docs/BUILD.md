@@ -154,3 +154,31 @@ this workflow. A successful build is not a physical CarPlay connectivity test.
 
 See GitHub's [Secrets guide](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
 and [artifact access guide](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts).
+
+
+## Generic Android build
+
+The separate `:generic` app selects the `generic` flavor of `:shared`, has no dependency on
+`:common`, and uses the independent package `com.shihab.diplay.generic`. The existing `:mobile`
+and `:automotive` hosts explicitly select the `byd` flavor and keep their original package IDs.
+The legacy `:shared:testDebugUnitTest` entry point runs both shared flavor suites.
+
+```sh
+python3 scripts/check_public_tree.py
+python3 scripts/check_generic_boundary.py
+python3 -m unittest discover -s scripts/tests -v
+./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :generic:testDebugUnitTest \
+  :generic:lintDebug :mobile:lintDebug :automotive:lintDebug \
+  :generic:assembleDebug :mobile:assembleDebug :automotive:assembleDebug
+python3 scripts/check_generic_boundary.py \
+  --apk generic/build/outputs/apk/debug/generic-debug.apk --source-only
+```
+
+The ordinary generic APK contains no accessory identity. Core authentication is unchanged:
+explicit local runtime assets, CH341 hardware, board I²C, and remote authentication remain options.
+`generic:assembleStandaloneDebug` validates the same explicit `DIPLAY_AUTH_ASSETS_DIR` input as
+mobile, but no generic build command imports or extracts an identity automatically. Do not publish
+an authenticated APK unless exposing its extractable identity is intended and authorized.
+
+See [Generic Android scope and validation](GENERIC_ANDROID.md) for supported host behavior,
+intentional omissions, and the physical-device checklist.

@@ -39,3 +39,6 @@ release-signing.properties
 *.key
 *.apk
 *.aab
+
+# Python validation caches
+__pycache__/

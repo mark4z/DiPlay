@@ -1,5 +1,12 @@
 # DiPlay
 
+> **This fork also provides an experimental generic Android target.** Build `:generic:assembleDebug`
+> for a separately installed, vendor-free host (`com.shihab.diplay.generic`). Existing mobile/automotive
+> builds keep BYD integration. See [generic scope, build and validation](docs/GENERIC_ANDROID.md).
+> Source-only APKs contain no accessory identity; physical compatibility is not yet established.
+
+The remainder of this README describes the retained BYD release.
+
 **CarPlay for compatible BYD Android head units.** Wired and wireless, with the familiar DiAuto interface. Independent app: `com.shihab.diplay`.
 
 > **BYD support scope:** These projects focus on BYD cars. They may work on other brands, but other brands are unsupported and there are no plans to add support or fix brand-specific incompatibilities.

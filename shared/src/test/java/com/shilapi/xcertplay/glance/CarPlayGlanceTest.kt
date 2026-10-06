@@ -2,7 +2,7 @@ package com.shilapi.xcertplay.glance
 
 import com.shilapi.xcertplay.iap2.body.Iap2BodyBuilder
 import com.shilapi.xcertplay.iap2.message.Iap2Messages
-import com.shilapi.xcertplay.hud.BydHudRouteState
+import com.shilapi.xcertplay.iap2.state.Iap2RouteState
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -101,10 +101,26 @@ class CarPlayGlanceTest {
         assertNull(CarPlayGlance.snapshot().song)
     }
 
+    @Test
+    fun songMetadataIsNotTruncatedToAVehicleDisplayLimit() {
+        CarPlayGlance.setConnected(true)
+        val title = "🎵 Long title ".repeat(30).trim()
+        val artist = "Artist ".repeat(30).trim()
+        CarPlayGlance.onFrame(frame(0x5001) {
+            group(0) { string(1, title); string(12, artist) }
+        })
+        assertEquals("$title — $artist", CarPlayGlance.snapshot().song)
+
+        val seen = mutableListOf<CarPlayGlance.Snapshot>()
+        CarPlayGlance.listener = { seen += it }
+        CarPlayGlance.onFrame(frame(0x5001) { group(0) { string(12, "New artist") } })
+        assertEquals("$title — New artist", seen.single().song)
+    }
+
     // Inject the route parser's monotonic clock rather than waiting 30 seconds in each test.
     private fun withRouteClock(test: ((Long) -> Unit) -> Unit) {
         val route = CarPlayGlance.javaClass.getDeclaredField("route").apply { isAccessible = true }
-            .get(CarPlayGlance) as BydHudRouteState
+            .get(CarPlayGlance) as Iap2RouteState
         val clock = route.javaClass.getDeclaredField("nanoTime").apply { isAccessible = true }
         val original = clock.get(route)
         var now = 1_000_000_000L

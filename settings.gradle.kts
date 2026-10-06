@@ -31,3 +31,6 @@ include(":maphost")
 project(":maphost").projectDir = file("samples/maphost")
 include(":home")
 project(":home").projectDir = file("samples/home")
+
+// Vendor-free Android host; independent install/data from the vehicle-specific apps.
+include(":generic")

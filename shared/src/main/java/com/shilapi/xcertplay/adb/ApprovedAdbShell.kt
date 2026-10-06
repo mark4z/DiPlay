@@ -1,4 +1,4 @@
-package com.shilapi.xcertplay.hud
+package com.shilapi.xcertplay.adb
 
 import android.content.Context
 import android.os.SystemClock
@@ -10,7 +10,7 @@ import com.shilapi.xcertplay.adb.LocalAdb
  * A lazily opened adb shell on the head unit for background reads. It never asks for approval, so
  * the car's dialog cannot appear while driving; a refused or missing adbd is retried every 30 s.
  */
-internal class BydAdbShell(private val tag: String) {
+internal class ApprovedAdbShell(private val tag: String) {
     private var adb: LocalAdb? = null
     private var retryAtMillis = 0L
     private var unavailableLogged = false
@@ -45,7 +45,7 @@ internal class BydAdbShell(private val tag: String) {
 }
 
 /** Reads `service call` replies such as `Result: Parcel(00000000 00000002 '........')`. */
-internal object BydParcel {
+internal object ShellParcel {
     /** The value after a zero exception code, as its 32 raw bits. */
     fun value(output: String?): Int? {
         val words = words(output)

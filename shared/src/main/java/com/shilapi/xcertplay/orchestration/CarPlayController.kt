@@ -34,7 +34,8 @@ import com.shilapi.xcertplay.airplay.AirPlaySessionListener
 import com.shilapi.xcertplay.airplay.PairingStore
 import com.shilapi.xcertplay.airplay.VideoInCar
 import com.shilapi.xcertplay.airplay.VideoPlaybackDelivery
-import com.shilapi.xcertplay.hud.BydNavigationOutputs
+import com.shilapi.xcertplay.platform.CarPlayVendorIntegration
+import com.shilapi.xcertplay.platform.DefaultVendorIntegration
 import com.shilapi.xcertplay.iap2.session.Iap2Session
 import com.shilapi.xcertplay.mfi.Iap2MfiAuthenticationClient
 import com.shilapi.xcertplay.mfi.MfiAuthenticationClient
@@ -163,14 +164,15 @@ class CarPlayController(
     private val clearPairRecord: () -> Unit = {},
     private val locationProvider: Iap2LocationProvider? = null,
     private val vehicleStatusProvider: com.shilapi.xcertplay.transport.VehicleStatusProvider? = null,
+    private val vendorIntegration: CarPlayVendorIntegration = DefaultVendorIntegration.create(),
 ) : Closeable {
     init {
         require(!config.locationReportingEnabled || locationProvider != null) {
             "A location provider is required when location reporting is enabled"
         }
         WifiScanPause.restoreIfNeeded(context.applicationContext)
-        BydNavigationOutputs.start(context.applicationContext)
-        BydNavigationOutputs.setClusterStreamControl(::applyClusterUi)
+        vendorIntegration.start(context.applicationContext)
+        vendorIntegration.setClusterStreamControl(::applyClusterUi)
     }
 
     private enum class Phase { IDLE, MFI, WIRELESS, IPHONE, REENUMERATION, DATAPATHS, CONTROL }
@@ -287,7 +289,7 @@ class CarPlayController(
         override fun onSessionActive(session: AirPlaySession) {
             val replacement = activeSession !== session
             if (replacement) {
-                BydNavigationOutputs.start(appContext)
+                vendorIntegration.start(appContext)
                 com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(true)
                 // The gear may have changed since /info.
                 if (videoListener != null) {
@@ -307,7 +309,7 @@ class CarPlayController(
         override fun onSessionEnded(session: AirPlaySession) {
             if (activeSession === session) {
                 activeSession = null
-                BydNavigationOutputs.endNow(preserveTurnOverlay = !closed && config.transport == CarPlayTransport.WIRELESS)
+                vendorIntegration.endNow(preserveTurnOverlay = !closed && config.transport == CarPlayTransport.WIRELESS)
                 com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(false)
                 videoListener?.onVideoSessionEnded()
                 synchronized(playbackStatus) {
@@ -335,16 +337,18 @@ class CarPlayController(
             uiListener?.onDeviceInfo(session, info)
         }
 
-        // The user tapped the car icon in CarPlay: show the head unit's own menu, like its Home button.
-        // The session keeps running in the background, so returning to DiPlay resumes CarPlay.
+        // Background-capable hosts keep the legacy Home behavior. Foreground-only hosts must
+        // handle this in their own UI, or launching Home would tear down the requested session.
         override fun onHostUiRequested(session: AirPlaySession) {
-            debugLog("CarPlay requested the car UI; opening the head-unit home screen")
-            runCatching {
-                appContext.startActivity(
-                    Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }.onFailure { debugLog("Car home screen could not open: ${it.javaClass.simpleName}") }
+            if (config.launchSystemHomeOnHostUiRequest) {
+                debugLog("CarPlay requested the host UI; opening Android Home")
+                runCatching {
+                    appContext.startActivity(
+                        Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }.onFailure { debugLog("Android Home could not open: ${it.javaClass.simpleName}") }
+            }
             uiListener?.onHostUiRequested(session)
         }
 
@@ -594,9 +598,9 @@ class CarPlayController(
         val teardownStarted = System.nanoTime()
         connectionDiagnostic("teardown begin transport=${config.transport}")
         videoGate?.close()
-        BydNavigationOutputs.endNow()
+        vendorIntegration.endNow()
         com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(false)
-        BydNavigationOutputs.clearClusterStreamControl(::applyClusterUi)
+        vendorIntegration.clearClusterStreamControl(::applyClusterUi)
         closeReceivers()
         availabilityPollGeneration.incrementAndGet()
         wirelessGeneration.incrementAndGet()
@@ -734,9 +738,9 @@ class CarPlayController(
         }
     }
 
-    // HUD (SOME/IP) and cluster (AMap broadcast) keep separate state so one failing cannot stall the other.
+    // Optional platform outputs and neutral metadata state consume the same immutable phone frame.
     private fun onRouteFrame(frame: com.shilapi.xcertplay.iap2.wire.Iap2Frame) {
-        BydNavigationOutputs.onFrame(frame)
+        vendorIntegration.onFrame(frame)
         com.shilapi.xcertplay.glance.CarPlayGlance.onFrame(frame)
         synchronized(playbackStatus) {
             val previousPlaying = playbackStatus.playing
@@ -2138,7 +2142,7 @@ class CarPlayController(
 
     // Kept across reconnects within this controller: resuming between attempts would start a scan.
     private fun pauseWifiScans(backend: WirelessHotspotBackend) = synchronized(this) {
-        if (closed || !WifiScanPause.eligible(backend)) return@synchronized
+        if (closed || !config.allowAdbWifiScanPause || !WifiScanPause.eligible(backend)) return@synchronized
         (wifiScanPause ?: WifiScanPause(appContext, ::debugLog).also { wifiScanPause = it }).pause()
     }
 

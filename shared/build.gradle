@@ -21,6 +21,11 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+    flavorDimensions 'vendor'
+    productFlavors {
+        generic { dimension 'vendor' }
+        byd { dimension 'vendor' }
+    }
     ndkVersion = '28.2.13676358'
     externalNativeBuild {
         ndkBuild {
@@ -38,4 +43,10 @@ dependencies {
     implementation libs.jmdns
     testImplementation libs.junit
     testImplementation 'org.robolectric:robolectric:4.17'
+}
+
+// Preserve the public CI entry point, with both vendor boundaries tested.
+tasks.register('testDebugUnitTest') {
+    group = 'verification'
+    dependsOn 'testGenericDebugUnitTest', 'testBydDebugUnitTest'
 }

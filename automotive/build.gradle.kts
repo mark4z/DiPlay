@@ -10,6 +10,8 @@ android {
     }
 
     defaultConfig {
+        // Existing hosts retain their vendor integration and package identity.
+        missingDimensionStrategy("vendor", "byd")
         applicationId = "com.shilapi.xcertplay"
         minSdk = 28
         targetSdk = 37
