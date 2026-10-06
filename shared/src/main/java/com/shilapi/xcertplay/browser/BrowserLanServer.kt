@@ -486,9 +486,10 @@ internal object BrowserLanProtocol {
     fun requestsApproval(payload: ByteArray): Boolean {
         // Deliberately narrow v2 request grammar: exactly these two fields, either order.
         // No old token, extra field, nested JSON, duplicate key or coercion can authorize.
+        // Escape both literal braces: Android ICU rejects a bare closing brace, unlike the JVM.
         val text = utf8(payload)
-        return Regex("""\s*\{\s*"type"\s*:\s*"requestApproval"\s*,\s*"version"\s*:\s*2\s*}\s*""").matches(text) ||
-            Regex("""\s*\{\s*"version"\s*:\s*2\s*,\s*"type"\s*:\s*"requestApproval"\s*}\s*""").matches(text)
+        return Regex("""\s*\{\s*"type"\s*:\s*"requestApproval"\s*,\s*"version"\s*:\s*2\s*\}\s*""").matches(text) ||
+            Regex("""\s*\{\s*"version"\s*:\s*2\s*,\s*"type"\s*:\s*"requestApproval"\s*\}\s*""").matches(text)
     }
 
     private fun byte(input: InputStream): Int = input.read().also { if (it < 0) throw EOFException() }
