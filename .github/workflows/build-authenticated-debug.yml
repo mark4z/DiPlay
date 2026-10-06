@@ -1,9 +1,6 @@
 name: Build authenticated debug APK
 
 on:
-  push:
-    branches: [main, feature/browser-carplay]
-  pull_request:
   workflow_dispatch:
 
 permissions:
