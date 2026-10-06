@@ -10,7 +10,7 @@ permissions:
 jobs:
   source-checks:
     if: >-
-      github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/refactor/remove-byd-hardware')
+      github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/browser-carplay')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -54,7 +54,7 @@ jobs:
           ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :mobile:lintDebug --no-daemon --build-cache --no-configuration-cache --no-scan --stacktrace
       # Explicit save, before the credential job can start. No post-job cache hook.
       - name: Save only credential-free source cache
-        if: ${{ success() && github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/refactor/remove-byd-hardware') }}
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/browser-carplay') }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: |
@@ -66,7 +66,7 @@ jobs:
   build:
     needs: source-checks
     if: >-
-      github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/refactor/remove-byd-hardware')
+      github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/browser-carplay')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
