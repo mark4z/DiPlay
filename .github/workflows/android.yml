@@ -14,6 +14,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Reject credential files in public source
         run: python3 scripts/check_public_tree.py
+      - name: Test authentication helpers with synthetic data only
+        run: python3 -m unittest discover -s scripts/tests -v
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
