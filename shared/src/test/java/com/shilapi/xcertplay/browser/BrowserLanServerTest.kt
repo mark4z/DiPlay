@@ -162,15 +162,16 @@ class BrowserLanServerTest {
     @Test fun outboundQueueCountsInflightFrameAndOwnsCopies() {
         val queue = BrowserLanQueue()
         val mutable = byteArrayOf(42)
-        assertTrue(queue.offer(2, mutable))
+        assertTrue(queue.offer(2, mutable, keyFrame = true))
         mutable[0] = 0
         val active = queue.take()!!
         assertEquals(42.toByte(), active.payload[0])
-        assertTrue(queue.offer(2, byteArrayOf(1)))
+        assertTrue(queue.offer(2, byteArrayOf(1), keyFrame = true))
         assertTrue(queue.offer(2, byteArrayOf(2)))
         assertFalse(queue.offer(2, byteArrayOf(3)))
         queue.complete(active)
-        assertTrue(queue.offer(2, byteArrayOf(3)))
+        assertFalse(queue.offer(2, byteArrayOf(3)))
+        assertTrue(queue.offer(2, byteArrayOf(4), keyFrame = true))
         queue.close()
         assertNull(queue.take())
         assertFalse(queue.offer(2, byteArrayOf()))
@@ -180,18 +181,19 @@ class BrowserLanServerTest {
         val queue = BrowserLanQueue()
         val max = ByteArray(4 * 1024 * 1024)
         assertFalse(queue.offer(2, ByteArray(max.size + 1)))
-        assertTrue(queue.offer(2, max))
+        assertTrue(queue.offer(2, max, keyFrame = true))
         val active = queue.take()!!
-        assertTrue(queue.offer(2, max))
+        assertTrue(queue.offer(2, max, keyFrame = true))
         assertFalse(queue.offer(2, byteArrayOf(1)))
         queue.complete(active)
-        assertTrue(queue.offer(2, byteArrayOf(1)))
+        assertFalse(queue.offer(2, byteArrayOf(1)))
+        assertTrue(queue.offer(2, byteArrayOf(1), keyFrame = true))
         queue.close()
     }
 
     @Test fun queueClosingDropsPendingVideoAndWakesWriter() {
         val queue = BrowserLanQueue()
-        assertTrue(queue.offer(2, byteArrayOf(1)))
+        assertTrue(queue.offer(2, byteArrayOf(1), keyFrame = true))
         queue.finishWithClose(byteArrayOf(3, 0xe8.toByte()))
         assertFalse(queue.offer(2, byteArrayOf(2)))
         val closing = queue.take()!!
@@ -215,7 +217,7 @@ class BrowserLanServerTest {
             harness.upgrade()
             assertFalse(harness.connection.send(2, byteArrayOf(42)))
             harness.authenticate()
-            assertTrue(harness.connection.send(2, byteArrayOf(42)))
+            assertTrue(harness.connection.send(2, byteArrayOf(42), keyFrame = true))
             val video = harness.readServerFrame()
             assertEquals(2, video.opcode)
             assertArrayEquals(byteArrayOf(42), video.payload)
@@ -301,7 +303,7 @@ class BrowserLanServerTest {
             harness.upgrade()
             harness.authenticate()
             // The client deliberately never reads this video.
-            harness.connection.send(2, ByteArray(BrowserLanProtocol.MAX_BINARY_BYTES))
+            harness.connection.send(2, ByteArray(BrowserLanProtocol.MAX_BINARY_BYTES), keyFrame = true)
             harness.connection.stop()
             assertTrue(harness.finished.await(2, TimeUnit.SECONDS))
             assertEquals(1, harness.disconnected.get())

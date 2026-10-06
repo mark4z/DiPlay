@@ -64,7 +64,7 @@ port. User permission must be granted personally in the browser's normal prompt.
   This version is unsuitable for hostile/shared Wi-Fi; it does not claim TLS security.
 - No session values are stored in preferences, URL query, local/session storage, or
   logs. No network discovery, telemetry, third-party JS, or automatic reconnection.
-- Bounded outbound queues disconnect slow viewers instead of accumulating latency.
+- Video stays bounded to three frames / 8 MiB including the in-flight frame. Transient overflow discards queued dependencies and resumes only at a fresh keyframe, without disconnecting. Control messages have separate bounded credits; persistently blocked writes still disconnect after five seconds.
   Decoder overload waits for a new keyframe. Socket deadlines, input size limits,
   frame validation, origin validation and rate limits restrict resource use.
 - Microsecond timestamps are monotonic Android receipt times: the existing media

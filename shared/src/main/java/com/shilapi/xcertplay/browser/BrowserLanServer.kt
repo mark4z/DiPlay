@@ -32,8 +32,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Callbacks run serially on the reader thread and must not block. onDisconnected is
  * called once for an authenticated session, including close()/timeouts. Sends copy
- * their payload, never do socket writes, and fail/close a slow viewer rather than
- * accumulating video. Create a new server (and token) after close().
+ * their payload and never do socket writes. Video pressure drops queued dependencies
+ * until a fresh keyframe; a persistently blocked writer still closes on its deadline.
+ * Create a new server (and token) after close().
  */
 class BrowserLanServer(
     private val bindAddress: InetAddress,
@@ -81,16 +82,16 @@ class BrowserLanServer(
         }
     }
 
-    fun sendText(text: String): Boolean {
+    fun sendText(text: String, resetVideo: Boolean = false): Boolean {
         if (text.length > BrowserLanProtocol.MAX_TEXT_BYTES) return false
         val bytes = text.toByteArray(Charsets.UTF_8)
         if (bytes.size > BrowserLanProtocol.MAX_TEXT_BYTES) return false
-        return owner?.send(1, bytes) ?: false
+        return owner?.send(1, bytes, resetVideo = resetVideo) ?: false
     }
 
-    fun sendBinary(bytes: ByteArray): Boolean {
+    fun sendBinary(bytes: ByteArray, keyFrame: Boolean): Boolean {
         if (bytes.size > BrowserLanProtocol.MAX_BINARY_BYTES) return false
-        return owner?.send(2, bytes) ?: false
+        return owner?.send(2, bytes, keyFrame = keyFrame) ?: false
     }
 
     override fun close() {
@@ -156,10 +157,11 @@ internal class BrowserLanConnection(
         Thread(::readLoop, "CarPlay-LAN-reader").apply { isDaemon = true; start() }
     }
 
-    fun send(opcode: Int, bytes: ByteArray): Boolean {
+    fun send(opcode: Int, bytes: ByteArray, keyFrame: Boolean = false, resetVideo: Boolean = false): Boolean {
         if (!authenticated || stopped.get()) return false
-        if (outbound.offer(opcode, bytes)) return true
-        stop()
+        if (outbound.offer(opcode, bytes, keyFrame, resetVideo)) return true
+        // A missed video dependency needs a fresh keyframe, not a new WebSocket.
+        if (opcode != 2) stop()
         return false
     }
 
@@ -473,57 +475,108 @@ internal object BrowserLanProtocol {
     }
 }
 
-/** Credits include the writer's in-flight frame, so a blocked socket cannot hide a fourth allocation. */
+/**
+ * Independent bounded credits include the writer's in-flight frame. Control is FIFO and
+ * takes precedence over pending video; a config/status boundary must set resetVideo so
+ * older queued video cannot follow it. Keyframe metadata comes from the media producer,
+ * not from inspecting/rewriting the opaque binary packet here.
+ */
 internal class BrowserLanQueue {
     private val lock = Object()
-    private val frames = ArrayDeque<BrowserLanProtocol.Frame>()
-    private var count = 0
-    private var bytes = 0L
+    private val video = ArrayDeque<BrowserLanProtocol.Frame>()
+    private val control = ArrayDeque<BrowserLanProtocol.Frame>()
+    private var videoCount = 0
+    private var videoBytes = 0L
+    private var controlCount = 0
+    private var controlBytes = 0L
+    private var waitingForKey = true
     private var closed = false
 
-    fun offer(opcode: Int, payload: ByteArray): Boolean = synchronized(lock) {
-        if (closed || payload.size > BrowserLanProtocol.MAX_BINARY_BYTES || count >= 3 ||
-            bytes + payload.size > 8L * 1024 * 1024
-        ) return@synchronized false
-        frames.addLast(BrowserLanProtocol.Frame(opcode, payload.copyOf()))
-        count++
-        bytes += payload.size
+    fun offer(opcode: Int, payload: ByteArray, keyFrame: Boolean = false, resetVideo: Boolean = false): Boolean = synchronized(lock) {
+        if (closed) return@synchronized false
+        if (opcode == 2) {
+            if (payload.size > BrowserLanProtocol.MAX_BINARY_BYTES || videoCount >= MAX_VIDEO_FRAMES ||
+                videoBytes + payload.size > MAX_VIDEO_BYTES
+            ) {
+                discardVideo()
+                waitingForKey = true
+            }
+            if (payload.size > BrowserLanProtocol.MAX_BINARY_BYTES || (waitingForKey && !keyFrame)) {
+                return@synchronized false
+            }
+            // After discarding, at most one <=4 MiB frame remains in flight; a fresh
+            // keyframe always fits without borrowing the control queue's credits.
+            video.addLast(BrowserLanProtocol.Frame(opcode, payload.copyOf()))
+            videoCount++
+            videoBytes += payload.size
+            waitingForKey = false
+        } else {
+            val limit = if (opcode >= 8) 125 else BrowserLanProtocol.MAX_TEXT_BYTES
+            if (payload.size > limit || controlCount >= MAX_CONTROL_FRAMES ||
+                controlBytes + payload.size > MAX_CONTROL_BYTES
+            ) return@synchronized false
+            if (resetVideo) {
+                discardVideo()
+                waitingForKey = true
+            }
+            control.addLast(BrowserLanProtocol.Frame(opcode, payload.copyOf()))
+            controlCount++
+            controlBytes += payload.size
+        }
         lock.notifyAll()
         true
     }
 
     fun take(): BrowserLanProtocol.Frame? = synchronized(lock) {
-        while (frames.isEmpty() && !closed) lock.wait()
-        if (frames.isEmpty()) null else frames.removeFirst()
+        while (control.isEmpty() && video.isEmpty() && !closed) lock.wait()
+        when {
+            control.isNotEmpty() -> control.removeFirst()
+            video.isNotEmpty() -> video.removeFirst()
+            else -> null
+        }
     }
 
     fun complete(frame: BrowserLanProtocol.Frame) = synchronized(lock) {
-        count--
-        bytes -= frame.payload.size
+        if (frame.opcode == 2) {
+            videoCount--
+            videoBytes -= frame.payload.size
+        } else {
+            controlCount--
+            controlBytes -= frame.payload.size
+        }
     }
 
     fun finishWithClose(payload: ByteArray) = synchronized(lock) {
         if (closed) return@synchronized
-        discardQueued()
-        frames.addLast(BrowserLanProtocol.Frame(8, payload.copyOf()))
-        count++
-        bytes += payload.size
+        discardVideo()
+        discardControl()
+        control.addLast(BrowserLanProtocol.Frame(8, payload.copyOf()))
+        controlCount++
+        controlBytes += payload.size
         closed = true
         lock.notifyAll()
     }
 
     fun close() = synchronized(lock) {
         closed = true
-        discardQueued()
+        discardVideo()
+        discardControl()
         lock.notifyAll()
     }
 
-    private fun discardQueued() {
-        while (frames.isNotEmpty()) {
-            val frame = frames.removeFirst()
-            count--
-            bytes -= frame.payload.size
-        }
+    private fun discardVideo() {
+        while (video.isNotEmpty()) complete(video.removeFirst())
+    }
+
+    private fun discardControl() {
+        while (control.isNotEmpty()) complete(control.removeFirst())
+    }
+
+    companion object {
+        private const val MAX_VIDEO_FRAMES = 3
+        private const val MAX_VIDEO_BYTES = 8L * 1024 * 1024
+        private const val MAX_CONTROL_FRAMES = 16
+        private const val MAX_CONTROL_BYTES = 64L * 1024
     }
 }
 

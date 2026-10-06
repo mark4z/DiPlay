@@ -102,7 +102,7 @@ object BrowserOutput {
                     waitingForKey = true
                     if (format == null) {
                         releaseTouches()
-                        if (viewerConnected) server?.sendText("{\"type\":\"error\",\"code\":\"unsupported-config\"}")
+                        if (viewerConnected) server?.sendText("{\"type\":\"error\",\"code\":\"unsupported-config\"}", resetVideo = true)
                         return@synchronized
                     }
                     sendConfig()
@@ -123,7 +123,7 @@ object BrowserOutput {
                     if (generation != mediaGeneration) return@synchronized
                     ++streamId
                     format = null; recovery = null; waitingForKey = true; releaseTouches()
-                    server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}")
+                    server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
                 }
             }
         }
@@ -133,25 +133,27 @@ object BrowserOutput {
         if (!viewerConnected) return
         val f = format ?: return
         server?.sendText(JSONObject().put("type", "config").put("codec", f.codec)
-            .put("width", width).put("height", height).put("streamId", streamId).toString())
+            .put("width", width).put("height", height).put("streamId", streamId).toString(), resetVideo = true)
     }
 
     private fun frame(bytes: ByteArray, generation: Long) = synchronized(lock) {
         if (generation != mediaGeneration) return
         val transport = server ?: return
-        if (!viewerConnected || bytes.size > 4 * 1024 * 1024) return
+        if (!viewerConnected) return
+        if (bytes.size > 4 * 1024 * 1024) { waitingForKey = true; requestKeyframe(); return }
         val f = format ?: return
         val annexB = MediaCodecSupport.toAnnexB(bytes)
         if (annexB.isEmpty()) { waitingForKey = true; requestKeyframe(); return }
         val key = MediaCodecSupport.isRandomAccess(annexB, codec)
         if (waitingForKey && !key) { requestKeyframe(); return }
         val prefix = if (key) f.parameterSets else ByteArray(0)
-        if (annexB.size + prefix.size + 9 > 4 * 1024 * 1024) return
+        if (annexB.size + prefix.size + 9 > 4 * 1024 * 1024) { waitingForKey = true; requestKeyframe(); return }
         val timestamp = maxOf((System.nanoTime() - timestampOriginNs) / 1000, lastTimestamp + 1)
         lastTimestamp = timestamp
         val packet = ByteBuffer.allocate(9 + prefix.size + annexB.size)
             .put(if (key) 1.toByte() else 2.toByte()).putLong(timestamp).put(prefix).put(annexB).array()
-        waitingForKey = !transport.sendBinary(packet)
+        waitingForKey = !transport.sendBinary(packet, keyFrame = key)
+        if (waitingForKey) requestKeyframe()
     }
 
     private fun requestKeyframe() {
