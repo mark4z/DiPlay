@@ -71,6 +71,7 @@ internal object BydHudBridge {
     }
 
     fun initialize(appContext: Context) = synchronized(lock) {
+        if (!BydHardwareIntegration.ENABLED) return@synchronized
         if (context == null) context = appContext.applicationContext
         bindLocked()
         if (!senderStarted) {

@@ -1052,13 +1052,30 @@ class CarPlayHostActivity : ComponentActivity() {
         // Fallback for head units without physical cluster projection (e.g. DiLink 3.0/3.5 without digital cluster):
         // Provide standard virtual cluster stream (1280x720, 16:9 aspect) for CenterMapOverlay and MapEmbedService.
         MapMirrors.streamAspect = MapMirrors.VIRTUAL_STREAM_ASPECT
-        return CarPlayClusterDisplay.config(
+        val requestedScale = AirPlayPersistence.loadVirtualMapScalePercent(this)
+        fun virtualStream(scale: Int) = CarPlayClusterDisplay.config(
             widthPixels = 1280,
             heightPixels = 720,
-            scalePercent = 100,
+            scalePercent = scale,
+            horizontalStep = AirPlayPersistence.loadClusterMarkerHorizontalStep(this),
+            verticalStep = AirPlayPersistence.loadClusterMarkerVerticalStep(this),
             content = AirPlayPersistence.loadClusterContent(this),
             baseSafeArea = CarPlayClusterDisplay.VIRTUAL_SAFE_AREA_PERCENT,
-        ).also {
+        )
+        val requested = virtualStream(requestedScale)
+        val effective = if (requestedScale > 100) {
+            val support = largerCanvasSupport(requested)
+            appendLog("Virtual map: ${support.details}")
+            if (support.supported) requested else {
+                val native = virtualStream(100)
+                val fallback = if (largerCanvasSupport(native).supported) 100
+                    else CarPlayClusterDisplay.STREAM_SCALE_PERCENT
+                AirPlayPersistence.saveClusterMapScalePercent(this, fallback)
+                appendLog("Virtual map: scale $requestedScale% refused (${support.reason}); using $fallback%")
+                virtualStream(fallback)
+            }
+        } else requested
+        return effective.also {
             appendLog("Cluster map: requesting virtual ${it.widthPixels}x${it.heightPixels} (16:9) stream for launcher/center card")
         }
     }

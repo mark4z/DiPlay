@@ -117,16 +117,17 @@ internal object BydClusterSong {
     private var firstLogged = false // writer thread
 
     fun attach(appContext: Context) {
+        if (!BydHardwareIntegration.ENABLED) return
         context = appContext.applicationContext
     }
 
     /** NowPlayingUpdate frames; the song is followed even while the setting is off, so it can show at once. */
     fun onFrame(frame: Iap2Frame) {
-        val app = context ?: return
         synchronized(state) {
             val previous = state.current()
             state.accept(frame)
             val song = state.current()
+            val app = context ?: return
             if (song == previous || !BydOutputSettings.clusterSong(app)) return
             if (song == null) {
                 stop(app)
@@ -192,10 +193,9 @@ internal object BydClusterSong {
 
     /** The session ended: forget the song and stop the card DiPlay set. */
     fun end() {
-        val app = context ?: return
         synchronized(state) {
             state.clear()
-            stop(app)
+            context?.let(::stop)
         }
     }
 
@@ -296,6 +296,7 @@ object BydClusterSongTool {
 
     @JvmStatic
     fun main(args: Array<String>) {
+        if (!BydHardwareIntegration.ENABLED) return
         try {
             write(args)
         } catch (error: Throwable) {

@@ -12,6 +12,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Reject credential files in public source
         run: python3 scripts/check_public_tree.py
       - name: Test authentication helpers with synthetic data only
@@ -24,8 +26,15 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          # Pull requests may restore public source caches but never write them.
+          cache-read-only: ${{ github.event_name != 'push' && github.event_name != 'workflow_dispatch' }}
+          gradle-home-cache-includes: |
+            caches/modules-2
+            caches/build-cache-1
+            wrapper/dists
       - name: Unit tests, lint and source-only debug build
-        run: ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :home:testDebugUnitTest :mobile:lintDebug :home:lintDebug :maphost:lintDebug :mobile:assembleDebug :home:assembleDebug :maphost:assembleDebug --stacktrace
+        run: ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :home:testDebugUnitTest :mobile:lintDebug :home:lintDebug :maphost:lintDebug :mobile:assembleDebug :home:assembleDebug :maphost:assembleDebug --build-cache --no-configuration-cache --no-scan --stacktrace
       - name: Test reports
         if: always()
         uses: actions/upload-artifact@v4

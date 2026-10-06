@@ -52,6 +52,19 @@ class BydSettingsReconnectTest {
         BydVehicleFieldStore.clearMemoryForTests()
     }
 
+    @Test fun disabledHardwareStatusCannotReconnectAnOldEnabledVehiclePreference() {
+        backend.result = BydAdbAccess.Status(BydAdbAccess.State.DISABLED)
+        beginBatteryReconnect()
+        renderHotspotCard()
+        backend.complete()
+        assertEquals(0, reconnects)
+        assertNull(shadowOf(activity).nextStartedActivity)
+        assertTrue(BydOutputSettings.batteryToIphone(activity))
+        assertFalse(BydOutputSettings.batteryToIphoneActive(activity))
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "adbCheckInProgress"))
+    }
+
+    // The remaining injected tests retain callback/cancellation behavior of the dormant helper.
     @Test fun theProgressRenderDoesNotDiscardAReadableBatteryPreflight() {
         beginBatteryReconnect()
         assertEquals(0, reconnects)

@@ -33,16 +33,16 @@ class CarPlayCallControlsOptInTest {
         verifyNoInteractions(controller)
     }
 
-    @Test fun explicitOptInEnablesAnswerAndDisableRestoresPassThrough() {
+    @Test fun savedOptInDoesNotReactivateProprietaryCallKeys() {
         val controller = mock(CarPlayController::class.java)
         `when`(controller.activeAirPlaySessionToken()).thenReturn(Any())
         BydCarPlayCall.onFrame(Iap2Messages.buildRaw(CarPlayCallState.CALL_STATE_UPDATE) {
             u8(2, 2); string(4, "incoming-call")
         })
         BydOutputSettings.setCarPlayCallControls(app, true)
-        assertTrue(CarPlayCallKeys.onKey(app, 313, true, controller))
-        assertTrue(CarPlayCallKeys.onKey(app, 313, false, controller))
-        verify(controller).answerCall()
+        assertFalse(CarPlayCallKeys.onKey(app, 313, true, controller))
+        assertFalse(CarPlayCallKeys.onKey(app, 313, false, controller))
+        verify(controller, never()).answerCall()
         BydOutputSettings.setCarPlayCallControls(app, false)
         assertFalse(CarPlayCallKeys.onKey(app, 314, false, controller))
         verify(controller, never()).endCall()

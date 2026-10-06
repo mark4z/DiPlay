@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Switch
+import android.widget.TextView
 import com.shilapi.xcertplay.host.R
 import org.junit.After
 import org.junit.Before
@@ -41,6 +42,41 @@ class LocationReportingSettingsTest {
 
         assertFalse(locationSwitch().isChecked)
         assertFalse(AirPlayPersistence.loadLocationReportingEnabled(context))
+    }
+
+    @Test fun originalSettingsKeepGpsAudioMapsAndDiagnosticsWhileVehicleControlsAreHidden() {
+        com.shilapi.xcertplay.hud.BydOutputSettings.setBatteryToIphone(context, true)
+        com.shilapi.xcertplay.hud.BydOutputSettings.setWheelSpeedToIphone(context, true)
+        com.shilapi.xcertplay.hud.BydOutputSettings.setVideoWhileParked(context, true)
+        AirPlayPersistence.saveAdbClusterEnabled(context, true)
+        openSettings()
+        val labels = descendants(activity.window.decorView).filterIsInstance<TextView>()
+            .map { it.text.toString() }.toList()
+        for (resource in listOf(R.string.audio_routing, R.string.car_button_in_carplay,
+            R.string.carplay_map_on_instrument_cluster_experimental, R.string.diagnostics,
+            R.string.save_diagnostic_report, R.string.byd_hardware_disabled)) {
+            assertTrue(activity.getString(resource), labels.contains(activity.getString(resource)))
+        }
+        assertNotNull(locationSwitch())
+        assertFalse(labels.contains(activity.getString(R.string.advanced_vehicle_data)))
+        assertFalse(labels.contains(activity.getString(R.string.adb_cluster_activity_mode)))
+        assertFalse(labels.contains(activity.getString(R.string.video_while_parked)))
+    }
+
+    @Test fun originalAudioSettingsKeepStandardCallKeysOptInWithoutVendorControls() {
+        com.shilapi.xcertplay.hud.BydOutputSettings.setCarPlayCallControls(context, false)
+        openSettings()
+        fun callSwitch(): Switch = descendants(activity.window.decorView).filterIsInstance<Switch>()
+            .single { it.contentDescription == activity.getString(R.string.standard_call_keys) }
+        assertFalse(callSwitch().isChecked)
+        callSwitch().performClick()
+        assertTrue(com.shilapi.xcertplay.hud.BydOutputSettings.carPlayCallControls(context))
+        requireNotNull(controller).recreate()
+        assertTrue(callSwitch().isChecked)
+        assertFalse(descendants(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text == activity.getString(R.string.byd_navigation) })
+        callSwitch().performClick()
+        assertFalse(com.shilapi.xcertplay.hud.BydOutputSettings.carPlayCallControls(context))
     }
 
     @Test fun grantedSettingSurvivesRecreationAndCanBeDisabled() {

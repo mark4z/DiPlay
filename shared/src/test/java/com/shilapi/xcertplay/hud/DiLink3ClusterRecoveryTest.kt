@@ -23,12 +23,12 @@ class DiLink3ClusterRecoveryTest {
     private val output get() = BydDiLink3ClusterOutput
     private val worker get() = ReflectionHelpers.getField<ScheduledExecutorService>(output, "worker")
     private val prefs get() = app.getSharedPreferences("diplay_dilink3_cluster", 0)
-    private val stock get() = BydDiLink3ClusterMode.Mode.STOCK.command
     private fun drain() { worker.submit {}.get(5, TimeUnit.SECONDS) }
 
     @Before fun setup() {
         drain()
         app.getSharedPreferences("xcertplay_airplay", 0).edit().clear().commit()
+        prefs.edit().clear().commit()
         Shell.commands.clear()
         Shell.response = { "Result: Parcel(00000000 00000000 '........')" }
         ReflectionHelpers.setField(output, "session", null)
@@ -43,36 +43,34 @@ class DiLink3ClusterRecoveryTest {
         ReflectionHelpers.setField(output, "context", null)
     }
 
-    @Test fun appOpeningRecoversAnInterruptedClusterEvenWhenNavigationIsDisabled() {
+    @Test fun appOpeningAndExplicitRecoveryKeepOldJournalWithoutHardwareWrites() {
         prefs.edit().putBoolean("restore_stock_mode", true).commit()
         BydOutputSettings.setEnabled(app, false)
         Shell.response = { null }
         BydNavigationOutputs.onAppOpened(app)
         drain()
-        assertEquals(listOf(stock), Shell.commands.toList())
+        assertTrue(Shell.commands.isEmpty())
         assertTrue(prefs.getBoolean("restore_stock_mode", false))
         Shell.response = { "Result: Parcel(00000000 00000000 '........')" }
         output.restoreIfNeeded(app)
         drain()
-        assertEquals(listOf(stock, stock), Shell.commands.toList())
-        assertFalse(prefs.contains("restore_stock_mode"))
+        assertTrue(Shell.commands.isEmpty())
+        assertTrue(prefs.getBoolean("restore_stock_mode", false))
     }
 
-    @Test fun failedStockRestoreKeepsItsDurableJournalUntilTheWorkerRetries() {
-        output.setDesired(app, mapShown = true, guidanceActive = false)
-        drain()
-        assertTrue(prefs.getBoolean("restore_stock_mode", false))
-        Shell.response = { null }
-        output.setDesired(app, mapShown = false, guidanceActive = false)
-        drain()
-        assertTrue(prefs.getBoolean("restore_stock_mode", false))
-        Shell.response = { "Result: Parcel(00000000 00000000 '........')" }
-        // Exercise the same serial-worker operation used by the periodic retry.
-        worker.submit { ReflectionHelpers.callInstanceMethod<Void>(output, "applyLatest") }
-            .get(5, TimeUnit.SECONDS)
-        assertEquals(listOf(BydDiLink3ClusterMode.Mode.PROJECTION.entryCommand,
-            BydDiLink3ClusterMode.Mode.PROJECTION.command, stock, stock), Shell.commands.toList())
-        assertFalse(prefs.contains("restore_stock_mode"))
+    @Test fun desiredModeChangesAndRetryCannotConsumeAnOldRecoveryJournal() {
+        prefs.edit().putBoolean("restore_stock_mode", true).commit()
+        for ((mapShown, guidanceActive) in listOf(true to false, false to true, false to false)) {
+            output.setDesired(app, mapShown, guidanceActive)
+            drain()
+            // Exercise the serial-worker operation without bypassing the disabled initializer.
+            worker.submit { ReflectionHelpers.callInstanceMethod<Void>(output, "applyLatest") }
+                .get(5, TimeUnit.SECONDS)
+            assertTrue(prefs.getBoolean("restore_stock_mode", false))
+            assertTrue(Shell.commands.isEmpty())
+            assertNull(ReflectionHelpers.getField<Any?>(output, "session"))
+            assertNull(ReflectionHelpers.getField<Context?>(output, "context"))
+        }
     }
 
     @Test fun adbRoutePreservesNativeCastingDuringPreparationMapAndCleanup() {
@@ -89,7 +87,7 @@ class DiLink3ClusterRecoveryTest {
         assertFalse(prefs.contains("restore_stock_mode"))
     }
 
-    @Test fun adbRouteDefersOldRecoveryWithoutDiscardingTheJournal() {
+    @Test fun togglingSavedAdbRouteCannotEnableOldRecovery() {
         prefs.edit().putBoolean("restore_stock_mode", true).commit()
         app.getSharedPreferences("xcertplay_airplay", 0).edit()
             .putBoolean("adb_cluster_activity_enabled", true).commit()
@@ -101,8 +99,8 @@ class DiLink3ClusterRecoveryTest {
             .putBoolean("adb_cluster_activity_enabled", false).commit()
         output.restoreIfNeeded(app)
         drain()
-        assertEquals(listOf(stock), Shell.commands.toList())
-        assertFalse(prefs.contains("restore_stock_mode"))
+        assertTrue(Shell.commands.isEmpty())
+        assertTrue(prefs.getBoolean("restore_stock_mode", false))
     }
 
     @Implements(BydAdbShell::class, isInAndroidSdk = false)

@@ -65,6 +65,7 @@
 
         <activity
             android:name="com.shilapi.xcertplay.AdbClusterActivity"
+            android:enabled="false"
             android:label="@string/adb_cluster_activity_label"
             android:icon="@drawable/ic_dp_navigation"
             android:taskAffinity="${applicationId}.cluster"

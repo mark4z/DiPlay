@@ -114,21 +114,21 @@ class ClusterMapPresentationTest {
         return id
     }
 
-    @Test fun legacyFirmwareKeepsOriginalBaseDisplayPreference() {
+    @Test fun legacyFirmwareDoesNotSelectEitherBydDisplay() {
         val base = display("fission_bg_XDJAScreenProjection")
         val shared = display("shared_fission_bg_XDJAScreenProjection_0")
         try {
-            assertEquals(base, ClusterMapPresentation.findDisplay(context)?.displayId)
+            assertNull(ClusterMapPresentation.findDisplay(context))
         } finally {
             ShadowDisplayManager.removeDisplay(shared)
             ShadowDisplayManager.removeDisplay(base)
         }
     }
 
-    @Test fun baseDisplayStillWorksWhenNoSharedLayerExists() {
+    @Test fun baseDisplayRemainsDisconnectedWhenNoSharedLayerExists() {
         val base = display("fission_bg_XDJAScreenProjection")
         try {
-            assertEquals(base, ClusterMapPresentation.findDisplay(context)?.displayId)
+            assertNull(ClusterMapPresentation.findDisplay(context))
         } finally {
             ShadowDisplayManager.removeDisplay(base)
         }
@@ -142,10 +142,10 @@ class ClusterMapPresentationTest {
             ShadowDisplayManager.removeDisplay(other)
         }
     }
-    @Test fun dilink4MeasuredProjectionIsSelected() {
+    @Test fun dilink4MeasuredProjectionRemainsDisconnected() {
         val id = display(DiLink4ClusterDisplay.NAME, "w1920dp-h720dp-mdpi")
         try {
-            assertEquals(id, ClusterMapPresentation.findDisplay(context)?.displayId)
+            assertNull(ClusterMapPresentation.findDisplay(context))
         } finally {
             ShadowDisplayManager.removeDisplay(id)
         }
@@ -170,18 +170,18 @@ class ClusterMapPresentationTest {
         }
     }
 
-    @Test fun existingDilink5DisplayKeepsPriority() {
+    @Test fun coexistingDilink4And5DisplaysRemainDisconnected() {
         val legacy = display(DiLink4ClusterDisplay.NAME, "w1920dp-h720dp-mdpi")
         val current = display(DiLink51ClusterLayout.BASE)
         try {
-            assertEquals(current, ClusterMapPresentation.findDisplay(context)?.displayId)
+            assertNull(ClusterMapPresentation.findDisplay(context))
         } finally {
             ShadowDisplayManager.removeDisplay(current)
             ShadowDisplayManager.removeDisplay(legacy)
         }
     }
 
-    @Test fun disabledClusterStillReportsDisplayWithoutNavigationReceiver() {
+    @Test fun disabledClusterReportsVisibleHardwareWithoutSelectingIt() {
         val enabled = AirPlayPersistence.loadClusterMapEnabled(context)
         AirPlayPersistence.saveClusterMapEnabled(context, false)
         val id = display(DiLink4ClusterDisplay.NAME, "w1920dp-h720dp-mdpi")
@@ -191,7 +191,8 @@ class ClusterMapPresentationTest {
             assertTrue(report.contains("clusterEnabled=false"))
             assertTrue(report.contains("navigationReceiverAvailable=false"))
             assertTrue(report.contains("1920x720"))
-            assertTrue(report.contains("selectedCluster=$id:${DiLink4ClusterDisplay.NAME}"))
+            assertTrue(report.contains("$id:${DiLink4ClusterDisplay.NAME}"))
+            assertTrue(report.contains("selectedCluster=none"))
         } finally {
             ShadowDisplayManager.removeDisplay(id)
             AirPlayPersistence.saveClusterMapEnabled(context, enabled)

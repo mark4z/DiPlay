@@ -159,7 +159,7 @@ class BydVehicleFieldStoreTest {
         setUp()
     }
 
-    @Test fun legacyFeaturesStayInactiveUntilAProbeIsCached() {
+    @Test fun savedLegacyCapabilitiesCannotReactivateHardwareFeatures() {
         BydOutputSettings.setLegacyVehicleProbe(context, true)
         BydOutputSettings.setBatteryToIphone(context, true)
         BydOutputSettings.setWheelSpeedToIphone(context, true)
@@ -170,17 +170,17 @@ class BydVehicleFieldStoreTest {
         assertFalse(BydOutputSettings.videoWhileParkedActive(context))
 
         BydVehicleFieldStore.save(context, supportedCapabilities())
-        // Model a killed/restarted app process: the persisted probe, not the singleton, must win.
+        // Persisted capability data still loads after restart, but cannot reactivate hardware.
         BydVehicleFieldStore.clearMemoryForTests()
 
-        assertTrue(BydOutputSettings.batteryToIphoneActive(context))
-        assertTrue(BydOutputSettings.wheelSpeedToIphoneActive(context))
-        assertTrue(BydOutputSettings.videoWhileParkedActive(context))
+        assertFalse(BydOutputSettings.batteryToIphoneActive(context))
+        assertFalse(BydOutputSettings.wheelSpeedToIphoneActive(context))
+        assertFalse(BydOutputSettings.videoWhileParkedActive(context))
         assertEquals(-1176502256, BydVehicleFieldStore.address(context, BydVehicleField.SPEED).fid)
         assertEquals(BydFieldSource.FIRMWARE, BydVehicleFieldStore.address(context, BydVehicleField.SPEED).source)
     }
 
-    @Test fun socAndRangeRemainUsableWhenController13HasNoRemainingKwhField() {
+    @Test fun batteryParserRetainsSocAndRangeWithoutEnablingHardware() {
         BydVehicleFieldStore.save(context, supportedCapabilities(without = setOf(BydVehicleField.REMAINING_KWH)))
         val replies = mapOf(
             1033543720 to "41c80000", // 25 %
@@ -196,7 +196,7 @@ class BydVehicleFieldStoreTest {
         assertNull(reading.remainingKwh)
         assertTrue(reading.charging)
         BydOutputSettings.setBatteryToIphone(context, true)
-        assertTrue(BydOutputSettings.batteryToIphoneActive(context))
+        assertFalse(BydOutputSettings.batteryToIphoneActive(context))
     }
 
     @Test fun aConfirmedEnergyFieldMustRemainReadable() {
@@ -214,7 +214,7 @@ class BydVehicleFieldStoreTest {
         })
     }
 
-    @Test fun freshInstallUsesTheDefaultDiLink5Commands() {
+    @Test fun dormantCommandHelpersKeepDefaultsWithoutActivatingHardware() {
         assertFalse(BydOutputSettings.legacyVehicleProbe(context))
         assertEquals(BydWheelSpeed.SPEED, BydWheelSpeed.speedCommand(context))
         assertEquals(BydWheelSpeed.GEAR, BydWheelSpeed.gearCommand(context))
@@ -222,9 +222,9 @@ class BydVehicleFieldStoreTest {
         BydOutputSettings.setBatteryToIphone(context, true)
         BydOutputSettings.setWheelSpeedToIphone(context, true)
         BydOutputSettings.setVideoWhileParked(context, true)
-        assertTrue(BydOutputSettings.batteryToIphoneActive(context))
-        assertTrue(BydOutputSettings.wheelSpeedToIphoneActive(context))
-        assertTrue(BydOutputSettings.videoWhileParkedActive(context))
+        assertFalse(BydOutputSettings.batteryToIphoneActive(context))
+        assertFalse(BydOutputSettings.wheelSpeedToIphoneActive(context))
+        assertFalse(BydOutputSettings.videoWhileParkedActive(context))
     }
 
     @Test fun savedProbeMigratesToLegacyModeButCanSwitchBackWithoutDeletingIt() {
@@ -252,7 +252,7 @@ class BydVehicleFieldStoreTest {
         assertTrue(loaded.batterySupported)
     }
 
-    @Test fun hiddenCapabilitiesDoNotEraseTheirSavedSwitches() {
+    @Test fun disabledHardwarePreservesSavedSwitchesAcrossCapabilityChanges() {
         BydOutputSettings.setWheelSpeedToIphone(context, true)
         BydVehicleFieldStore.save(
             context,
@@ -264,7 +264,7 @@ class BydVehicleFieldStoreTest {
 
         BydVehicleFieldStore.save(context, supportedCapabilities())
         assertTrue(BydOutputSettings.wheelSpeedToIphone(context))
-        assertTrue(BydOutputSettings.wheelSpeedToIphoneActive(context))
+        assertFalse(BydOutputSettings.wheelSpeedToIphoneActive(context))
     }
 
     @Test fun automaticReplacementCannotDropPreviouslyConfirmedFields() {

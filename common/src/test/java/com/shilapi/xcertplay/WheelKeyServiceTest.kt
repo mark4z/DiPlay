@@ -207,16 +207,35 @@ class WheelKeyServiceTest {
         assertTrue(knobs.isEmpty())
     }
 
-    @Test fun experimentalVoiceKeysRemainWithTheCarUntilOptIn() {
+    @Test fun proprietaryVoiceKeysStayDisconnectedEvenWithSavedOptIn() {
         service.session = { "active-phone" }
         BydOutputSettings.setCarPlayCallControls(service, false)
         assertEquals(false to false, press(327))
         assertEquals(false to false, press(328))
         BydOutputSettings.setCarPlayCallControls(service, true)
-        assertEquals(true to true, press(327))
-        assertEquals(true to true, press(328))
+        assertEquals(false to false, press(327))
+        assertEquals(false to false, press(328))
         BydOutputSettings.setCarPlayCallControls(service, false)
         assertEquals(false to false, press(327))
+    }
+
+    @Test fun newInstallsHaveNoProprietaryWheelAssignments() {
+        service.getSharedPreferences("diplay_wheel_map_zoom", Context.MODE_PRIVATE).edit().clear().commit()
+        for (role in WheelZoomSettings.Role.entries) {
+            assertEquals(WheelKey(KeyEvent.KEYCODE_UNKNOWN, 0, ""), WheelZoomSettings.key(service, role))
+        }
+        assertNull(WheelZoomSettings.roleOf(service, WheelKey(KeyEvent.KEYCODE_UNKNOWN, 0, "")))
+    }
+
+    @Test fun savedProprietaryAssignmentsStayInertButExplicitGenericAssignmentsWork() {
+        val vendorKey = WheelKey(305, 300, "simulate-keys")
+        WheelZoomSettings.assign(service, WheelZoomSettings.Role.MODE, vendorKey)
+        assertEquals(vendorKey, WheelZoomSettings.key(service, WheelZoomSettings.Role.MODE))
+        assertNull(WheelZoomSettings.roleOf(service, vendorKey))
+        val keyboardKey = WheelKey(KeyEvent.KEYCODE_F1, 300, "USB keyboard")
+        WheelZoomSettings.assign(service, WheelZoomSettings.Role.MODE, keyboardKey)
+        assertEquals(WheelZoomSettings.Role.MODE, WheelZoomSettings.roleOf(service, keyboardKey))
+        assertNull(WheelZoomSettings.roleOf(service, vendorKey))
     }
 
     @Test

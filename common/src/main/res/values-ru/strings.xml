@@ -623,4 +623,6 @@
     <string name="car_button_description">CarPlay показывает этот значок и название в списке приложений. Нажмите его, чтобы вернуться на экран автомобиля. Изменения применятся при следующем подключении CarPlay.</string>
     <string name="car_button_saved_next_connection">Сохранено. CarPlay покажет новый значок и название при следующем подключении.</string>
     <string name="this_head_unit_has_no_image_picker">На этом головном устройстве нет выбора изображений.</string>
+    <string name="standard_call_keys">Кнопки вызова CarPlay</string>
+    <string name="standard_call_keys_description">Использовать стандартные кнопки Android для ответа и завершения вызова CarPlay. По умолчанию выключено; фирменные коды кнопок автомобиля не обрабатываются.</string>
 </resources>

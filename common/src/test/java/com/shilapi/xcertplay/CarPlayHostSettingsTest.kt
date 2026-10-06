@@ -67,6 +67,20 @@ class CarPlayHostSettingsTest {
         controllers.close()
     }
 
+    @Test fun originalRuntimeKeepsAndroidGpsButDoesNotAdvertiseSavedBydVehicleData() {
+        com.shilapi.xcertplay.hud.BydOutputSettings.setBatteryToIphone(activity, true)
+        com.shilapi.xcertplay.hud.BydOutputSettings.setWheelSpeedToIphone(activity, true)
+        com.shilapi.xcertplay.hud.BydOutputSettings.setVideoWhileParked(activity, true)
+        AirPlayPersistence.saveLocationReportingEnabled(activity, true)
+        invoke("loadPersistedSettings")
+        val runtime = activity.javaClass.getDeclaredMethod("createRuntimeConfig")
+            .apply { isAccessible = true }.invoke(activity) as CarPlayRuntimeConfig
+        assertTrue(runtime.identification.locationInformationEnabled)
+        assertFalse(runtime.identification.vehicleStatusEnabled)
+        assertFalse(runtime.identification.vehicleSpeedEnabled)
+        assertFalse(com.shilapi.xcertplay.hud.BydOutputSettings.videoWhileParkedActive(activity))
+    }
+
     @Test fun configuredFingerCountsOpenTheMountedMenuWithoutLeavingCarPlay() {
         assertEquals(3, AirPlayPersistence.loadSettingsGestureFingers(activity))
         for (fingers in 2..4) {

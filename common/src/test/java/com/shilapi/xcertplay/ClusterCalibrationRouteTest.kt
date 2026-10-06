@@ -3,8 +3,6 @@ package com.shilapi.xcertplay
 import android.app.Activity
 import android.content.Context
 import com.shilapi.xcertplay.airplay.SafeAreaRect
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -27,91 +25,81 @@ internal class ClusterCalibrationRouteTest {
     @Before fun reset() {
         ClusterActivityOutput.stopForSettings()
         AirPlayPersistence.saveAdbClusterEnabled(app, true)
-        Router.started = CountDownLatch(1)
-        Router.token = null
-        Router.holdStockMap = true
+        Router.launches = 0
     }
 
-    @After fun cleanup() { ClusterActivityOutput.stopForSettings(); previewHosts.clear() }
+    @After fun cleanup() {
+        ClusterActivityOutput.stopForSettings()
+        AirPlayPersistence.saveAdbClusterEnabled(app, false)
+        AirPlayPersistence.saveClusterMapEnabled(app, false)
+        previewHosts.clear()
+    }
 
-    private fun preview(owner: Any): String {
+    private fun preview(owner: Any) {
         val host = Robolectric.buildActivity(Activity::class.java).get().also(previewHosts::add)
         ClusterActivityOutput.beginSafeAreaPreview(owner, rect, host)
-        assertTrue("Preview routing did not start", Router.started.await(5, TimeUnit.SECONDS))
-        assertFalse("Calibration must not disable the stock map", Router.holdStockMap)
-        return Router.token!!
+        assertEquals(rect, ClusterActivityOutput.previewRect)
+        assertFalse(ClusterActivityOutput.launchPending)
+        assertFalse(ClusterActivityOutput.hasConfirmedRoute())
+        assertEquals(0, Router.launches)
     }
 
-    @Test fun editorLaunchesBeforeCarPlayAndDismissalInvalidatesPendingLaunch() {
+    @Test fun editorKeepsLocalPreviewWithoutLaunchingHardwareBeforeCarPlay() {
         val owner = Any()
-        val token = preview(owner)
+        preview(owner)
         assertEquals(-1, ClusterActivityOutput.mainTaskId)
         assertFalse(ClusterActivityOutput.streamActive)
-        assertTrue(ClusterActivityOutput.acceptsToken(token))
+        assertFalse(ClusterActivityOutput.acceptsToken("01234567-89ab-cdef-0123-456789abcdef"))
         ClusterActivityOutput.endSafeAreaPreview(owner)
         assertNull(ClusterActivityOutput.previewRect)
-        assertFalse(ClusterActivityOutput.acceptsToken(token))
-        val window = Robolectric.buildActivity(AdbClusterActivity::class.java).get()
-        assertFalse(ClusterActivityOutput.confirm(window, token, 7))
+        assertFalse(ClusterActivityOutput.launchPending)
     }
 
-    @Test fun previewOnlyWindowClosesWhenEditorEnds() {
+    @Test fun previewCannotAdmitAClusterWindowWithSavedHardwareSettings() {
         val owner = Any()
-        val token = preview(owner)
+        preview(owner)
         val window = Robolectric.buildActivity(AdbClusterActivity::class.java).get()
-        assertTrue(ClusterActivityOutput.confirm(window, token, 7))
+        assertFalse(ClusterActivityOutput.confirm(window, "01234567-89ab-cdef-0123-456789abcdef", 7))
         ClusterActivityOutput.endSafeAreaPreview(owner)
-        assertTrue(window.isFinishing)
+        assertNull(ClusterActivityOutput.previewRect)
         assertFalse(ClusterActivityOutput.hasConfirmedRoute())
     }
 
-    @Test fun playbackCanAdoptPendingPreviewAndEditorDismissalKeepsItsWindow() {
+    @Test fun dismissingTheEditorPreservesLocalPlaybackStateWithoutRouting() {
         val editor = Any()
-        val token = preview(editor)
+        preview(editor)
         val playback = Any()
         ClusterActivityOutput.bind(playback, 42) { }
-        assertTrue(ClusterActivityOutput.acceptsToken(token))
-        val window = Robolectric.buildActivity(AdbClusterActivity::class.java).get()
-        assertTrue(ClusterActivityOutput.confirm(window, token, 7))
         ClusterActivityOutput.setStreamActive(true)
         ClusterActivityOutput.endSafeAreaPreview(editor)
-        assertFalse(window.isFinishing)
-        assertTrue(ClusterActivityOutput.hasConfirmedRoute())
+        assertFalse(ClusterActivityOutput.hasConfirmedRoute())
         assertTrue(ClusterActivityOutput.streamActive)
+        assertEquals(42, ClusterActivityOutput.mainTaskId)
         assertNull(ClusterActivityOutput.previewRect)
+        assertEquals(0, Router.launches)
         ClusterActivityOutput.stop(playback)
-        assertTrue(window.isFinishing)
+        assertFalse(ClusterActivityOutput.streamActive)
     }
 
-    @Test fun staleEditorCannotCloseReplacementPreview() {
+    @Test fun staleEditorCannotClearReplacementLocalPreview() {
         val first = Any()
-        val token = preview(first)
-        val window = Robolectric.buildActivity(AdbClusterActivity::class.java).get()
-        assertTrue(ClusterActivityOutput.confirm(window, token, 7))
+        preview(first)
         val second = Any()
-        val host = Robolectric.buildActivity(Activity::class.java).get().also(previewHosts::add)
-        ClusterActivityOutput.beginSafeAreaPreview(second, rect, host)
+        preview(second)
         ClusterActivityOutput.endSafeAreaPreview(first)
-        assertFalse(window.isFinishing)
         assertEquals(rect, ClusterActivityOutput.previewRect)
         ClusterActivityOutput.endSafeAreaPreview(second)
-        assertTrue(window.isFinishing)
+        assertNull(ClusterActivityOutput.previewRect)
+        assertEquals(0, Router.launches)
     }
 
     @Implements(AdbClusterRouter::class, isInAndroidSdk = false)
     class Router {
         @Implementation fun launch(context: Context, token: String, holdStockMap: Boolean,
             prepare: (Int) -> Boolean): AdbClusterRouter.Result {
-            Companion.token = token
-            Companion.holdStockMap = holdStockMap
-            val accepted = prepare(7)
-            started.countDown()
-            return AdbClusterRouter.Result(accepted, "test route")
+            ++launches
+            return AdbClusterRouter.Result(false, "Unexpected hardware launch")
         }
-        companion object {
-            var started = CountDownLatch(1)
-            var token: String? = null
-            var holdStockMap = true
-        }
+        companion object { @Volatile var launches = 0 }
     }
 }

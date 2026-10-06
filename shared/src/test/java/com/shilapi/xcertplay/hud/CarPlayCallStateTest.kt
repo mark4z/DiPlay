@@ -89,27 +89,41 @@ class CarPlayCallKeyPolicyTest {
         CarPlayCallKeyPolicy.onKey(key, true, call, session) to CarPlayCallKeyPolicy.onKey(key, false, call, session)
 
     @Test
-    fun theCallKeyAnswersARingingCarPlayCall() {
-        assertEquals(Action.CONSUME to Action.ANSWER, press(313, ringing))
+    fun standardCallKeyAnswersARingingCarPlayCall() {
         assertEquals(Action.CONSUME to Action.ANSWER, press(KeyEvent.KEYCODE_CALL, ringing))
-        // During the call it must not open BYD's phone app over CarPlay, and does not hang up.
-        assertEquals(Action.CONSUME to Action.CONSUME, press(313, active))
+        assertEquals(Action.CONSUME to Action.CONSUME, press(KeyEvent.KEYCODE_CALL, active))
     }
 
     @Test
-    fun theHangUpKeysEndOrDecline() {
+    fun standardEndCallKeyEndsOrDeclines() {
         assertEquals(Action.CONSUME to Action.END, press(KeyEvent.KEYCODE_ENDCALL, ringing))
-        assertEquals(Action.CONSUME to Action.END, press(314, active))
+        assertEquals(Action.CONSUME to Action.END, press(KeyEvent.KEYCODE_ENDCALL, active))
+    }
+
+    @Test
+    fun proprietaryCallKeyEventsAreDisconnected() {
+        for (key in listOf(309, 313, 314)) {
+            assertEquals(Action.PASS to Action.PASS, press(key, ringing))
+            assertEquals(Action.PASS to Action.PASS, press(key, active))
+        }
+    }
+
+    @Test
+    fun dormantBroadcastParserKeepsItsPureMapping() {
+        // The Android receiver is disconnected; this helper only interprets supplied values.
         assertEquals(Action.END, CarPlayCallKeyPolicy.onHangUpBroadcast(314, active, session = true))
         assertEquals(Action.END, CarPlayCallKeyPolicy.onHangUpBroadcast(309, ringing, session = true))
+        assertEquals(Action.PASS, CarPlayCallKeyPolicy.onHangUpBroadcast(314, null, session = true))
+        assertEquals(Action.PASS, CarPlayCallKeyPolicy.onHangUpBroadcast(309, active, session = false))
+        assertEquals(Action.PASS, CarPlayCallKeyPolicy.onHangUpBroadcast(305, active, session = true))
     }
 
     @Test
-    fun withoutACarPlayCallTheCarKeepsItsKeys() {
-        assertEquals(Action.PASS to Action.PASS, press(313, null))
-        assertEquals(Action.PASS to Action.PASS, press(313, ringing, session = false))
+    fun withoutACarPlayCallAndroidKeepsItsKeys() {
+        for (key in listOf(KeyEvent.KEYCODE_CALL, KeyEvent.KEYCODE_ENDCALL)) {
+            assertEquals(Action.PASS to Action.PASS, press(key, null))
+            assertEquals(Action.PASS to Action.PASS, press(key, ringing, session = false))
+        }
         assertEquals(Action.PASS to Action.PASS, press(KeyEvent.KEYCODE_VOLUME_UP, ringing))
-        assertEquals(Action.PASS, CarPlayCallKeyPolicy.onHangUpBroadcast(314, null, session = true))
-        assertEquals(Action.PASS, CarPlayCallKeyPolicy.onHangUpBroadcast(305, active, session = true))
     }
 }

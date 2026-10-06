@@ -2,6 +2,7 @@
 // UI copy and visual language adapted from DiAuto. See docs/THIRD_PARTY_NOTICES.md.
 package com.shilapi.xcertplay
 
+import com.shilapi.xcertplay.hud.BydHardwareIntegration
 import android.Manifest
 import android.app.AlertDialog
 import android.app.Dialog
@@ -652,26 +653,31 @@ class DiPlayActivity : ComponentActivity() {
             }
             mediaChannelControl(card)
             navigationChannelControl(card)
+            toggle(card, getString(R.string.standard_call_keys), getString(R.string.standard_call_keys_description),
+                BydOutputSettings.carPlayCallControls(this)) { BydOutputSettings.setCarPlayCallControls(this, it) }
         }
         section(content, getString(R.string.location), R.drawable.ic_dp_navigation) { card ->
             toggle(card, getString(R.string.report_location_to_iphone),
                 getString(R.string.sends_precise_android_location_as_carplay_gps_data_when_th),
                 AirPlayPersistence.loadLocationReportingEnabled(this), save = ::onLocationReportingChanged)
             card.addView(label(getString(R.string.location_reporting_reconnects), 14, MUTED))
-            card.addView(button(getString(if (bydVehicleAdvancedExpanded)
-                R.string.hide_advanced_vehicle_data else R.string.advanced_vehicle_data), false) {
-                bydVehicleAdvancedExpanded = !bydVehicleAdvancedExpanded
-                render()
-            }, matchButton(12, 56))
-            if (bydVehicleAdvancedExpanded) {
-                advancedVehicleData(card)
-                // Dashboard song needs ADB, not the navigation receiver; show it here when that card is hidden.
-                if (!BydOutputSettings.available(this)) clusterSongSwitch(card)
+            if (!BydHardwareIntegration.ENABLED) card.addView(label(getString(R.string.byd_hardware_disabled), 14, MUTED))
+            if (BydHardwareIntegration.ENABLED) {
+                card.addView(button(getString(if (bydVehicleAdvancedExpanded)
+                    R.string.hide_advanced_vehicle_data else R.string.advanced_vehicle_data), false) {
+                    bydVehicleAdvancedExpanded = !bydVehicleAdvancedExpanded
+                    render()
+                }, matchButton(12, 56))
+                if (bydVehicleAdvancedExpanded) {
+                    advancedVehicleData(card)
+                    // Dashboard song needs ADB, not the navigation receiver; show it here when that card is hidden.
+                    if (!BydOutputSettings.available(this)) clusterSongSwitch(card)
+                }
             }
         }
         // Cluster video does not require a BYD navigation broadcast receiver.
         section(content, getString(R.string.carplay_map_on_instrument_cluster_experimental), R.drawable.ic_dp_dashboard) { card ->
-            toggle(card, getString(R.string.adb_cluster_activity_mode),
+            if (BydHardwareIntegration.ENABLED) toggle(card, getString(R.string.adb_cluster_activity_mode),
                 getString(R.string.adb_cluster_activity_description), AirPlayPersistence.loadAdbClusterEnabled(this)) {
                 AirPlayPersistence.saveAdbClusterEnabled(this, it)
                 ClusterActivityOutput.stopForSettings()
@@ -740,8 +746,8 @@ class DiPlayActivity : ComponentActivity() {
                         card.addView(button(getString(R.string.btn_auto_apply_permissions), false) { autoApplyPermissions() }, matchButton(8, 54))
                     }
                 }
-                if (clusterDisplay != null || adbCluster) {
-                    if (DiLink51ClusterLayout.supported() && !adbCluster) {
+                if (clusterMapEnabled) {
+                    if (BydHardwareIntegration.ENABLED && DiLink51ClusterLayout.supported() && !adbCluster) {
                         val automatic = DiLink51ClusterLayout.automatic(this)
                         toggle(card, getString(R.string.follow_instrument_theme_and_map_card),
                             getString(R.string.show_the_side_map_only_when_its_card_is_open_and_switch_to), automatic) {
@@ -788,7 +794,7 @@ class DiPlayActivity : ComponentActivity() {
                                 // DiLink 5.1 layout (always the map), are set up at connection, so they reconnect.
                                 val controller = CarPlayBackgroundSession.snapshot()?.controller
                                 if (customCard || CarPlayClusterDisplay.usesCustomTurnCard(next) ||
-                                    DiLink51ClusterLayout.supported() || controller == null) {
+                                    (BydHardwareIntegration.ENABLED && DiLink51ClusterLayout.supported()) || controller == null) {
                                     reconnectForClusterMap()
                                 } else controller.showDashboardContent(next.url) { applied ->
                                     runOnUiThread {
@@ -838,7 +844,8 @@ class DiPlayActivity : ComponentActivity() {
                         if (!diLink4) {
                             choice(card, getString(if (turnCard) R.string.turn_card_size else R.string.cluster_map_size),
                                 listOf(getString(R.string.cluster_size_standard), getString(R.string.cluster_size_larger), getString(R.string.cluster_size_largest), getString(R.string.cluster_size_smallest)),
-                                sizes.indexOf(AirPlayPersistence.loadClusterMapScalePercent(this)).coerceAtLeast(0)) {
+                                sizes.indexOf(if (BydHardwareIntegration.ENABLED) AirPlayPersistence.loadClusterMapScalePercent(this)
+                                    else AirPlayPersistence.loadVirtualMapScalePercent(this)).coerceAtLeast(0)) {
                                 AirPlayPersistence.saveClusterMapScalePercent(this, sizes[it])
                             }
                         }
@@ -860,7 +867,7 @@ class DiPlayActivity : ComponentActivity() {
                                 reconnectForClusterMap()
                             }, matchButton(10, 56))
                         }
-                        if (!diLink4) {
+                        if (BydHardwareIntegration.ENABLED && !diLink4) {
                             toggle(card, getString(R.string.dashboard_map_only_in_small_and_full_navi),
                                 getString(R.string.dashboard_map_only_in_small_and_full_navi_description),
                                 BydOutputSettings.clusterStreamPause(this)) {
@@ -2166,7 +2173,7 @@ class DiPlayActivity : ComponentActivity() {
      * trigger one automatic field re-probe.
      */
     private fun validateSavedVehicleConfigurationAutomatically() {
-        if (!BydOutputSettings.legacyVehicleProbe(this)) return
+        if (!BydHardwareIntegration.ENABLED || !BydOutputSettings.legacyVehicleProbe(this)) return
         val saved = BydVehicleFieldStore.load(applicationContext) ?: return
         if (adbSwitchChangePending || vehicleAdbWorkInProgress()) {
             automaticVehicleValidationPending = true
@@ -2302,7 +2309,7 @@ class DiPlayActivity : ComponentActivity() {
     }
 
     private fun scheduleAutomaticVehicleValidation() {
-        if (!BydOutputSettings.legacyVehicleProbe(this)) {
+        if (!BydHardwareIntegration.ENABLED || !BydOutputSettings.legacyVehicleProbe(this)) {
             automaticVehicleValidationPending = false
             handler.removeCallbacks(automaticVehicleValidation)
             return
@@ -2349,6 +2356,7 @@ class DiPlayActivity : ComponentActivity() {
         BydAdbAccess.State.NOT_APPROVED -> getString(R.string.adb_enabled_not_approved)
         BydAdbAccess.State.ADB_OFF -> getString(R.string.adb_off)
         BydAdbAccess.State.PAIRING_ONLY -> getString(R.string.adb_pairing_only)
+        BydAdbAccess.State.DISABLED -> getString(R.string.byd_hardware_disabled)
     }
 
     private fun gearLetter(value: Int): String = when (value) {

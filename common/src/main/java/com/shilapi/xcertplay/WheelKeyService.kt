@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay
 
+import com.shilapi.xcertplay.hud.BydHardwareIntegration
 import android.accessibilityservice.AccessibilityService
 import android.content.ComponentName
 import android.content.Context
@@ -122,6 +123,7 @@ class WheelKeyService : AccessibilityService() {
             return true
         }
         val key = WheelKey(event.keyCode, event.scanCode, deviceName(event.deviceId))
+        if (WheelZoomSettings.isProprietaryKey(key)) return false
         refreshEligibility()
         val calling = inCall()
         if (calling) clearLearning()
@@ -358,7 +360,7 @@ class WheelKeyService : AccessibilityService() {
                 Settings.Secure.getInt(context.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1
         }
 
-        internal fun needsRestore(context: Context): Boolean = !connected() &&
+        internal fun needsRestore(context: Context): Boolean = BydHardwareIntegration.ENABLED && !connected() &&
             (WheelZoomSettings.enabled(context) || WheelZoomSettings.joystick(context))
 
         /**
@@ -541,18 +543,9 @@ object WheelZoomSettings {
     const val TIMED_MODE_MILLIS = 5_000L
     const val JOYSTICK_IDLE_MILLIS = 15_000L
 
-    /**
-     * Defaults are a BYD Tang's wheel: the custom key, volume up and down (the roller), the media key,
-     * previous, next and play/pause.
-     */
-    enum class Role(val defaultKey: WheelKey) {
-        MODE(WheelKey(305, 300, BYD_KEYS)),
-        ZOOM_IN(WheelKey(291, 115, BYD_KEYS)),
-        ZOOM_OUT(WheelKey(292, 114, BYD_KEYS)),
-        JOYSTICK(WheelKey(289, 89, BYD_KEYS)),
-        PREVIOUS(WheelKey(88, 268, BYD_KEYS)),
-        NEXT(WheelKey(87, 270, BYD_KEYS)),
-        SELECT(WheelKey(353, 505, BYD_KEYS)),
+    /** Generic keyboards/remotes can be assigned explicitly; no proprietary wheel defaults. */
+    enum class Role(val defaultKey: WheelKey = WheelKey(KeyEvent.KEYCODE_UNKNOWN, 0, "")) {
+        MODE, ZOOM_IN, ZOOM_OUT, JOYSTICK, PREVIOUS, NEXT, SELECT,
     }
 
     /** The mode key switches zoom mode until pressed again, or turns it on for a few seconds. */
@@ -595,7 +588,11 @@ object WheelZoomSettings {
         WheelKeyService.settingsChanged()
     }
 
-    fun roleOf(context: Context, key: WheelKey): Role? = Role.entries.firstOrNull { key(context, it) == key }
+    internal fun isProprietaryKey(key: WheelKey): Boolean = key.device == BYD_KEYS
+
+    fun roleOf(context: Context, key: WheelKey): Role? =
+        if (key.code == KeyEvent.KEYCODE_UNKNOWN || isProprietaryKey(key)) null
+        else Role.entries.firstOrNull { key(context, it) == key }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

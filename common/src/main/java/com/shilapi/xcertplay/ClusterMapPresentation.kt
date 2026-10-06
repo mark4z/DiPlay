@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay
 
+import com.shilapi.xcertplay.hud.BydHardwareIntegration
 import android.app.Presentation
 import android.content.Context
 import android.graphics.Color
@@ -193,6 +194,7 @@ internal class ClusterMapPresentation(
 
         /** Keep the 5/5.1 selection order, then try the measured DiLink 4 projection display. */
         fun findDisplay(context: Context, theme: DiLink51ClusterLayout.Theme = DiLink51ClusterLayout.theme(context)): Display? {
+            if (!BydHardwareIntegration.ENABLED) return null
             val displays = context.getSystemService(DisplayManager::class.java)
                 ?.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION) ?: return null
             val name = DiLink51ClusterLayout.displayName(

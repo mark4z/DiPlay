@@ -99,7 +99,7 @@ object AirPlayPersistence {
 
     const val DEFAULT_MANUFACTURER = "DiPlay"
     const val DEFAULT_MODEL = "DiPlay"
-    const val DEFAULT_OEM_LABEL = "BYD"
+    const val DEFAULT_OEM_LABEL = "Tesla"
     const val DEFAULT_MFI_I2C_PATH = "/dev/i2c-1"
 
     fun loadAmbientDelaySeconds(context: Context): Int =
@@ -713,10 +713,15 @@ object AirPlayPersistence {
         overlaySettingsListener?.invoke()
     }
 
-    fun loadClusterMapScalePercent(context: Context): Int = CarPlayClusterDisplay.STREAM_SCALE_PERCENT.let { default ->
+    fun loadClusterMapScalePercent(context: Context): Int =
+        loadMapScalePercent(context, CarPlayClusterDisplay.STREAM_SCALE_PERCENT)
+
+    /** Preserve the original virtual stream's 1280×720 default while honoring saved map settings. */
+    fun loadVirtualMapScalePercent(context: Context): Int = loadMapScalePercent(context, 100)
+
+    private fun loadMapScalePercent(context: Context, default: Int): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_CLUSTER_MAP_SCALE, default)
             .takeIf { it in CarPlayClusterDisplay.scalePresets } ?: default
-    }
 
     fun saveClusterMapScalePercent(context: Context, percent: Int) {
         if (percent !in CarPlayClusterDisplay.scalePresets) return

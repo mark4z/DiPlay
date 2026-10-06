@@ -45,7 +45,7 @@ object BydOutputSettings {
 
     /** Default mode uses the DiLink 5.0 addresses; legacy mode exposes only fields its saved probe confirmed. */
     fun batteryToIphoneActive(context: Context): Boolean =
-        batteryToIphone(context) && supportedInSelectedMode(context) { it.batterySupported }
+        BydHardwareIntegration.ENABLED && batteryToIphone(context) && supportedInSelectedMode(context) { it.batterySupported }
 
     /** The charging inlets the iPhone is told about; applies on the next connection. */
     fun chargingConnectors(context: Context): EvChargingConnectors =
@@ -65,7 +65,7 @@ object BydOutputSettings {
     }
 
     fun wheelSpeedToIphoneActive(context: Context): Boolean =
-        wheelSpeedToIphone(context) && supportedInSelectedMode(context) { it.motionSupported }
+        BydHardwareIntegration.ENABLED && wheelSpeedToIphone(context) && supportedInSelectedMode(context) { it.motionSupported }
     /** Offer iOS 27 video in car, played only while the gear reads P (needs ADB over network). */
     fun videoWhileParked(context: Context): Boolean = prefs(context).getBoolean(KEY_VIDEO_WHILE_PARKED, false)
 
@@ -99,7 +99,7 @@ object BydOutputSettings {
         prefs(context).edit().putBoolean(KEY_CLUSTER_SONG_ON_CHANGE, enabled).apply()
 
     fun videoWhileParkedActive(context: Context): Boolean =
-        videoWhileParked(context) && supportedInSelectedMode(context) { it.gearSupported }
+        BydHardwareIntegration.ENABLED && videoWhileParked(context) && supportedInSelectedMode(context) { it.gearSupported }
 
     /**
      * Use addresses saved by the legacy head-unit probe. Existing installations with a saved probe
@@ -141,17 +141,21 @@ object BydOutputSettings {
     fun setLowChargePercent(context: Context, percent: Int) =
         prefs(context).edit().putInt(KEY_LOW_CHARGE_PERCENT, percent).apply()
 
-    fun standaloneHudAvailable(context: Context): Boolean = BydStandaloneHudOutput.available(context)
-    fun standaloneHudDiagnosticReport(context: Context): String = BydStandaloneHudOutput.diagnostics(context)
+    fun standaloneHudAvailable(context: Context): Boolean = BydHardwareIntegration.ENABLED && BydStandaloneHudOutput.available(context)
+    fun standaloneHudDiagnosticReport(context: Context): String = "BYD hardware integration disabled; no HUD or vehicle service is contacted."
 
     /** Whether the head unit has a BYD navigation receiver. This says nothing about ADB vehicle data. */
     fun navigationAvailable(context: Context): Boolean =
-        BydStandaloneHudOutput.available(context) ||
+        BydHardwareIntegration.ENABLED && navigationHardwareDetected(context)
+
+    /** Package metadata only, retained for generic hotspot/ADB eligibility; never opens an output. */
+    fun navigationHardwareDetected(context: Context): Boolean =
+        BydStandaloneHudOutput.matchesDevice(context) ||
             BydAmapAdapter.find { installed(context, it) } != null ||
             installed(context, "com.ts.car.someip.service")
 
     /** Whether the head unit has a BYD navigation receiver or is a BYD head unit, so settings can show navigation/map options. */
-    fun available(context: Context): Boolean =
+    fun available(context: Context): Boolean = BydHardwareIntegration.ENABLED && (
         navigationAvailable(context) ||
             installed(context, "com.byd.carsettings") ||
             installed(context, "com.byd.appmgr") ||
@@ -161,7 +165,7 @@ object BydOutputSettings {
             android.os.Build.BRAND.contains("BYD", ignoreCase = true) ||
             android.os.Build.MANUFACTURER.contains("BYD", ignoreCase = true) ||
             android.os.Build.PRODUCT.contains("BYD", ignoreCase = true) ||
-            android.os.Build.DEVICE.contains("BYD", ignoreCase = true)
+            android.os.Build.DEVICE.contains("BYD", ignoreCase = true))
 
     private fun installed(context: Context, pkg: String): Boolean =
         runCatching { context.packageManager.getPackageInfo(pkg, 0) }.isSuccess

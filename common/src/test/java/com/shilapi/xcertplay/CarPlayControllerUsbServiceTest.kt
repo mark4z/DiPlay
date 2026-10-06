@@ -16,6 +16,8 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.Mockito.*
+import org.robolectric.util.ReflectionHelpers
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
@@ -89,6 +91,43 @@ class CarPlayControllerUsbServiceTest {
         assertEquals(1, context.unregistered)
     }
 
+    @Test fun oemReturnOpensAndroidHomeAndForwardsCallbackWithoutClosingSession() {
+        checkOemReturn(homeFails = false)
+    }
+
+    @Test fun unavailableAndroidHomeStillForwardsCallbackWithoutClosingSession() {
+        checkOemReturn(homeFails = true)
+    }
+
+    private fun checkOemReturn(homeFails: Boolean) {
+        val context = UsbContext(false).apply { this.homeFails = homeFails }
+        val phone = spy(AirPlaySession(
+            socket = java.net.Socket(),
+            config = AirPlayConfig("test", "02:00:00:00:00:02", "02:00:00:00:00:01", "1", AirPlayDisplayConfig(800, 480)),
+            identity = AirPlayIdentity.generate(), pairings = PairingStore(), mfi = null,
+            listener = object : AirPlaySessionListener {}, media = object : AirPlayMediaHandler {},
+        ))
+        val token = Any()
+        ReflectionHelpers.setField(phone, "mainScreenToken", token)
+        val forwarded = mutableListOf<AirPlaySession>()
+        val controller = controller(context, CarPlayTransport.WIRELESS, MfiTarget.LOCAL,
+            object : AirPlaySessionListener {
+                override fun onHostUiRequested(session: AirPlaySession) { forwarded += session }
+            })
+        ReflectionHelpers.setField(controller, "activeSession", phone)
+        val listener = ReflectionHelpers.getField<AirPlaySessionListener>(controller, "sessionListener")
+        listener.onHostUiRequested(phone)
+        val intent = context.homeIntent!!
+        assertEquals(Intent.ACTION_MAIN, intent.action)
+        assertTrue(intent.hasCategory(Intent.CATEGORY_HOME))
+        assertTrue(intent.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        assertEquals(listOf(phone), forwarded)
+        assertFalse(controller.isClosed())
+        assertSame(token, controller.activeAirPlaySessionToken())
+        verify(phone, never()).close()
+        assertTrue(statuses.isEmpty())
+    }
+
     private fun missingServiceFailsNormally(transport: CarPlayTransport, target: MfiTarget) {
         val context = UsbContext(false)
         val controller = controller(context, transport, target)
@@ -99,7 +138,8 @@ class CarPlayControllerUsbServiceTest {
         assertEquals(0, context.receivers.size)
     }
 
-    private fun controller(context: Context, transport: CarPlayTransport, target: MfiTarget): CarPlayController =
+    private fun controller(context: Context, transport: CarPlayTransport, target: MfiTarget,
+        listener: AirPlaySessionListener = object : AirPlaySessionListener {}): CarPlayController =
         CarPlayController(context, CarPlayRuntimeConfig(
             mfiTarget = target, transport = transport,
             ch341Devices = if (target == MfiTarget.USB_CH341) listOf(UsbDeviceId(0x1a86, 0x7523)) else emptyList(),
@@ -107,11 +147,17 @@ class CarPlayControllerUsbServiceTest {
                 serialNumber = "test", firmwareVersion = "1", hardwareVersion = "1", carPlayUsbInterfaceNumber = 3),
         ), AirPlayConfig("test", "test", "", "1", AirPlayDisplayConfig(800, 480)),
             AirPlayIdentity(ByteArray(32), ByteArray(32), "test"), PairingStore(),
-            object : AirPlaySessionListener {}, object : AirPlayMediaHandler {}, statuses::add).also(controllers::add)
+            listener, object : AirPlayMediaHandler {}, statuses::add).also(controllers::add)
 
     private class UsbContext(private val hasUsb: Boolean) : ContextWrapper(RuntimeEnvironment.getApplication()) {
         val receivers = mutableMapOf<BroadcastReceiver, IntentFilter>()
         var unregistered = 0
+        var homeIntent: Intent? = null
+        var homeFails = false
+        override fun startActivity(intent: Intent) {
+            homeIntent = intent
+            if (homeFails) throw android.content.ActivityNotFoundException("No launcher")
+        }
         override fun getApplicationContext(): Context = this
         override fun bindService(service: Intent, conn: ServiceConnection, flags: Int): Boolean = false
         override fun getSystemService(name: String): Any? =

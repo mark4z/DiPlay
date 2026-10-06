@@ -683,4 +683,7 @@
     <string name="car_button_description">CarPlay shows this icon and name in its app list. Tap it to return to the car\'s own screen. Changes apply the next time CarPlay connects.</string>
     <string name="car_button_saved_next_connection">Saved. CarPlay shows the new icon and name the next time it connects.</string>
     <string name="this_head_unit_has_no_image_picker">This head unit has no image picker.</string>
+    <string name="byd_hardware_disabled">BYD hardware integration is disabled. Vehicle battery, wheel speed, gear and parked-video playback are unavailable; Android GPS remains available.</string>
+    <string name="standard_call_keys">CarPlay call keys</string>
+    <string name="standard_call_keys_description">Use standard Android call and end-call buttons during a CarPlay call. Off by default; proprietary vehicle key codes are not handled.</string>
 </resources>

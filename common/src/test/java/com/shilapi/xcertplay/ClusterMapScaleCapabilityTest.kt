@@ -51,31 +51,45 @@ class ClusterMapScaleCapabilityTest {
         }
         ShadowDisplayManager.removeDisplay(displayId)
         ShadowMediaCodecList.reset()
+        MapMirrors.streamAspect = MapMirrors.PHYSICAL_STREAM_ASPECT
     }
 
-    @Test fun unsupportedLargerClusterUsesSupportedNativeSizeBeforeAdvertisingIt() {
-        decoder(1920, 1080)
-        assertSize(100, 1920, 720, cluster(125))
+    @Test fun unsupportedLargerVirtualMapUsesSupportedNativeSizeBeforeAdvertisingIt() {
+        decoder(1280, 720)
+        assertSize(100, 1280, 720, cluster(125))
     }
 
     @Test fun capableHardwareRetainsTheSelectedSmallerMapAndItsSavedPreset() {
         decoder(3840, 2160)
-        assertSize(125, 2408, 904, cluster(125))
+        assertSize(125, 1608, 904, cluster(125))
     }
 
     @Test fun incompatibleAlignmentFallsBackToTheNativeAlignedCanvas() {
         decoder(3840, 2160, alignment = 16)
-        assertSize(100, 1920, 720, cluster(125))
+        assertSize(100, 1280, 720, cluster(125))
     }
 
     @Test fun missingCapabilitiesAndSoftwareOnlyKeepTheExistingDefault() {
-        assertSize(83, 1600, 600, cluster(125))
+        assertSize(83, 1064, 600, cluster(125))
         decoder(3840, 2160, hardware = false)
-        assertSize(83, 1600, 600, cluster(125))
+        assertSize(83, 1064, 600, cluster(125))
     }
 
     @Test fun existingNativePresetRetainsItsStartupPathWithoutMetadata() {
-        assertSize(100, 1920, 720, cluster(100))
+        assertSize(100, 1280, 720, cluster(100))
+    }
+
+    @Test fun decoderFallbackKeepsSavedMarkerOffsetsAndContent() {
+        decoder(1280, 720)
+        AirPlayPersistence.saveClusterMarkerHorizontalStep(activity, 2)
+        AirPlayPersistence.saveClusterMarkerVerticalStep(activity, -1)
+        AirPlayPersistence.saveClusterContent(activity, CarPlayClusterDisplay.Content.INSTRUMENTS)
+        val config = cluster(125)
+        assertEquals(CarPlayClusterDisplay.config(1280, 720, 100, 2, -1,
+            CarPlayClusterDisplay.Content.INSTRUMENTS, CarPlayClusterDisplay.VIRTUAL_SAFE_AREA_PERCENT), config)
+        assertEquals(100, AirPlayPersistence.loadClusterMapScalePercent(activity))
+        assertEquals(2, AirPlayPersistence.loadClusterMarkerHorizontalStep(activity))
+        assertEquals(-1, AirPlayPersistence.loadClusterMarkerVerticalStep(activity))
     }
 
     @Test fun theNewPresetRoundTripsThroughTheSettingsPreferences() {
@@ -97,6 +111,9 @@ class ClusterMapScaleCapabilityTest {
         assertEquals(scale, AirPlayPersistence.loadClusterMapScalePercent(activity))
         assertEquals(true, config.safeAreaDrawOutside)
         assertEquals(CarPlayClusterDisplay.MAP_URL, config.initialUrl)
+        assertNull(ClusterMapPresentation.findDisplay(activity))
+        assertEquals(CarPlayClusterDisplay.config(1280, 720, scale,
+            baseSafeArea = CarPlayClusterDisplay.VIRTUAL_SAFE_AREA_PERCENT).safeArea, config.safeArea)
     }
 
     private fun decoder(maxWidth: Int, maxHeight: Int, maxFps: Double = 120.0, alignment: Int = 2, hardware: Boolean = true) {

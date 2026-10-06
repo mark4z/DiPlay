@@ -61,7 +61,10 @@ internal class BydStandaloneHudOutput private constructor(context: Context) {
         }
 
         /** Enable production and diagnostic packages only on the physically tested firmware. */
-        fun available(context: Context): Boolean {
+        fun available(context: Context): Boolean = BydHardwareIntegration.ENABLED && matchesDevice(context)
+
+        /** Read-only compatibility metadata, also used by standard Android hotspot settings. */
+        fun matchesDevice(context: Context): Boolean {
             if (Build.VERSION.SDK_INT < 28 || context.packageName !in setOf(
                     "com.andrerinas.headunitrevived", "com.shihab.diplay",
                     "com.andrerinas.headunitrevived.bydhudtest", "com.shihab.diplay.hudtest")) return false
