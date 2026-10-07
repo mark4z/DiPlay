@@ -14,13 +14,16 @@ class ProbeBoundaryTests(unittest.TestCase):
         self.assertIn('.addAddress(ProbePolicy.ADDRESS, 32)', source)
         self.assertIn('.addAllowedApplication(getPackageName())', source)
         self.assertIn('.allowFamily(OsConstants.AF_INET6)', source)
-        self.assertIn('listener.bind(new InetSocketAddress(address, ProbePolicy.PORT), 1)', source)
+        self.assertIn('ProbeListener.bind(listener, port, current::isCancelled)', source)
+        listener = (JAVA / 'ProbeListener.java').read_text()
+        self.assertIn('InetAddress.getByName(ProbePolicy.ADDRESS)', listener)
+        self.assertIn('listener.bind(new InetSocketAddress(address, port), 1)', listener)
     def test_service_never_auto_starts_and_disposes_on_terminal_paths(self):
         source = (JAVA / "ProbeVpnService.java").read_text()
         self.assertIn('START_NOT_STICKY', source)
         self.assertNotIn('START_STICKY;', source)
         self.assertIn('GATE.consume(', source)
-        for code in ('SYSTEM_REVOKED', 'TASK_REMOVED', 'TIME_LIMIT', 'BIND_FAILED', 'ESTABLISH_REJECTED'):
+        for code in ('SYSTEM_REVOKED', 'TASK_REMOVED', 'TIME_LIMIT', 'ESTABLISH_REJECTED'):
             self.assertIn(code, source)
         for resource in ('current.own(tun)', 'current.own(listener)', 'current.own(incoming)', 'current.own(localClient)'):
             self.assertIn(resource, source)
@@ -54,14 +57,46 @@ class ProbeBoundaryTests(unittest.TestCase):
         for blocked in ('.establish()', '.bind(', '.close()', 'rejectConflicts();'):
             self.assertNotIn(blocked, start)
             self.assertNotIn(blocked, stop)
-        self.assertIn('startWorker(() -> startAndServe(current)', start)
+        self.assertIn('startWorker(() -> startAndServe(current, port)', start)
         self.assertIn('CLEANUP_PENDING_', source)
 
     def test_local_check_is_fixed_bounded_and_separate_from_peer_counts(self):
         check = (JAVA / "ProbeSelfCheck.java").read_text()
         service = (JAVA / "ProbeVpnService.java").read_text()
-        self.assertIn('new InetSocketAddress(address, ProbePolicy.PORT), CONNECT_TIMEOUT_MS', check)
+        self.assertIn('new InetSocketAddress(address, port), CONNECT_TIMEOUT_MS', check)
         self.assertIn('System.nanoTime() + READ_TIMEOUT_MS', check)
         self.assertIn('main.postDelayed(checkTimeout, ProbeSelfCheck.TOTAL_TIMEOUT_MS)', service)
         self.assertIn('current.closeAsync(localClient)', service)
         self.assertIn('boolean external = !check.isOwnConnection(incoming)', service)
+
+    def test_port_is_explicit_locked_and_preserved_through_consent(self):
+        ui = (JAVA / "ProbeActivity.java").read_text()
+        service = (JAVA / "ProbeVpnService.java").read_text()
+        self.assertIn('pendingPort = selectedPort;', ui)
+        self.assertIn('int port = pendingPort;\n        cancelPendingStart();', ui)
+        self.assertIn('.putExtra(ProbeVpnService.PORT_EXTRA, port)', ui)
+        self.assertIn('port80.setEnabled(ready)', ui)
+        self.assertIn('port18080.setEnabled(ready)', ui)
+        self.assertIn('!ProbeVpnService.GATE.hasPending()', ui)
+        self.assertIn('!pending && !ProbeVpnService.running && !ProbeVpnService.recoveryRequired', ui)
+        self.assertIn('pendingPort = 0;', ui)
+        self.assertIn('final int port = intent.getIntExtra(PORT_EXTRA, 0)', service)
+        self.assertIn('if (!ProbePolicy.isTestPort(port))', service)
+        self.assertIn('sessionPort = port;', service)
+        self.assertIn('new ProbeSelfCheck(port)', service)
+        self.assertIn('ProbePolicy.healthUrl(ProbeVpnService.sessionPort)', ui)
+
+    def test_bind_error_keeps_real_errno_and_no_fallback_or_privilege_change(self):
+        service = (JAVA / "ProbeVpnService.java").read_text()
+        listener = (JAVA / "ProbeListener.java").read_text()
+        self.assertIn('catch (IOException | SecurityException failure)', service)
+        self.assertIn('ProbeListener.failureDescription(port, failure', service)
+        self.assertIn('((ErrnoException) cause).errno', service)
+        self.assertIn('OsConstants.errnoName(errno)', service)
+        self.assertIn('errno=UNAVAILABLE', listener)
+        self.assertEqual(1, listener.count('listener.bind('))
+        self.assertNotIn('catch (', listener.split('static String failureDescription')[0])
+        for path in JAVA.glob('*.java'):
+            source = path.read_text()
+            for forbidden in ('Runtime.getRuntime()', 'ProcessBuilder(', 'ip_unprivileged_port_start', 'setcap', 'setenforce'):
+                self.assertNotIn(forbidden, source)

@@ -19,9 +19,9 @@ import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.system.OsConstants;
+import android.system.ErrnoException;
 import java.io.IOException;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
@@ -31,12 +31,14 @@ import java.util.Collections;
 public final class ProbeVpnService extends VpnService {
     public static final String START = "com.diplay.networkprobe.START";
     public static final String STOP = "com.diplay.networkprobe.STOP";
+    public static final String PORT_EXTRA = "port";
     public static final ProbePolicy.StartGate GATE = new ProbePolicy.StartGate();
     public static volatile String status = "Stopped / 已停止";
     public static volatile boolean running;
     public static volatile boolean recoveryRequired;
     public static volatile long endsAt;
     public static volatile int accepted, health;
+    public static volatile int sessionPort;
     public static volatile String lastError = "NONE";
     public static volatile String selfCheck = "NOT_RUN";
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -64,6 +66,14 @@ public final class ProbeVpnService extends VpnService {
         }
         if (recoveryRequired) { stopSelf(); return START_NOT_STICKY; }
         if (running) return START_NOT_STICKY;
+        final int port = intent.getIntExtra(PORT_EXTRA, 0);
+        if (!ProbePolicy.isTestPort(port)) {
+            lastError = "INVALID_TEST_PORT";
+            status = "Stopped / 已停止: INVALID_TEST_PORT";
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        sessionPort = port;
         accepted = health = 0;
         lastError = "NONE";
         selfCheck = "PENDING";
@@ -83,11 +93,11 @@ public final class ProbeVpnService extends VpnService {
             PendingIntent open = PendingIntent.getActivity(this, 2, new Intent(this, ProbeActivity.class), PendingIntent.FLAG_IMMUTABLE);
             Notification notification = new Notification.Builder(this, "probe")
                     .setSmallIcon(android.R.drawable.stat_sys_warning).setContentTitle("DiPlay health experiment: 5 minutes")
-                    .setContentText("Temporary VPN address; tap Stop to remove it")
+                    .setContentText("Port " + port + "; temporary VPN address; tap Stop to remove it")
                     .setContentIntent(open).setOngoing(true).addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop / 停止", stop).build();
             if (Build.VERSION.SDK_INT >= 34) startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED);
             else startForeground(1, notification);
-            startWorker(() -> startAndServe(current), "health-only-io");
+            startWorker(() -> startAndServe(current, port), "health-only-io");
         } catch (RuntimeException failure) {
             stopProbe("FOREGROUND_START_FAILED");
             current.workerFinished();
@@ -101,7 +111,7 @@ public final class ProbeVpnService extends VpnService {
         worker.start();
     }
 
-    private void startAndServe(ProbeSession current) {
+    private void startAndServe(ProbeSession current, int port) {
         try {
             if (current.isCancelled()) return;
             reportStage(current, "STARTING_CHECKS");
@@ -123,16 +133,22 @@ public final class ProbeVpnService extends VpnService {
             if (NetworkInterface.getByInetAddress(address) == null) throw new ProbeFailure("ADDRESS_NOT_VISIBLE");
             ServerSocket listener = new ServerSocket();
             if (!current.own(listener)) return;
-            if (current.isCancelled()) return;
-            listener.bind(new InetSocketAddress(address, ProbePolicy.PORT), 1);
-            if (current.isCancelled()) return;
+            try {
+                if (!ProbeListener.bind(listener, port, current::isCancelled)) return;
+            } catch (IOException | SecurityException failure) {
+                throw new ProbeFailure(ProbeListener.failureDescription(port, failure, cause -> {
+                    if (!(cause instanceof ErrnoException)) return null;
+                    int errno = ((ErrnoException) cause).errno;
+                    return "errno=" + errno + " (" + OsConstants.errnoName(errno) + ")";
+                }));
+            }
             main.post(() -> {
                 if (session == current && !current.isCancelled()) {
-                    status = "VPN interface established; socket listening / 已建接口并监听（不代表外部可达）";
+                    status = "VPN interface established; socket listening on port " + port + " / 已建接口并监听（不代表外部可达）";
                     lastError = "NONE";
                 }
             });
-            ProbeSelfCheck check = new ProbeSelfCheck();
+            ProbeSelfCheck check = new ProbeSelfCheck(port);
             Socket localClient = new Socket();
             if (!current.own(localClient)) return;
             if (current.workerStarted()) {
@@ -164,7 +180,6 @@ public final class ProbeVpnService extends VpnService {
             }
             serve(listener, current, check);
         } catch (ProbeFailure failure) { failSession(current, failure.getMessage()); }
-        catch (java.net.BindException failure) { failSession(current, "BIND_FAILED"); }
         catch (SecurityException failure) { failSession(current, "PERMISSION_DENIED"); }
         catch (Exception failure) { failSession(current, "START_OR_LISTENER_FAILED"); }
         finally { current.workerFinished(); }

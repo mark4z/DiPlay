@@ -13,25 +13,33 @@ import android.content.pm.PackageManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 
 public final class ProbeActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private boolean pending, resumed, awaitingSystemPrompt, prepareWhenResumed, startWhenResumed;
     private TextView state;
     private Button start;
+    private RadioButton port80, port18080;
+    private int selectedPort = ProbePolicy.DEFAULT_PORT;
+    private int pendingPort;
     private AlertDialog warning;
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
-            state.setText(ProbeVpnService.status + "\nURL: http://" + ProbePolicy.ADDRESS + ":" + ProbePolicy.PORT
-                    + "/health\nLocal self-check: " + ProbeVpnService.selfCheck + " (local only; not hotspot reachability)"
+            state.setText(ProbeVpnService.status
+                    + "\nNext test URL / 下次测试: " + ProbePolicy.healthUrl(selectedPort)
+                    + "\nSession URL / 最近一次测试: " + (ProbeVpnService.sessionPort == 0 ? "NOT_RUN" : ProbePolicy.healthUrl(ProbeVpnService.sessionPort))
+                    + "\nLocal self-check: " + ProbeVpnService.selfCheck + " (local only; not hotspot reachability)"
                     + "\nExternal TCP accepts: " + ProbeVpnService.accepted + "\nExternal HTTP health responses written: " + ProbeVpnService.health
                     + "\nLast result: " + ProbeVpnService.lastError
                     + "\nRemaining seconds: " + Math.max(0, (ProbeVpnService.endsAt - SystemClock.elapsedRealtime()) / 1000));
-            start.setEnabled(!pending && !ProbeVpnService.running && !ProbeVpnService.recoveryRequired);
+            updateControls();
             main.postDelayed(this, 500);
         }
     };
@@ -43,8 +51,18 @@ public final class ProbeActivity extends Activity {
         column.setPadding(28, 28, 28, 28);
         scroll.addView(column);
         TextView title = new TextView(this);
-        title.setText("DiPlay Network Probe · health-only v2\n\n独立网络实验，不需要身份文件或域名。默认关闭。每次启动最多 5 分钟。请保持本页在前台并亮屏；切换应用、锁屏或旋转将停止。\n\n使用 Android VPN 创建临时单个虚拟地址，可能替换现有 VPN 或影响网络。请先自行停止其他 VPN，包括 DiPlay 有线 VPN；不要同时运行。\n\n不设默认路由、不改 DNS、不转发音视频、不读取 TUN 数据。仅在虚拟地址提供公开、无身份信息的 HTTP /health。不要在不可信网络上测试。\n\n启动后会对本机同一地址做一次限时 HTTP 自检，计数只包含外部连接。自检成功只证明本机 HTTP 路径，不代表热点或车机可达。\n\n先让另一台手机连接本机热点，手动输入下方完整 http:// 地址，再测试车机。监听成功不代表热点/车机可达；HTTP 成功也不代表 TLS 或 CarPlay 可用。\n");
+        title.setText("DiPlay Network Probe · health-only v3\n\n独立网络实验，不需要身份文件或域名。默认关闭。每次启动最多 5 分钟。请保持本页在前台并亮屏；切换应用、锁屏或旋转将停止。\n\n使用 Android VPN 创建临时单个虚拟地址，可能替换现有 VPN 或影响网络。请先自行停止其他 VPN，包括 DiPlay 有线 VPN；不要同时运行。\n\n不设默认路由、不改 DNS、不转发音视频、不读取 TUN 数据。仅在虚拟地址提供公开、无身份信息的 HTTP /health。不要在不可信网络上测试。\n\n本次仅监听所选的 80 或 18080 端口；失败不会切换端口。先停止并等待清理完成，再换端口重新确认。80 是否允许绑定，以本机结果为准；不需要 root，也不更改系统安全设置。\n\n启动后会对本机相同地址和端口做一次限时 HTTP 自检，计数只包含外部连接。自检成功只证明本机 HTTP 路径，不代表热点或车机可达。\n\n先让另一台手机连接本机热点，手动输入下方本次完整 http:// 地址，再测试车机。监听成功不代表热点/车机可达；HTTP 成功也不代表 TLS 或 CarPlay 可用。\n");
         column.addView(title);
+        RadioGroup ports = new RadioGroup(this);
+        port18080 = new RadioButton(this); port18080.setId(View.generateViewId());
+        port18080.setText("18080 · " + ProbePolicy.healthUrl(ProbePolicy.DEFAULT_PORT)); ports.addView(port18080);
+        port80 = new RadioButton(this); port80.setId(View.generateViewId());
+        port80.setText("80 · " + ProbePolicy.healthUrl(ProbePolicy.HTTP_PORT)); ports.addView(port80);
+        ports.check(port18080.getId());
+        ports.setOnCheckedChangeListener((group, id) -> {
+            selectedPort = id == port80.getId() ? ProbePolicy.HTTP_PORT : ProbePolicy.DEFAULT_PORT;
+        });
+        column.addView(ports);
         state = new TextView(this); state.setTextIsSelectable(true); column.addView(state);
         start = new Button(this); start.setText("Start 5-minute test / 启动 5 分钟测试"); column.addView(start);
         start.setOnClickListener(view -> confirmStart());
@@ -56,11 +74,21 @@ public final class ProbeActivity extends Activity {
         });
         setContentView(scroll);
     }
+    private void updateControls() {
+        boolean ready = !pending && !ProbeVpnService.running && !ProbeVpnService.recoveryRequired
+                && !ProbeVpnService.GATE.hasPending();
+        start.setEnabled(ready);
+        port80.setEnabled(ready);
+        port18080.setEnabled(ready);
+    }
     private void confirmStart() {
-        if (!resumed || pending || ProbeVpnService.running || ProbeVpnService.recoveryRequired) return;
+        if (!resumed || pending || ProbeVpnService.running || ProbeVpnService.recoveryRequired
+                || ProbeVpnService.GATE.hasPending()) return;
         pending = true;
+        pendingPort = selectedPort;
+        updateControls();
         warning = new AlertDialog.Builder(this).setTitle("临时 VPN 网络实验")
-                .setMessage("本次创建临时 VPN 地址，可能替换已有 VPN 并短暂影响网络。请停止 DiPlay 有线连接及其他 VPN。5 分钟后自动停止，也可随时点停止。请保持本页前台亮屏，离开或锁屏就停止。Android 17 还需允许本地网络访问。继续后如出现 Android VPN 授权，请由你本人确认。")
+                .setMessage("本次端口 " + pendingPort + "：" + ProbePolicy.healthUrl(pendingPort) + "。失败不会换端口。\n\n本次创建临时 VPN 地址，可能替换已有 VPN 并短暂影响网络。请停止 DiPlay 有线连接及其他 VPN。5 分钟后自动停止，也可随时点停止。请保持本页前台亮屏，离开或锁屏就停止。Android 17 还需允许本地网络访问。继续后如出现 Android VPN 授权，请由你本人确认。")
                 .setNegativeButton("取消", (dialog, which) -> cancelPendingStart())
                 .setPositiveButton("我了解，启动本次测试", (dialog, which) -> prepareVpn())
                 .setOnCancelListener(dialog -> cancelPendingStart()).show();
@@ -118,10 +146,12 @@ public final class ProbeActivity extends Activity {
             startWhenResumed = true;
             return;
         }
+        int port = pendingPort;
         cancelPendingStart();
         if (ProbeVpnService.running || ProbeVpnService.recoveryRequired) return;
         long grant = ProbeVpnService.GATE.arm();
-        try { startForegroundService(new Intent(this, ProbeVpnService.class).setAction(ProbeVpnService.START).putExtra("grant", grant)); }
+        try { startForegroundService(new Intent(this, ProbeVpnService.class).setAction(ProbeVpnService.START)
+                .putExtra("grant", grant).putExtra(ProbeVpnService.PORT_EXTRA, port)); }
         catch (RuntimeException failure) {
             ProbeVpnService.GATE.cancel();
             ProbeVpnService.status = "Stopped / 已停止: SERVICE_START_DENIED";
@@ -129,6 +159,7 @@ public final class ProbeActivity extends Activity {
     }
     private void cancelPendingStart() {
         pending = false;
+        pendingPort = 0;
         awaitingSystemPrompt = false;
         prepareWhenResumed = false;
         startWhenResumed = false;

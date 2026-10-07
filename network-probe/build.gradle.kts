@@ -6,8 +6,8 @@ android {
         applicationId = "com.diplay.networkprobe"
         minSdk = 28
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.2-stop-safe"
+        versionCode = 3
+        versionName = "0.3-port-compare"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

@@ -14,9 +14,15 @@ final class ProbeSelfCheck {
     static final int TOTAL_TIMEOUT_MS = 4000;
     static final int CONNECT_TIMEOUT_MS = 1500;
     static final int READ_TIMEOUT_MS = 2000;
-    private static final String REQUEST = "GET /health HTTP/1.1\r\nHost: "
-            + ProbePolicy.ADDRESS + ":" + ProbePolicy.PORT + "\r\nConnection: close\r\n\r\n";
+    private final int port;
+    private final String request;
     private volatile int sourcePort;
+
+    ProbeSelfCheck(int port) {
+        this.port = ProbePolicy.requireTestPort(port);
+        request = "GET /health HTTP/1.1\r\nHost: " + ProbePolicy.authority(port)
+                + "\r\nConnection: close\r\n\r\n";
+    }
 
     boolean isOwnConnection(Socket incoming) {
         return sourcePort != 0 && incoming.getPort() == sourcePort
@@ -31,13 +37,13 @@ final class ProbeSelfCheck {
             socket.bind(new InetSocketAddress(address, 0));
             sourcePort = socket.getLocalPort();
             if (cancelled.getAsBoolean()) return "CANCELLED";
-            socket.connect(new InetSocketAddress(address, ProbePolicy.PORT), CONNECT_TIMEOUT_MS);
+            socket.connect(new InetSocketAddress(address, port), CONNECT_TIMEOUT_MS);
             connected = true;
             if (cancelled.getAsBoolean()) return "CANCELLED";
-            socket.getOutputStream().write(REQUEST.getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
             socket.getOutputStream().flush();
             InputStream input = socket.getInputStream();
-            byte[] expected = HealthProtocol.response(REQUEST);
+            byte[] expected = HealthProtocol.response(request);
             long deadline = System.nanoTime() + READ_TIMEOUT_MS * 1_000_000L;
             for (byte value : expected) {
                 if (cancelled.getAsBoolean()) return "CANCELLED";
