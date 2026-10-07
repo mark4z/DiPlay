@@ -46,7 +46,7 @@ android {
     }
     // The WebRTC AAR omits its notices; ship the preserved dependency licenses in every APK.
     sourceSets.main.assets.srcDir(rootProject.file('docs/licenses'))
-    sourceSets.main.assets.srcDir(browserViewerAssets)
+    sourceSets.main.assets.srcDir(browserViewerAssets.get().asFile)
 }
 
 tasks.named('preBuild').configure {

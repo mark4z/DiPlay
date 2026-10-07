@@ -14,7 +14,7 @@ test('Gradle copies canonical root runtime assets into the APK before Android pr
   assert.match(gradle, /include 'index\.html', '\*\.css', '\*\.mjs'/);
   assert.match(gradle, /exclude 'README\*', 'tests\/\*\*'/);
   assert.match(gradle, /into 'browser-carplay'/);
-  assert.match(gradle, /sourceSets\.main\.assets\.srcDir\(browserViewerAssets\)/);
+  assert.match(gradle, /sourceSets\.main\.assets\.srcDir\(browserViewerAssets\.get\(\)\.asFile\)/);
   assert.match(gradle, /tasks\.named\('preBuild'\)\.configure\s*\{\s*dependsOn syncBrowserViewerAssets/);
   assert.ok(runtimeAssets.includes('index.html'));
   assert.ok(runtimeAssets.includes('viewer.css'));
