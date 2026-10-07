@@ -64,6 +64,8 @@ class BrowserConnectionDiagnosticsUiTest {
         BrowserOutputSettings.create(activity).performClick()
         button(ShadowAlertDialog.getLatestAlertDialog().window!!.decorView, "Connection diagnostics").performClick()
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        // OnShow is posted to the paused main looper; let it install the copy listener.
+        shadowOf(Looper.getMainLooper()).idle()
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL).performClick()
         assertTrue(dialog.isShowing)
         val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -80,6 +82,7 @@ class BrowserConnectionDiagnosticsUiTest {
         BrowserOutputSettings.create(activity).performClick()
         button(ShadowAlertDialog.getLatestAlertDialog().window!!.decorView, "Connection diagnostics").performClick()
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        shadowOf(Looper.getMainLooper()).idle()
         controller.pause().stop().destroy()
         shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(2))
         assertFalse(dialog.isShowing)
