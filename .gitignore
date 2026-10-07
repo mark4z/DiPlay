@@ -39,3 +39,7 @@ release-signing.properties
 *.key
 *.apk
 *.aab
+
+# Local Python test/build helper bytecode
+__pycache__/
+*.py[cod]

@@ -52,9 +52,10 @@ class CarHotspotSetupTest {
         assertFalse(CarHotspotSettings.visible(CarHotspotSetup.isBydHeadUnit(context), LocalAdb.Access.READY))
     }
 
-    @Test fun existingNavigationBasedDetectionIsPreserved() {
+    @Test fun navigationMetadataKeepsHotspotDetectionWithoutEnablingOutput() {
         installPackage("com.byd.amapservice", system = true)
-        assertTrue(BydOutputSettings.navigationAvailable(context))
+        assertTrue(BydOutputSettings.navigationHardwareDetected(context))
+        assertFalse(BydOutputSettings.navigationAvailable(context))
         assertTrue(CarHotspotSetup.isBydHeadUnit(context))
     }
 

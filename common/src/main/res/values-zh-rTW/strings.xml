@@ -34,7 +34,7 @@
     <string name="clipboard_usage_access">DiPlay 使用狀況存取權限</string>
     <string name="report_clip_label">診斷報告</string>
     <string name="share_diagnostic_report">分享診斷報告</string>
-    <string name="setup_error_auth">無法載入 CarPlay 認證。請在此 App 上覆蓋安裝完整的 DiPlay 建置版本。無需解除安裝或變更熱點設定。</string>
+    <string name="setup_error_auth">無法載入 CarPlay 認證。請開啟 DiPlay 首頁或連線設定，選取「匯入本機身分」，再選取您獲准使用的身分檔案。</string>
     <string name="hotspot_state_stopped">已停止</string>
     <string name="hotspot_state_off">已關閉</string>
     <string name="hotspot_wireless_prefix">無線熱點：</string>
@@ -683,4 +683,7 @@
     <string name="usb_auto_confirm_active_hint">✓ 無障礙服務已啟用（將自動確認 USB 提示）</string>
     <string name="usb_auto_confirm_dialog_msg">自動確認需要無障礙服務。許多車機未提供系統無障礙設定。\n\n此設定也會為主畫面地圖申請使用情況存取權及顯示在其他應用程式上層的權限。現有無障礙服務會保留。\n\n要透過本機 ADB 授予這三項權限嗎？</string>
     <string name="usb_auto_confirm_status_on">USB 提示自動確認：已啟用</string>
+    <string name="byd_hardware_disabled">已停用 BYD 專屬硬體接入。車輛電量、輪速、檔位和駐車影片不可用；Android GPS 仍可使用。</string>
+    <string name="standard_call_keys">CarPlay 通話按鍵</string>
+    <string name="standard_call_keys_description">在 CarPlay 通話中使用標準 Android 接聽和掛斷按鍵。預設關閉；不處理車廠專屬按鍵碼。</string>
 </resources>

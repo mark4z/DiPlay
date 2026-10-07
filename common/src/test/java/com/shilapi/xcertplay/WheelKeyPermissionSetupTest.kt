@@ -99,9 +99,10 @@ class WheelKeyPermissionSetupTest {
         }))
     }
 
-    @Test fun disablingTheFeaturesDuringTheRestoreGraceStopsTheRequest() {
+    @Test fun savedWheelFeaturesNeverTriggerAutomaticBydAdbRestore() {
         WheelZoomSettings.setEnabled(context, true)
-        assertTrue(WheelKeyService.needsRestore(context))
+        WheelZoomSettings.setJoystick(context, true)
+        assertFalse(WheelKeyService.needsRestore(context))
         WheelZoomSettings.setEnabled(context, false)
         assertFalse(WheelKeyService.needsRestore(context))
         assertFalse(WheelKeyService.applyServiceSettings(context, ::shell) { WheelKeyService.needsRestore(context) })

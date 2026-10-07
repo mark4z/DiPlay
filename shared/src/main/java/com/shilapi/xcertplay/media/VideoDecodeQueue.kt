@@ -7,7 +7,12 @@ import java.util.concurrent.TimeUnit
 
 internal sealed interface VideoJob {
     data class Config(val codec: VideoCodec, val codecData: ByteArray) : VideoJob
-    data class Frame(val nalus: ByteArray, val receivedNs: Long = System.nanoTime()) : VideoJob
+    data class Frame(
+        val nalus: ByteArray,
+        // Required by the existing age limit even when optional diagnostics are disabled.
+        val receivedNs: Long = System.nanoTime(),
+        val performanceToken: Long = 0,
+    ) : VideoJob
     data class SurfaceChanged(val surface: Surface?) : VideoJob
     data object Resync : VideoJob
 }
@@ -38,16 +43,40 @@ internal class VideoDecodeQueue(
                 jobs.offer(VideoJob.Resync)
             }
             // A single oversized frame is also a lost reference chain.
-            if (job.nalus.size > maxBytes) return
+            if (job.nalus.size > maxBytes) {
+                if (job.performanceToken != 0L) {
+                    PerformanceDiagnostics.count(PerformanceCounter.VIDEO_QUEUE_DROPPED, job.performanceToken)
+                }
+                recordDepth()
+                return
+            }
         }
         jobs.offer(job)
+        recordDepth()
     }
 
-    @Synchronized fun discardFrames() {
-        jobs.removeIf { it is VideoJob.Frame || it is VideoJob.Resync }
+    @Synchronized fun discardFrames(reason: PerformanceCounter = PerformanceCounter.VIDEO_QUEUE_DROPPED) {
+        val token = PerformanceDiagnostics.token()
+        var dropped = 0L
+        jobs.removeIf {
+            if (it is VideoJob.Frame && token != 0L && it.performanceToken == token) dropped++
+            it is VideoJob.Frame || it is VideoJob.Resync
+        }
+        if (token != 0L) PerformanceDiagnostics.count(reason, token, dropped)
+        recordDepth()
     }
 
-    fun poll(timeoutMillis: Long): VideoJob? = jobs.poll(timeoutMillis, TimeUnit.MILLISECONDS)
+    fun poll(timeoutMillis: Long): VideoJob? = jobs.poll(timeoutMillis, TimeUnit.MILLISECONDS).also {
+        if (it != null) recordDepth()
+    }
+
+    private fun recordDepth() {
+        val token = PerformanceDiagnostics.token()
+        if (token != 0L) {
+            PerformanceDiagnostics.depth(PerformanceCounter.VIDEO_QUEUE_DEPTH,
+                jobs.count { it is VideoJob.Frame && it.performanceToken == token }, token)
+        }
+    }
 }
 
 /** Drain output while waiting for input: full output buffers can otherwise starve input forever. */

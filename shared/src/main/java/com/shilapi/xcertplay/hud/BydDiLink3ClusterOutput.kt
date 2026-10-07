@@ -22,11 +22,13 @@ internal object BydDiLink3ClusterOutput {
 
     /** Also called when the setting is off, so an interrupted output is always recoverable. */
     fun restoreIfNeeded(appContext: Context) {
+        if (!BydHardwareIntegration.ENABLED) return
         initialize(appContext)
         requestApply()
     }
 
     fun setDesired(appContext: Context, mapShown: Boolean, guidanceActive: Boolean) {
+        if (!BydHardwareIntegration.ENABLED) return
         desiredMode = when {
             mapShown -> BydDiLink3ClusterMode.Mode.PROJECTION
             guidanceActive -> BydDiLink3ClusterMode.Mode.SIMPLE_NAVIGATION
@@ -37,6 +39,7 @@ internal object BydDiLink3ClusterOutput {
     }
 
     fun prepareDisplay(appContext: Context, displayPresent: () -> Boolean) {
+        if (!BydHardwareIntegration.ENABLED) return
         if (adbClusterRouteSelected(appContext)) return
         initialize(appContext)
         worker.execute {

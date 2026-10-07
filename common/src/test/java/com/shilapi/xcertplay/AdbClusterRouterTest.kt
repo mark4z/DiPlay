@@ -2,8 +2,37 @@ package com.shilapi.xcertplay
 
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [29], manifest = Config.NONE)
 class AdbClusterRouterTest {
+    @Test fun savedPreferenceCannotEnableOrLaunchOrVerifyHardwareRouting() {
+        val app = RuntimeEnvironment.getApplication()
+        AirPlayPersistence.saveAdbClusterEnabled(app, true)
+        try {
+            assertTrue(AirPlayPersistence.loadAdbClusterEnabled(app))
+            assertFalse(AdbClusterRouter.enabled(app))
+            for (holdStockMap in listOf(false, true)) {
+                var prepared = false
+                val result = AdbClusterRouter.launch(app, "01234567-89ab-cdef-0123-456789abcdef", holdStockMap) {
+                    prepared = true
+                    true
+                }
+                assertFalse(result.success)
+                assertEquals("BYD cluster routing disabled.", result.report)
+                assertFalse(prepared)
+            }
+            assertNull(AdbClusterRouter.verify(app, 12))
+        } finally {
+            AirPlayPersistence.saveAdbClusterEnabled(app, false)
+            AirPlayPersistence.saveClusterMapEnabled(app, false)
+        }
+    }
+
     private fun record(id: Int = 7, size: String = "1920 x 720", owner: String = "com.xdja.containerservice") =
         "mBaseDisplayInfo=DisplayInfo{\"fission_bg_xdjaVirtualSurface, displayId $id\", real $size, owner $owner (uid 1000)}"
 
@@ -18,7 +47,7 @@ class AdbClusterRouterTest {
         assertNull(AdbClusterRouter.displayId(record() + "\n" + record(8)))
         assertNull(AdbClusterRouter.displayId(record().replace("mBaseDisplayInfo", "mOverrideDisplayInfo")))
     }
-    @Test fun directLaunchUsesIndependentTaskAndRejectsMainDisplay() {
+    @Test fun launchCommandHelperUsesIndependentTaskAndRejectsMainDisplay() {
         val token = "01234567-89ab-cdef-0123-456789abcdef"
         val command = AdbClusterRouter.launchCommand("com.shihab.diplay.hudtest", 7, token)
         assertTrue(command.startsWith("am start-activity --display 7 -f 0x18000000 "))

@@ -14,6 +14,7 @@ import com.shilapi.xcertplay.adb.LocalAdb
 import com.shilapi.xcertplay.hud.BydAdbAccess
 import com.shilapi.xcertplay.hud.BydFieldProbeResult
 import com.shilapi.xcertplay.hud.BydFieldSource
+import com.shilapi.xcertplay.hud.BydHardwareIntegration
 import com.shilapi.xcertplay.hud.BydOutputSettings
 import com.shilapi.xcertplay.hud.BydReadAddress
 import com.shilapi.xcertplay.hud.BydVehicleCapabilities
@@ -66,27 +67,16 @@ class BydVehicleDataSettingsTest {
         shadowOf(context.packageManager).removePackage("com.byd.amapservice")
     }
 
-    @Test fun defaultModeShowsTheDiLink5SettingsBehindTheAdvancedButton() {
+    @Test fun defaultSettingsKeepGpsAndMapsButHideVehicleHardwareControls() {
         openSettings()
 
-        assertFalse(BydOutputSettings.navigationAvailable(activity))
-        assertTrue(texts().any { it.text == activity.getString(R.string.advanced_vehicle_data) })
-        assertFalse(switches().any { it.contentDescription == activity.getString(R.string.car_battery_for_the_iphone) })
-        assertFalse(switches().any { it.contentDescription == activity.getString(R.string.wheel_speed_for_tunnels) })
-        assertFalse(switches().any { it.contentDescription == activity.getString(R.string.cluster_song) })
-        assertFalse(switches().any { it.contentDescription == activity.getString(R.string.navigation_on_hud_and_instrument_cluster) })
-
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
-
-        assertTrue(texts().any { it.text == activity.getString(R.string.advanced_vehicle_data_description) })
-        assertTrue(texts().any { it.text.toString().contains(activity.getString(R.string.vehicle_data_mode_default)) })
-        assertTrue(texts().any { it.text == activity.getString(R.string.check_adb_access) })
-        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.car_battery_for_the_iphone) })
-        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.wheel_speed_for_tunnels) })
-        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.video_while_parked) })
+        assertFalse(BydHardwareIntegration.ENABLED)
+        assertHardwareControlsHidden()
+        assertGenericSettingsAvailable()
+        assertNoVehicleWork()
     }
 
-    @Test fun successfulLiveProbeRevealsOnlySupportedSettings() {
+    @Test fun restoredAdvancedStateAndSuccessfulProbeCannotRevealHardwareControls() {
         BydOutputSettings.setLegacyVehicleProbe(context, true)
         openSettings()
         ReflectionHelpers.setField(activity, "bydVehicleAdvancedExpanded", true)
@@ -94,44 +84,52 @@ class BydVehicleDataSettingsTest {
         ReflectionHelpers.setField(activity, "vehicleProbeOutcome",
             BydVehicleProbeOutcome(BydAdbAccess.State.READY, supportedCapabilities()))
         ReflectionHelpers.callInstanceMethod<Unit>(activity, "render")
+        requireNotNull(controller).recreate()
 
-        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.car_battery_for_the_iphone) })
-        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.wheel_speed_for_tunnels) })
-        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.video_while_parked) })
+        assertTrue(ReflectionHelpers.getField<Boolean>(activity, "bydVehicleAdvancedExpanded"))
+        assertHardwareControlsHidden()
+        assertGenericSettingsAvailable()
+        assertNoVehicleWork()
     }
 
-    @Test fun savedProbeAndEnabledSwitchSurviveAFreshActivityWithoutReprobing() {
-        BydVehicleFieldStore.save(context, supportedCapabilities(BydVehicleFieldStore.firmwareKey()))
-        BydOutputSettings.setWheelSpeedToIphone(context, true)
+    @Test fun savedCapabilitiesAndEnabledOptionsStayInertAcrossRecreationAndFreshLaunch() {
+        val saved = supportedCapabilities(BydVehicleFieldStore.firmwareKey())
+        BydVehicleFieldStore.save(context, saved)
+        BydVehicleFieldStore.clearMemoryForTests()
+        val persisted = BydVehicleFieldStore.load(context)
+        saveEnabledVehicleOptions()
+        val outputs = context.getSharedPreferences("diplay_byd_outputs", 0).all.toMap()
+        val fields = context.getSharedPreferences("diplay_byd_vehicle_fields", 0).all.toMap()
         backend.checkResult = readableStatus()
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
+        assertHardwareControlsHidden()
+        assertNoVehicleWork()
 
-        assertTrue(vehicleSwitch(R.string.wheel_speed_for_tunnels).isChecked)
+        requireNotNull(controller).recreate()
+        assertHardwareControlsHidden()
+        assertNoVehicleWork()
         requireNotNull(controller).pause().stop().destroy()
         controller = null
         BydVehicleFieldStore.clearMemoryForTests()
-        // Work the first activity left queued would be ignored; count only the fresh one's.
-        backend.tasks.clear()
         openSettings()
-        shadowOf(Looper.getMainLooper()).idle()
-        backend.runAll("diplay-byd13-auto-validate")
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
 
-        assertTrue(texts().any { it.text == activity.getString(R.string.hide_advanced_vehicle_data) })
-        assertTrue(vehicleSwitch(R.string.wheel_speed_for_tunnels).isChecked)
-        // The fresh activity validated the saved fields by reading them, not by probing again.
-        assertEquals(1, backend.checkCalls)
-        assertEquals(0, backend.probeCalls)
+        assertHardwareControlsHidden()
+        assertGenericSettingsAvailable()
+        assertNoVehicleWork()
+        assertEquals(persisted, BydVehicleFieldStore.load(context))
+        assertEquals(outputs, context.getSharedPreferences("diplay_byd_outputs", 0).all)
+        assertEquals(fields, context.getSharedPreferences("diplay_byd_vehicle_fields", 0).all)
+        assertFalse(BydOutputSettings.batteryToIphoneActive(context))
+        assertFalse(BydOutputSettings.wheelSpeedToIphoneActive(context))
+        assertFalse(BydOutputSettings.videoWhileParkedActive(context))
     }
 
-    @Test fun theHotspotCardCannotExposeFieldsRejectedByTheLegacyProbe() {
+    @Test fun theRetainedHotspotCardCannotExposeVehicleDataControls() {
         val saved = supportedCapabilities(BydVehicleFieldStore.firmwareKey(), without = setOf(BydVehicleField.GEAR))
         BydVehicleFieldStore.save(context, saved)
         BydOutputSettings.setLegacyVehicleProbe(context, true)
         AirPlayPersistence.saveWirelessHotspotMode(context, WirelessHotspotMode.MANUAL)
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
         val hotspot = LinearLayout(activity)
         ReflectionHelpers.callInstanceMethod<Unit>(activity, "renderBydAdbControls",
             ReflectionHelpers.ClassParameter.from(LinearLayout::class.java, hotspot),
@@ -140,73 +138,79 @@ class BydVehicleDataSettingsTest {
             .getChildAt(0) as LinearLayout
         page.addView(hotspot)
 
-        assertEquals(1, switches().count { it.contentDescription == activity.getString(R.string.car_battery_for_the_iphone) })
-        assertEquals(0, switches().count { it.contentDescription == activity.getString(R.string.wheel_speed_for_tunnels) })
-        assertEquals(0, switches().count { it.contentDescription == activity.getString(R.string.video_while_parked) })
+        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.auto_car_hotspot_title) })
+        assertHardwareControlsHidden()
+        assertNoVehicleWork()
         assertTrue(BydOutputSettings.legacyVehicleProbe(context))
         assertEquals(saved, BydVehicleFieldStore.load(context))
     }
 
-    @Test fun automaticValidationWaitsForHotspotAuthorizationThenResumes() {
+    @Test fun stalePendingValidationCannotResumeAfterHotspotAuthorization() {
         val saved = supportedCapabilities(BydVehicleFieldStore.firmwareKey())
         BydVehicleFieldStore.save(context, saved)
         BydOutputSettings.setLegacyVehicleProbe(context, true)
         backend.checkResult = readableStatus()
-        controller = Robolectric.buildActivity(
-            DiPlayActivity::class.java,
-            Intent(context, DiPlayActivity::class.java).putExtra("page", "settings"),
-        )
-        // setup() can drain the validation posted by onCreate; establish authorization first.
+        openSettings()
         ReflectionHelpers.setField(activity, "adbSwitchChangePending", true)
-        requireNotNull(controller).setup()
-        shadowOf(Looper.getMainLooper()).idle()
-        assertTrue(backend.tasks.none { it.first == "diplay-byd13-auto-validate" })
-        assertEquals(0, backend.checkCalls)
-        assertEquals(0, backend.probeCalls)
-        assertTrue(ReflectionHelpers.getField<Boolean>(activity, "automaticVehicleValidationPending"))
+        ReflectionHelpers.setField(activity, "automaticVehicleValidationPending", true)
+        ReflectionHelpers.callInstanceMethod<Unit>(activity, "runPendingAutomaticVehicleValidation")
+        assertNoVehicleWork()
 
         ReflectionHelpers.setField(activity, "adbSwitchChangePending", false)
         ReflectionHelpers.callInstanceMethod<Unit>(activity, "runPendingAutomaticVehicleValidation")
-        shadowOf(Looper.getMainLooper()).idle()
-        assertEquals(1, backend.tasks.count { it.first == "diplay-byd13-auto-validate" })
-        backend.runAll("diplay-byd13-auto-validate")
-        assertEquals(1, backend.checkCalls)
-        assertEquals(0, backend.probeCalls)
+        assertNoVehicleWork()
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "automaticVehicleValidationPending"))
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "automaticVehicleValidationInProgress"))
         assertEquals(saved, BydVehicleFieldStore.load(context))
+        assertHardwareControlsHidden()
     }
 
-    @Test fun temporaryAdbFailureDoesNotHideSavedFunctionsOrClearSwitches() {
-        BydVehicleFieldStore.save(context, supportedCapabilities(BydVehicleFieldStore.firmwareKey()))
-        BydOutputSettings.setVideoWhileParked(context, true)
-        backend.checkResult = BydAdbAccess.Status(BydAdbAccess.State.ADB_OFF)
+    @Test fun adbRecoveryAndNewSettingsIntentsCannotReactivateSavedVehicleOptions() {
+        val saved = supportedCapabilities(BydVehicleFieldStore.firmwareKey())
+        BydVehicleFieldStore.save(context, saved)
+        saveEnabledVehicleOptions()
         openSettings()
-        shadowOf(Looper.getMainLooper()).idle()
-        backend.runAll("diplay-byd13-auto-validate")
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
 
-        assertTrue(vehicleSwitch(R.string.video_while_parked).isChecked)
-        assertTrue(texts().any { it.text == activity.getString(R.string.probe_vehicle_data_again) })
+        for (state in listOf(BydAdbAccess.State.ADB_OFF, BydAdbAccess.State.NOT_APPROVED, BydAdbAccess.State.READY)) {
+            backend.checkResult = if (state == BydAdbAccess.State.READY) readableStatus() else BydAdbAccess.Status(state)
+            ReflectionHelpers.setField(activity, "adbAccessState", state)
+            returnFromCarPlay()
+            assertHardwareControlsHidden()
+            assertGenericSettingsAvailable()
+            assertNoVehicleWork()
+        }
+        assertEquals(saved, BydVehicleFieldStore.load(context))
+        assertTrue(BydOutputSettings.batteryToIphone(context))
+        assertTrue(BydOutputSettings.wheelSpeedToIphone(context))
+        assertTrue(BydOutputSettings.videoWhileParked(context))
     }
 
-    @Test fun clusterSongSwitchStaysInTheBydNavigationSectionOnly() {
+    @Test fun installedBydNavigationCannotExposeSongOrNavigationControls() {
         shadowOf(context.packageManager).installPackage(PackageInfo().apply { packageName = "com.byd.amapservice" })
+        saveEnabledVehicleOptions()
+        AirPlayPersistence.saveAdbClusterEnabled(context, true)
         openSettings()
 
-        assertTrue(texts().any { it.text == activity.getString(R.string.byd_navigation) })
-        assertEquals(1, switches().count { it.contentDescription == activity.getString(R.string.cluster_song) })
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
-        assertEquals(1, switches().count { it.contentDescription == activity.getString(R.string.cluster_song) })
+        assertTrue(BydOutputSettings.navigationHardwareDetected(context))
+        assertFalse(BydOutputSettings.navigationAvailable(context))
+        assertFalse(BydOutputSettings.available(context))
+        assertHardwareControlsHidden()
+        assertGenericSettingsAvailable()
+        assertNoVehicleWork()
+        assertTrue(BydOutputSettings.clusterSong(context))
+        assertTrue(AirPlayPersistence.loadAdbClusterEnabled(context))
     }
 
-    @Test fun withoutBydNavigationTheClusterSongSwitchIsUnderAdvancedVehicleData() {
+    @Test fun virtualMapToggleStillWorksWithoutSchedulingVehicleChecks() {
+        AirPlayPersistence.saveClusterMapEnabled(context, false)
         openSettings()
-        assertFalse(texts().any { it.text == activity.getString(R.string.byd_navigation) })
-        assertFalse(switches().any { it.contentDescription == activity.getString(R.string.cluster_song) })
 
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
-        vehicleSwitch(R.string.cluster_song).performClick()
+        vehicleSwitch(R.string.carplay_map_on_instrument_cluster_experimental).performClick()
 
-        assertTrue(BydOutputSettings.clusterSong(context))
+        assertTrue(AirPlayPersistence.loadClusterMapEnabled(context))
+        assertTrue(vehicleSwitch(R.string.carplay_map_on_instrument_cluster_experimental).isChecked)
+        assertHardwareControlsHidden()
+        assertNoVehicleWork()
     }
 
     @Test fun scheduledValidationCannotLeaveAUserProbeStuck() {
@@ -279,14 +283,15 @@ class BydVehicleDataSettingsTest {
             supportedCapabilities(currentKey, without = setOf(BydVehicleField.GEAR)),
         )
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
 
         invokeProbe()
         backend.run("diplay-byd13-probe")
 
         assertTrue(BydVehicleFieldStore.load(context)!!.gearSupported)
-        assertTrue(texts().any { it.text.toString().contains(activity.getString(R.string.vehicle_field_gear)) })
-        texts().single { it.text == activity.getString(R.string.replace_saved_vehicle_data_anyway) }.performClick()
+        assertTrue(ReflectionHelpers.getField<Set<BydVehicleField>>(activity, "pendingVehicleLostFields")
+            .contains(BydVehicleField.GEAR))
+        assertHardwareControlsHidden()
+        ReflectionHelpers.callInstanceMethod<Unit>(activity, "replaceSavedVehicleDataAnyway")
         assertFalse(BydVehicleFieldStore.load(context)!!.gearSupported)
     }
 
@@ -372,25 +377,27 @@ class BydVehicleDataSettingsTest {
         return requireNotNull(provider.snapshot()).batteryPercent
     }
 
-    @Test fun aPassingValidationKeepsTheOfferToReplaceSavedData() {
+    @Test fun returningToSettingsDoesNotValidateOrDiscardAnInjectedReplacementCandidate() {
         val currentKey = BydVehicleFieldStore.firmwareKey()
-        BydVehicleFieldStore.save(context, supportedCapabilities(currentKey))
+        val saved = supportedCapabilities(currentKey)
+        BydVehicleFieldStore.save(context, saved)
         backend.checkStateResult = BydAdbAccess.State.READY
         backend.probeResult = BydVehicleProbeOutcome(
             BydAdbAccess.State.READY,
             supportedCapabilities(currentKey, without = setOf(BydVehicleField.GEAR)),
         )
-        backend.checkResult = readableStatus()
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
         invokeProbe()
         backend.run("diplay-byd13-probe")
 
-        // With no switch on, the check after a return from CarPlay passes without reading the lost gear.
         returnFromCarPlay()
-        backend.runAll("diplay-byd13-auto-validate")
 
-        assertTrue(texts().any { it.text == activity.getString(R.string.replace_saved_vehicle_data_anyway) })
+        assertEquals(0, backend.checkCalls)
+        assertFalse(backend.tasks.any { it.first == "diplay-byd13-auto-validate" })
+        assertEquals(backend.probeResult.capabilities,
+            ReflectionHelpers.getField<BydVehicleCapabilities?>(activity, "pendingVehicleReplacement"))
+        assertEquals(saved, BydVehicleFieldStore.load(context))
+        assertHardwareControlsHidden()
     }
 
     @Test fun replaceAnywayKeepsTheAdbStateAndASnapshotSavedSince() {
@@ -402,24 +409,21 @@ class BydVehicleDataSettingsTest {
             supportedCapabilities(currentKey, without = setOf(BydVehicleField.GEAR)),
         )
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
         invokeProbe()
         backend.run("diplay-byd13-probe")
 
         // Meanwhile ADB was turned off, and another probe saved its result.
-        backend.checkResult = BydAdbAccess.Status(BydAdbAccess.State.ADB_OFF)
+        ReflectionHelpers.setField(activity, "adbAccessState", BydAdbAccess.State.ADB_OFF)
         returnFromCarPlay()
-        backend.runAll("diplay-byd13-auto-validate")
         val savedSince = supportedCapabilities(currentKey).copy(detectedAtMillis = 42)
         BydVehicleFieldStore.save(context, savedSince)
-        texts().single { it.text == activity.getString(R.string.replace_saved_vehicle_data_anyway) }.performClick()
+        ReflectionHelpers.callInstanceMethod<Unit>(activity, "replaceSavedVehicleDataAnyway")
 
         assertEquals(savedSince, BydVehicleFieldStore.load(context))
-        assertTrue(texts().any { it.text == activity.getString(R.string.adb_off) })
-        assertTrue(texts().any {
-            it.text == activity.getString(R.string.vehicle_probe_failed,
-                activity.getString(R.string.vehicle_probe_snapshot_changed))
-        })
+        assertEquals(BydAdbAccess.State.ADB_OFF,
+            ReflectionHelpers.getField<BydAdbAccess.State?>(activity, "adbAccessState"))
+        assertEquals(activity.getString(R.string.vehicle_probe_snapshot_changed), probeOutcome()?.error)
+        assertHardwareControlsHidden()
     }
 
     @Test fun aFailedReplacementIsShownInsteadOfCrashing() {
@@ -432,16 +436,14 @@ class BydVehicleDataSettingsTest {
             supportedCapabilities("another firmware", without = setOf(BydVehicleField.GEAR)),
         )
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
         invokeProbe()
         backend.run("diplay-byd13-probe")
 
-        texts().single { it.text == activity.getString(R.string.replace_saved_vehicle_data_anyway) }.performClick()
+        ReflectionHelpers.callInstanceMethod<Unit>(activity, "replaceSavedVehicleDataAnyway")
 
         assertTrue(BydVehicleFieldStore.load(context)!!.gearSupported)
-        assertTrue(texts().any {
-            it.text == activity.getString(R.string.vehicle_probe_failed, "probe belongs to another firmware")
-        })
+        assertEquals("probe belongs to another firmware", probeOutcome()?.error)
+        assertHardwareControlsHidden()
     }
 
     @Test fun anAdbCheckAloneDoesNotStartAVehicleValidation() {
@@ -452,46 +454,40 @@ class BydVehicleDataSettingsTest {
         shadowOf(Looper.getMainLooper()).idle()
         backend.runAll("diplay-byd13-auto-validate")
 
-        // As when Dashboard song or Dashboard map is turned on.
+        // Exercise the retained injected check helper; public Settings has no vehicle action.
         ReflectionHelpers.callInstanceMethod<Unit>(activity, "checkAdbState",
             ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType!!, true))
         backend.run("diplay-adb-state")
 
-        assertEquals(1, backend.checkCalls)
+        assertEquals(0, backend.checkCalls)
+        assertEquals(1, backend.checkStateCalls)
         assertFalse(backend.tasks.any { it.first == "diplay-byd13-auto-validate" })
     }
 
-    @Test fun aSwitchTurnedOnDuringAValidationIsValidatedAfterIt() {
+    @Test fun savedOptionsChangedWhileSettingsIsOpenCannotStartValidation() {
         BydVehicleFieldStore.save(context, supportedCapabilities(BydVehicleFieldStore.firmwareKey()))
-        backend.checkResult = readableStatus()
         openSettings()
-        shadowOf(Looper.getMainLooper()).idle()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
+        saveEnabledVehicleOptions()
+        ReflectionHelpers.callInstanceMethod<Unit>(activity, "scheduleAutomaticVehicleValidation")
+        ReflectionHelpers.callInstanceMethod<Unit>(activity, "render")
 
-        // The first validation has not finished reading when wheel speed is turned on.
-        vehicleSwitch(R.string.wheel_speed_for_tunnels).performClick()
-        shadowOf(Looper.getMainLooper()).idle()
-        backend.runAll("diplay-byd13-auto-validate")
-
-        assertEquals(2, backend.checkCalls)
+        assertNoVehicleWork()
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "automaticVehicleValidationPending"))
+        assertHardwareControlsHidden()
     }
 
-    @Test fun aValidationCancelledBeforeItsSecondCheckReadsNothingMore() {
-        BydVehicleFieldStore.save(context, supportedCapabilities(BydVehicleFieldStore.firmwareKey()))
-        BydOutputSettings.setWheelSpeedToIphone(context, true)
+    @Test fun automaticValidationEntryPointDoesNotReadOrProbeSavedFields() {
+        val saved = supportedCapabilities(BydVehicleFieldStore.firmwareKey())
+        BydVehicleFieldStore.save(context, saved)
+        saveEnabledVehicleOptions()
         backend.checkResult = BydAdbAccess.Status(BydAdbAccess.State.READY)
         openSettings()
-        shadowOf(Looper.getMainLooper()).idle()
-        // A user operation cancels the validation once its first check finds the fields unreadable.
-        backend.onCheck = {
-            backend.onCheck = null
-            ReflectionHelpers.callInstanceMethod<Any?>(activity, "cancelAutomaticVehicleValidationForUserOperation",
-                ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType!!, false))
-        }
-        backend.run("diplay-byd13-auto-validate")
 
-        assertEquals(1, backend.checkCalls)
-        assertEquals(0, backend.probeCalls)
+        ReflectionHelpers.callInstanceMethod<Unit>(activity, "validateSavedVehicleConfigurationAutomatically")
+
+        assertNoVehicleWork()
+        assertEquals(saved, BydVehicleFieldStore.load(context))
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "automaticVehicleValidationInProgress"))
     }
 
     @Test fun oneTimeAdbApprovalExplainsAlwaysAllow() {
@@ -499,14 +495,15 @@ class BydVehicleDataSettingsTest {
         backend.checkStateResult = BydAdbAccess.State.READY
         backend.probeResult = BydVehicleProbeOutcome(BydAdbAccess.State.NOT_APPROVED)
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
 
         invokeProbe()
-        assertTrue(texts().any { it.text == activity.getString(R.string.adb_checking_may_ask) })
+        assertTrue(ReflectionHelpers.getField<Boolean>(activity, "vehicleProbeAuthorizationInProgress"))
+        assertHardwareControlsHidden()
         backend.run("diplay-byd13-probe")
 
         assertEquals(2, backend.probeCalls)
-        assertTrue(texts().any { it.text.toString().contains(activity.getString(R.string.vehicle_probe_allowed_once)) })
+        assertEquals(activity.getString(R.string.vehicle_probe_allowed_once), probeOutcome()?.error)
+        assertHardwareControlsHidden()
     }
 
     @Test fun aProbeRefusedRightAfterApprovalIsRetriedOnce() {
@@ -519,14 +516,14 @@ class BydVehicleDataSettingsTest {
             supportedCapabilities(BydVehicleFieldStore.firmwareKey()),
         )
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
 
         invokeProbe()
         backend.run("diplay-byd13-probe")
 
         assertEquals(2, backend.probeCalls)
         assertTrue(BydVehicleFieldStore.load(context)!!.motionSupported)
-        assertFalse(texts().any { it.text.toString().contains(activity.getString(R.string.vehicle_probe_allowed_once)) })
+        assertEquals(null, probeOutcome()?.error)
+        assertHardwareControlsHidden()
     }
 
     @Test fun failedLegacySelectionKeepsTheDefaultMode() {
@@ -540,7 +537,7 @@ class BydVehicleDataSettingsTest {
 
         assertFalse(BydOutputSettings.legacyVehicleProbe(context))
         assertEquals(null, BydVehicleFieldStore.load(context))
-        assertTrue(texts().any { it.text.toString().contains(activity.getString(R.string.vehicle_data_mode_default)) })
+        assertHardwareControlsHidden()
     }
 
     @Test fun successfulLegacySelectionPersistsAndSwitchingBackKeepsTheProbe() {
@@ -565,30 +562,29 @@ class BydVehicleDataSettingsTest {
         assertTrue(BydVehicleFieldStore.load(context)!!.motionSupported)
     }
 
-    @Test fun defaultModeShowsUnreadableDataAndReconnectsOnlyOnceItIsReadable() {
+    @Test fun injectedDefaultCheckReconnectsOnlyOnceAfterReadableData() {
         backend.checkResult = BydAdbAccess.Status(BydAdbAccess.State.READY)
         openSettings()
         connectCarPlay()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
+        BydOutputSettings.setBatteryToIphone(context, true)
+        ReflectionHelpers.setField(activity, "vehicleDataReconnectPending", true)
 
-        vehicleSwitch(R.string.car_battery_for_the_iphone).performClick()
+        invokeAdbCheck()
         backend.run("diplay-adb-state")
 
         assertTrue(BydOutputSettings.batteryToIphone(context))
-        assertTrue(texts().any { it.text == activity.getString(R.string.adb_battery_unreadable) })
         assertEquals(0, reconnects)
+        assertHardwareControlsHidden()
 
-        // Approval or a fix on the car later: the next check applies the waiting switch once.
         backend.checkResult = readableStatus()
-        texts().single { it.text == activity.getString(R.string.check_adb_access) }.performClick()
-        backend.run("diplay-adb-state")
-
-        assertTrue(texts().any { it.text == activity.getString(R.string.adb_battery_reading, 75, 450) })
-        assertEquals(1, reconnects)
-
-        texts().single { it.text == activity.getString(R.string.check_adb_access) }.performClick()
+        invokeAdbCheck()
         backend.run("diplay-adb-state")
         assertEquals(1, reconnects)
+
+        invokeAdbCheck()
+        backend.run("diplay-adb-state")
+        assertEquals(1, reconnects)
+        assertHardwareControlsHidden()
     }
 
     @Test fun switchingToLegacyReconnectsOnlyWhenAVehicleDataSwitchIsOn() {
@@ -611,36 +607,35 @@ class BydVehicleDataSettingsTest {
         assertEquals(1, reconnects)
     }
 
-    @Test fun modeChoiceIsDisabledWhileAnAdbCheckRuns() {
+    @Test fun anInjectedAdbCheckNeverRevealsTheVehicleModeChoice() {
         backend.checkResult = readableStatus()
         openSettings()
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
 
-        texts().single { it.text == activity.getString(R.string.check_adb_access) }.performClick()
-        assertFalse(modeChoice().isEnabled)
+        invokeAdbCheck()
+        assertTrue(ReflectionHelpers.getField<Boolean>(activity, "adbCheckInProgress"))
+        assertHardwareControlsHidden()
 
         backend.run("diplay-adb-state")
-        assertTrue(modeChoice().isEnabled)
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "adbCheckInProgress"))
+        assertHardwareControlsHidden()
     }
 
-    @Test fun passingAutomaticValidationClearsAnOldProbeError() {
-        val currentKey = BydVehicleFieldStore.firmwareKey()
-        BydVehicleFieldStore.save(context, supportedCapabilities(currentKey))
+    @Test fun restoredProbeErrorCannotScheduleValidationOrLeakIntoSettings() {
+        val saved = supportedCapabilities(BydVehicleFieldStore.firmwareKey())
+        BydVehicleFieldStore.save(context, saved)
         BydOutputSettings.setVideoWhileParked(context, true)
         backend.checkResult = readableStatus()
         openSettings()
-        ReflectionHelpers.setField(
-            activity,
-            "vehicleProbeOutcome",
-            BydVehicleProbeOutcome(BydAdbAccess.State.READY, error = "old error"),
-        )
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
+        val oldError = BydVehicleProbeOutcome(BydAdbAccess.State.READY, error = "old error")
+        ReflectionHelpers.setField(activity, "vehicleProbeOutcome", oldError)
 
-        shadowOf(Looper.getMainLooper()).idle()
-        backend.run("diplay-byd13-auto-validate")
+        returnFromCarPlay()
 
-        assertEquals(null, ReflectionHelpers.getField<BydVehicleProbeOutcome?>(activity, "vehicleProbeOutcome"))
+        assertNoVehicleWork()
+        assertEquals(oldError, probeOutcome())
+        assertEquals(saved, BydVehicleFieldStore.load(context))
         assertFalse(texts().any { it.text.toString().contains("old error") })
+        assertHardwareControlsHidden()
     }
 
     @Test fun anOlderProbeOutcomeCannotHideANewerSavedSnapshot() {
@@ -657,9 +652,10 @@ class BydVehicleDataSettingsTest {
             "vehicleProbeOutcome",
             BydVehicleProbeOutcome(BydAdbAccess.State.READY, older),
         )
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
 
-        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.video_while_parked) })
+        assertEquals(BydVehicleFieldStore.load(context),
+            ReflectionHelpers.callInstanceMethod<BydVehicleCapabilities?>(activity, "displayedVehicleCapabilities"))
+        assertHardwareControlsHidden()
     }
 
     @Test fun theSavedSnapshotIsShownWhateverTheClockSays() {
@@ -675,9 +671,10 @@ class BydVehicleDataSettingsTest {
                 supportedCapabilities(currentKey, without = setOf(BydVehicleField.GEAR)).copy(detectedAtMillis = 200),
             ),
         )
-        texts().single { it.text == activity.getString(R.string.advanced_vehicle_data) }.performClick()
 
-        assertTrue(switches().any { it.contentDescription == activity.getString(R.string.video_while_parked) })
+        assertEquals(BydVehicleFieldStore.load(context),
+            ReflectionHelpers.callInstanceMethod<BydVehicleCapabilities?>(activity, "displayedVehicleCapabilities"))
+        assertHardwareControlsHidden()
     }
 
     @Test fun samePageRenderKeepsScrollAndPageChangeStartsAtTop() {
@@ -728,6 +725,8 @@ class BydVehicleDataSettingsTest {
     private fun vehicleSwitch(title: Int): Switch = switches()
         .single { it.contentDescription == activity.getString(title) }
 
+    // The private helpers below retain injected state-machine coverage. They are unreachable
+    // from public Settings while BYD hardware is disabled.
     private fun invokeProbe() {
         ReflectionHelpers.callInstanceMethod<Unit>(activity, "probeVehicleData",
             ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType!!, true))
@@ -748,8 +747,58 @@ class BydVehicleDataSettingsTest {
             ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType!!, enabled))
     }
 
-    private fun modeChoice(): TextView = texts()
-        .single { it.text.startsWith(activity.getString(R.string.vehicle_data_mode) + " · ") }
+    private fun probeOutcome(): BydVehicleProbeOutcome? =
+        ReflectionHelpers.getField(activity, "vehicleProbeOutcome")
+
+    private fun invokeAdbCheck() {
+        ReflectionHelpers.callInstanceMethod<Unit>(activity, "checkAdbState",
+            ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType!!, true))
+    }
+
+    private fun saveEnabledVehicleOptions() {
+        BydOutputSettings.setLegacyVehicleProbe(context, true)
+        BydOutputSettings.setBatteryToIphone(context, true)
+        BydOutputSettings.setWheelSpeedToIphone(context, true)
+        BydOutputSettings.setVideoWhileParked(context, true)
+        BydOutputSettings.setClusterSong(context, true)
+        BydOutputSettings.setHudSong(context, true)
+        BydOutputSettings.setCarPlayCalls(context, true)
+        BydOutputSettings.setEnabled(context, true)
+    }
+
+    private fun assertHardwareControlsHidden() {
+        val labels = texts().map { it.text.toString() }.toSet()
+        val controls = switches().map { it.contentDescription?.toString() }.toSet()
+        for (resource in listOf(
+            R.string.advanced_vehicle_data, R.string.hide_advanced_vehicle_data,
+            R.string.advanced_vehicle_data_description, R.string.byd_navigation,
+            R.string.check_adb_access, R.string.probe_vehicle_data_again,
+            R.string.replace_saved_vehicle_data_anyway, R.string.car_battery_for_the_iphone,
+            R.string.wheel_speed_for_tunnels, R.string.video_while_parked,
+            R.string.cluster_song, R.string.navigation_on_hud_and_instrument_cluster,
+            R.string.adb_cluster_activity_mode,
+        )) {
+            val title = activity.getString(resource)
+            assertFalse("Unexpected vehicle label: $title", title in labels)
+            assertFalse("Unexpected vehicle switch: $title", title in controls)
+        }
+        assertFalse(texts().any { it.text.startsWith(activity.getString(R.string.vehicle_data_mode) + " · ") })
+        assertTrue(activity.getString(R.string.byd_hardware_disabled) in labels)
+    }
+
+    private fun assertGenericSettingsAvailable() {
+        assertTrue(vehicleSwitch(R.string.report_location_to_iphone).isEnabled)
+        assertTrue(vehicleSwitch(R.string.carplay_map_on_instrument_cluster_experimental).isEnabled)
+        assertTrue(texts().any { it.text == activity.getString(R.string.diagnostics) })
+    }
+
+    private fun assertNoVehicleWork() {
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("Unexpected vehicle work: ${backend.tasks.map { it.first }}", backend.tasks.isEmpty())
+        assertEquals(0, backend.checkCalls)
+        assertEquals(0, backend.checkStateCalls)
+        assertEquals(0, backend.probeCalls)
+    }
 
     /** As in LocationReportingSettingsTest: a connected host without transports; counts reconnects. */
     private fun connectCarPlay() {
@@ -816,6 +865,7 @@ class BydVehicleDataSettingsTest {
         var onCheck: (() -> Unit)? = null
         var onProbe: (() -> Unit)? = null
         var checkCalls = 0
+        var checkStateCalls = 0
         var probeCalls = 0
         val tasks = mutableListOf<Pair<String, () -> Unit>>()
 
@@ -825,7 +875,10 @@ class BydVehicleDataSettingsTest {
             return checkResult
         }
 
-        override fun checkState(context: android.content.Context, mayAsk: Boolean) = checkStateResult
+        override fun checkState(context: android.content.Context, mayAsk: Boolean): BydAdbAccess.State {
+            checkStateCalls++
+            return checkStateResult
+        }
 
         override fun probe(context: android.content.Context, persist: Boolean): BydVehicleProbeOutcome {
             probeCalls++

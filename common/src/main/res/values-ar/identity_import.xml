@@ -1,0 +1,24 @@
+<resources>
+    <string name="identity_import_title">المصادقة المحلية</string>
+    <string name="identity_import_action">استيراد هوية محلية</string>
+    <string name="identity_import_installed">تم حفظ الهوية المستوردة على هذا الجهاز.</string>
+    <string name="identity_import_none">لا توجد هوية مستوردة من المستخدم على هذا الجهاز.</string>
+    <string name="identity_import_compatibility">نجاح التحقق المحلي لا يضمن قبول الهوية من iPhone أو السيارة.</string>
+    <string name="identity_import_explanation">اختر identity.pk8 ثم ملف certificate.p7b المطابق من هذا الجهاز. استخدم هوية مسموحًا لك باستخدامها فقط. يجب ألا يكون أي ملف فارغًا وألا يتجاوز حجمه 16 KiB. لا تُستبدل الهوية الحالية إلا بعد اجتياز الملفين للتحقق المحلي. تُحفظ الملفات في مساحة التطبيق الخاصة ولا تُرفع إلى أي جهة. نجاح التحقق المحلي لا يضمن قبول الهوية من iPhone أو السيارة.</string>
+    <string name="identity_import_choose_key">اختيار identity.pk8</string>
+    <string name="identity_import_choose_certificate">اختيار certificate.p7b</string>
+    <string name="identity_import_certificate_step">الخطوة 2 من 2: اختر ملف certificate.p7b المطابق. المفتاح الخاص محفوظ مؤقتًا فقط، ولم تتغير هويتك الحالية. الإلغاء يحذف الملفات المؤقتة.</string>
+    <string name="identity_import_reading_key">جارٍ قراءة المفتاح الخاص المحدد…</string>
+    <string name="identity_import_validating">جارٍ التحقق من الهوية والشهادة…</string>
+    <string name="identity_import_busy">أكمل استيراد الهوية أو ألغِه قبل الاتصال.</string>
+    <string name="identity_import_disconnect_required">افصل CarPlay قبل استيراد هوية، بما في ذلك الاتصال الجاري إنشاؤه أو إيقافه. لن تُستبدل هويتك الحالية أثناء تشغيل الجلسة.</string>
+    <string name="identity_import_disconnect_first">الفصل أولًا</string>
+    <string name="identity_import_disconnected">تم الفصل. اضغط على استيراد هوية محلية للبدء.</string>
+    <string name="identity_import_cancelled">تم إلغاء الاستيراد. تم الاحتفاظ بالهوية السابقة.</string>
+    <string name="identity_import_interrupted">انقطع الاستيراد. ابدأ من جديد واختر الملفين. لم تُثبّت هوية جزئية.</string>
+    <string name="identity_import_failed">تعذّر استيراد الملفين. اختر مفتاح P-256 غير مشفّر بتنسيق PKCS#8 وشهادة PKCS#7 مطابقة، على ألا يكون أي ملف فارغًا أو أكبر من 16 KiB. تم الاحتفاظ بالهوية السابقة.</string>
+    <string name="identity_import_picker_unavailable">تعذّر فتح منتقي ملفات النظام. تم الاحتفاظ بالهوية السابقة.</string>
+    <string name="identity_import_success">تم استيراد الهوية واجتازت الفحوص المحلية. يمكنك الآن محاولة الاتصال. لا يزال قبولها على جهاز فعلي بحاجة إلى اختبار.</string>
+    <string name="identity_import_saved_not_ready">تم حفظ الهوية، لكن تعذّر بدء المصادقة. أعد فتح DiPlay قبل الاتصال.</string>
+    <string name="identity_import_recovery_failed">تعذّر إكمال الاستيراد واستعادة تخزين المصادقة. أعد فتح DiPlay قبل الاتصال.</string>
+</resources>

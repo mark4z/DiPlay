@@ -100,7 +100,8 @@ def build(root, work_dir, environment, publish_dir=None):
                     stream.write(payload)
             environment["DIPLAY_AUTH_ASSETS_DIR"] = str(auth_dir)
             command = [str(root / "gradlew"), ":mobile:assembleStandaloneDebug", "--no-daemon",
-                       "--no-build-cache", "--no-configuration-cache", "--no-scan", "--console=plain"]
+                       "--build-cache", "--no-configuration-cache", "--no-scan", "--console=plain",
+                       "--init-script", str(root / "scripts/gradle-readonly-cache.init.gradle")]
             # Do not retain build output: a failed tool/plugin could print transformed secrets.
             completed = subprocess.run(command, cwd=root, env=environment, stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL, check=False)

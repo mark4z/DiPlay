@@ -1,0 +1,11 @@
+// The authenticated stage only reuses outputs from the credential-free source job.
+// Never store task outputs locally or contact a remote build cache with identity inputs.
+gradle.settingsEvaluated { settings ->
+    settings.buildCache.local.directory = new File(gradle.gradleUserHomeDir, "caches/build-cache-1")
+    settings.buildCache.local.enabled = true
+    settings.buildCache.local.push = false
+    if (settings.buildCache.remote != null) {
+        settings.buildCache.remote.enabled = false
+        settings.buildCache.remote.push = false
+    }
+}

@@ -1,5 +1,8 @@
 package com.shilapi.xcertplay.orchestration
 
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
+import com.shilapi.xcertplay.media.PerformanceMetric
+
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothA2dp
@@ -190,6 +193,7 @@ class CarPlayController(
             } else {
                 IphoneUsbMatcher.appleVendor()
             },
+            onDiagnostic = ::connectionDiagnostic,
         )
     }
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -287,6 +291,7 @@ class CarPlayController(
         override fun onSessionActive(session: AirPlaySession) {
             val replacement = activeSession !== session
             if (replacement) {
+                PerformanceDiagnostics.resetSession()
                 BydNavigationOutputs.start(appContext)
                 com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(true)
                 // The gear may have changed since /info.
@@ -306,6 +311,7 @@ class CarPlayController(
 
         override fun onSessionEnded(session: AirPlaySession) {
             if (activeSession === session) {
+                PerformanceDiagnostics.resetSession()
                 activeSession = null
                 BydNavigationOutputs.endNow(preserveTurnOverlay = !closed && config.transport == CarPlayTransport.WIRELESS)
                 com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(false)
@@ -454,13 +460,128 @@ class CarPlayController(
         }
     }
 
+    private val browserTouchLock = Any()
+    private val browserTouchQueue = com.shilapi.xcertplay.browser.BrowserTouchQueue()
+    private val browserTouchOwnership = com.shilapi.xcertplay.browser.BrowserTouchOwnership()
+    private val browserTouchTransfers = com.shilapi.xcertplay.browser.BrowserTouchTransfers()
+    private var browserTouchScheduled = false
+    private var browserTouchSession: AirPlaySession? = null
+    private var browserTouchToken: Any? = null
+    private var browserTouchQueueEpoch = 0L
+    private data class BrowserTouchSnapshot(val session: AirPlaySession?, val token: Any?,
+        val epoch: Long, val contacts: List<AirPlayContact>)
+
+    /** Cancellation and ownership commit share the input executor, before any new-owner input. */
+    fun setBrowserTouchOwnership(enabled: Boolean, completed: (Boolean) -> Unit) {
+        val transfer = synchronized(browserTouchLock) {
+            browserTouchQueue.clear()
+            val epoch = browserTouchOwnership.request(enabled)
+            val next = com.shilapi.xcertplay.browser.BrowserTouchTransfer(epoch, enabled, completed)
+            if (!browserTouchTransfers.offer(next)) return
+            next
+        }
+        try {
+            touchExecutor.execute {
+                while (true) {
+                    val next = browserTouchTransfers.poll() ?: break
+                    if (!browserTouchOwnership.isCurrent(next.epoch)) continue
+                    val session = activeSession
+                    val token = session?.mainScreenSessionToken()
+                    val canEnable = !closed && session != null && token != null
+                    if (next.enabled && !canEnable) {
+                        browserTouchOwnership.fail(next.epoch)
+                        next.completed(false)
+                        continue
+                    }
+                    // Any input already in flight finishes first. Old queued native/remote input
+                    // was invalidated by request(), so no old DOWN may follow this release.
+                    val cancelled = if (!closed && session != null && token != null && activeSession === session) {
+                        runCatching { session.sendTouch(emptyList()) }.getOrDefault(false)
+                    } else false
+                    if (next.enabled && !cancelled) {
+                        browserTouchOwnership.fail(next.epoch)
+                        next.completed(false)
+                    } else next.completed(browserTouchOwnership.commit(next.epoch))
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            val pending = synchronized(browserTouchLock) {
+                (browserTouchTransfers.clear() ?: transfer).also { browserTouchOwnership.fail(it.epoch) }
+            }
+            pending.completed(false)
+        }
+    }
+
+    fun cancelBrowserTouch() = setBrowserTouchOwnership(false) { }
+
+    /** One worker and a bounded queue retaining DOWN/UP transitions; only moves coalesce. */
+    fun sendBrowserTouch(contacts: List<AirPlayContact>) = synchronized(browserTouchLock) {
+        if (closed) return@synchronized
+        val epoch = browserTouchOwnership.browserEpoch() ?: return@synchronized
+        val session = activeSession ?: return@synchronized
+        val token = session.mainScreenSessionToken() ?: return@synchronized
+        if (browserTouchSession !== session || browserTouchToken !== token || browserTouchQueueEpoch != epoch) {
+            browserTouchQueue.clear()
+            browserTouchSession = session
+            browserTouchToken = token
+            browserTouchQueueEpoch = epoch
+        }
+        browserTouchQueue.offer(contacts)
+        if (browserTouchScheduled) return@synchronized
+        browserTouchScheduled = true
+        try {
+            touchExecutor.execute {
+                while (true) {
+                    val next = synchronized(browserTouchLock) {
+                        val queuedEpoch = browserTouchQueueEpoch
+                        val next = if (closed || !browserTouchOwnership.acceptsBrowser(queuedEpoch)) null else browserTouchQueue.poll()
+                        if (next == null) {
+                            browserTouchQueue.clear()
+                            browserTouchScheduled = false
+                        }
+                        next?.let { BrowserTouchSnapshot(browserTouchSession, browserTouchToken, queuedEpoch, it) }
+                    } ?: break
+                    val session = next.session
+                    if (!closed && browserTouchOwnership.acceptsBrowser(next.epoch) &&
+                        session != null && activeSession === session &&
+                        session.mainScreenSessionToken() === next.token) {
+                        runCatching { session.sendTouch(next.contacts) }
+                    }
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            browserTouchQueue.clear()
+            browserTouchScheduled = false
+        }
+    }
+
     fun sendTouch(contacts: List<AirPlayContact>): Boolean {
         if (closed) return false
+        val epoch = browserTouchOwnership.nativeEpoch() ?: return false
         val session = activeSession ?: return false
+        val token = session.mainScreenSessionToken() ?: return false
+        val capture = PerformanceDiagnostics.token()
+        val enqueuedNs = PerformanceDiagnostics.now(capture)
+        PerformanceDiagnostics.touchQueued(capture)
         return try {
-            touchExecutor.execute { session.sendTouch(contacts) }
+            touchExecutor.execute {
+                // A queued event never crosses a native/browser/native ownership round trip.
+                if (closed || !browserTouchOwnership.acceptsNative(epoch) ||
+                    activeSession !== session || session.mainScreenSessionToken() !== token) return@execute
+                val startedNs = PerformanceDiagnostics.now(capture)
+                PerformanceDiagnostics.touchStarted(capture)
+                PerformanceDiagnostics.record(PerformanceMetric.TOUCH_QUEUE_WAIT, startedNs - enqueuedNs, capture)
+                try {
+                    session.sendTouch(contacts, capture)
+                } finally {
+                    val completedNs = PerformanceDiagnostics.now(capture)
+                    PerformanceDiagnostics.record(PerformanceMetric.TOUCH_WORKER, completedNs - startedNs, capture)
+                    PerformanceDiagnostics.record(PerformanceMetric.TOUCH_ENQUEUE_TO_COMPLETE, completedNs - enqueuedNs, capture)
+                }
+            }
             true
         } catch (_: Exception) {
+            PerformanceDiagnostics.touchRejected(capture)
             false
         }
     }
@@ -1296,7 +1417,8 @@ class CarPlayController(
             val bluetoothStarted = System.nanoTime()
             try {
                 connectBluetoothSocket(socket, device.address)
-                connectionDiagnostic("Bluetooth connect completed elapsedMs=${elapsedMillis(bluetoothStarted)}")
+                connectionDiagnostic("Bluetooth connect completed elapsedMs=${elapsedMillis(bluetoothStarted)} " +
+                    "socketReportedConnected=${runCatching { socket.isConnected }.getOrNull() ?: "unknown"}")
             } catch (error: Throwable) {
                 connectionDiagnostic(
                     "Bluetooth connect failed elapsedMs=${elapsedMillis(bluetoothStarted)} " +
@@ -1306,12 +1428,19 @@ class CarPlayController(
                 throw error
             }
             debugLog("wireless RFCOMM connected address=${device.address}")
+            logBluetoothConnectionSnapshot(device, "after-connect")
             if (isStaleWirelessRun(generation)) {
                 return
             }
             val stream = synchronized(wirelessResourceLock) {
                 if (isStaleWirelessRun(generation)) return
-                BluetoothRfcommDuplexStream(socket).also { bluetoothStream = it }
+                try {
+                    BluetoothRfcommDuplexStream(socket, ::connectionDiagnostic).also { bluetoothStream = it }
+                } finally {
+                    // The stream owns the connected socket and also closes it if stream getters
+                    // fail. Do not retain a second socket owner in bootstrap teardown.
+                    if (bluetoothSocket === socket) bluetoothSocket = null
+                }
             }
             val channel = Iap2Session.openWireless(
                 stream,
@@ -1857,7 +1986,7 @@ class CarPlayController(
         )
         val connection = requireUsbManager().openDevice(device)
             ?: throw IphoneUsbException.DeviceUnavailable("Could not open the iPhone NCM connection")
-        return NcmUsbBridge.open(connection, function)
+        return NcmUsbBridge.open(connection, function, onDiagnostic = ::connectionDiagnostic)
     }
 
     private fun runStack(usbSession: Iap2UsbSession, ncm: NcmUsbBridge) {
@@ -2236,11 +2365,20 @@ class CarPlayController(
                 connectionDiagnostic("Bluetooth snapshot point=$point unavailable reason=connect-permission")
                 return
             }
-            val uuids = device.uuids
+            val bondState = device.bondState
+            val bondName = when (bondState) {
+                BluetoothDevice.BOND_NONE -> "NONE"
+                BluetoothDevice.BOND_BONDING -> "BONDING"
+                BluetoothDevice.BOND_BONDED -> "BONDED"
+                else -> "UNKNOWN"
+            }
+            val cachedServices = runCatching { device.uuids }
+            val uuids = cachedServices.getOrNull()
             val service = UUID.fromString(IAP2_IPHONE_UUID)
             connectionDiagnostic(
                 "Bluetooth snapshot point=$point enabled=${bluetoothAdapter?.isEnabled} " +
-                    "bondState=${device.bondState} cachedServiceCount=${uuids?.size ?: "unknown"} " +
+                    "bondState=$bondState bondName=$bondName cachedServicesReadable=${cachedServices.isSuccess} " +
+                    "cachedServiceCount=${uuids?.size ?: "unknown"} " +
                     "cachedIap2Service=${uuids?.any { it.uuid == service } ?: "unknown"}",
             )
         } catch (error: RuntimeException) {

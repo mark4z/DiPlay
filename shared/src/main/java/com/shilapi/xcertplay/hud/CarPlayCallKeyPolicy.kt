@@ -20,10 +20,9 @@ object CarPlayCallKeyPolicy {
 
     enum class Action { PASS, CONSUME, ANSWER, END }
 
-    fun isAnswerKey(keyCode: Int): Boolean = keyCode == KEYCODE_BYD_DIAL_ANSWER || keyCode == KeyEvent.KEYCODE_CALL
+    fun isAnswerKey(keyCode: Int): Boolean = keyCode == KeyEvent.KEYCODE_CALL
 
-    fun isEndKey(keyCode: Int): Boolean = keyCode == KeyEvent.KEYCODE_ENDCALL ||
-        keyCode == KEYCODE_BYD_HANG_UP || keyCode == KEYCODE_BYD_MULTIPLEXING
+    fun isEndKey(keyCode: Int): Boolean = keyCode == KeyEvent.KEYCODE_ENDCALL
 
     /**
      * A key event while CarPlay runs ([session]) with [call] on the iPhone. The call key answers a ringing

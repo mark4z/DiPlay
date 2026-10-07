@@ -413,18 +413,19 @@ class CarPlayHostDisplaySizeTest {
         }
     }
 
-    @Test fun adoptingBackgroundClusterRestoresNativeAdbFlagButRejectsTheVirtualFallback() {
+    @Test fun adoptingBackgroundSessionCannotRestoreBydRoutingFromSavedFlags() {
         AirPlayPersistence.saveAdbClusterEnabled(activity, true)
         val sink = AndroidMediaSink()
         val display = CarPlaySessionDisplay(1920, 990, Surface.ROTATION_0, true, true, 1920, 990)
         try {
-            for ((clusterSize, native) in listOf((1920 to 720) to true, (1280 to 720) to false, null to false)) {
+            for (clusterSize in listOf(1920 to 720, 1280 to 720, null)) {
                 val controller = org.mockito.Mockito.mock(CarPlayController::class.java)
                 org.mockito.Mockito.`when`(controller.configuredClusterSize()).thenReturn(clusterSize)
                 CarPlayBackgroundSession.store(controller, sink, 1920, 990, Any(), display) {}
                 assertEquals(true, invoke("adoptBackgroundSession"))
-                assertEquals("Adopted $clusterSize must keep the native/virtual distinction", native,
+                assertEquals("Adopted $clusterSize must not reactivate BYD routing", false,
                     getField("adbClusterConfigured"))
+                assertSame(controller, getField("controller"))
             }
         } finally {
             AirPlayPersistence.saveAdbClusterEnabled(activity, false)

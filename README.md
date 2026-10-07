@@ -67,3 +67,15 @@ This repository starts with a clean public source snapshot. Local research, test
 ## Local release packaging
 
 The release APK intentionally contains the experimental accessory identity. The Git repository and source archive exclude all accessory and Android signing keys; tests generate synthetic identities at runtime. Source/CI builds omit runtime identity assets by default. Local release builds explicitly select an external asset directory. Publishing the APK makes its bundled identity extractable; building locally does not preserve that identity's confidentiality.
+
+
+## Manual authenticated debug download
+
+The [manual build workflow](.github/workflows/build-authenticated-debug.yml)
+runs on `main` or `refactor/remove-byd-hardware`. Every successful manual run
+builds, verifies and uploads `DiPlay-standalone-debug.apk` for direct download,
+without an extra ZIP wrapper, for **1 day**. There is no publication toggle.
+The APK contains an **extractable accessory identity** and is publicly
+accessible to signed-in users with repository read access. Review the
+[build instructions and disclosure warning](docs/BUILD.md#manual-github-actions-authenticated-debug-build)
+before starting a run. Ordinary source checks remain identity-free.

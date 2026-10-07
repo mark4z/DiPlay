@@ -35,7 +35,7 @@
     <string name="clipboard_usage_access">وصول استخدام DiPlay</string>
     <string name="report_clip_label">تقرير التشخيص</string>
     <string name="share_diagnostic_report">مشاركة تقرير التشخيص</string>
-    <string name="setup_error_auth">تعذّر تحميل مصادقة CarPlay. ثبّت نسخة DiPlay الكاملة فوق هذا التطبيق. لا حاجة لإلغاء التثبيت أو تغيير إعدادات نقطة الاتصال.</string>
+    <string name="setup_error_auth">تعذّر تحميل مصادقة CarPlay. افتح الصفحة الرئيسية في DiPlay أو إعداد الاتصال واختر استيراد هوية محلية، ثم حدد ملفات الهوية المسموح لك باستخدامها.</string>
     <string name="hotspot_state_stopped">متوقفة</string>
     <string name="hotspot_state_off">مُغلقة</string>
     <string name="hotspot_wireless_prefix">نقطة اتصال لاسلكية:\u0020</string>
@@ -623,4 +623,6 @@
     <string name="car_button_description">يعرض CarPlay هذه الأيقونة وهذا الاسم في قائمة التطبيقات. اضغط عليها للعودة إلى شاشة السيارة. تُطبَّق التغييرات عند اتصال CarPlay في المرة القادمة.</string>
     <string name="car_button_saved_next_connection">تم الحفظ. سيعرض CarPlay الأيقونة والاسم الجديدين عند اتصاله في المرة القادمة.</string>
     <string name="this_head_unit_has_no_image_picker">لا يحتوي نظام السيارة هذا على أداة لاختيار الصور.</string>
+    <string name="standard_call_keys">أزرار مكالمات CarPlay</string>
+    <string name="standard_call_keys_description">استخدم أزرار Android القياسية للرد وإنهاء المكالمة أثناء مكالمة CarPlay. معطّل افتراضيًا؛ لا تتم معالجة رموز الأزرار الخاصة بالشركة المصنّعة للسيارة.</string>
 </resources>

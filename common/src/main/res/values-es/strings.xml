@@ -35,7 +35,7 @@
     <string name="clipboard_usage_access">Acceso al uso de DiPlay</string>
     <string name="report_clip_label">Informe de diagnóstico</string>
     <string name="share_diagnostic_report">Compartir informe de diagnóstico</string>
-    <string name="setup_error_auth">No se pudo cargar la autenticación de CarPlay. Instala la compilación completa de DiPlay sobre esta aplicación. No es necesario desinstalar ni cambiar la configuración del punto de acceso.</string>
+    <string name="setup_error_auth">No se pudo cargar la autenticación de CarPlay. Abre el inicio de DiPlay o la configuración de conexión y elige Importar identidad local para seleccionar los archivos de identidad que tengas autorización para usar.</string>
     <string name="hotspot_state_stopped">detenido</string>
     <string name="hotspot_state_off">apagado</string>
     <string name="hotspot_wireless_prefix">Punto de acceso inalámbrico:\u0020</string>
@@ -623,4 +623,6 @@
     <string name="car_button_description">CarPlay muestra este icono y este nombre en su lista de apps. Tócalo para volver a la pantalla del coche. Los cambios se aplican la próxima vez que CarPlay se conecte.</string>
     <string name="car_button_saved_next_connection">Guardado. CarPlay mostrará el nuevo icono y nombre la próxima vez que se conecte.</string>
     <string name="this_head_unit_has_no_image_picker">Esta unidad principal no tiene selector de imágenes.</string>
+    <string name="standard_call_keys">Botones de llamada de CarPlay</string>
+    <string name="standard_call_keys_description">Usa los botones estándar de Android para responder y colgar durante una llamada de CarPlay. Desactivado de forma predeterminada; no se gestionan los códigos de botones propios del fabricante.</string>
 </resources>

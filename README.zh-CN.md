@@ -37,3 +37,14 @@ Wi-Fi Direct 现支持 Android 9 的旧版建组路径，使用系统返回的�
 这是公开预览版，**未经 Apple 认证**。APK 使用从公开 Carlinkit 固件中提取的既有实验性配件身份，并非为 DiPlay 新签发的 MFi 身份；其中的私钥可被提取，未来 iOS 是否继续接受及其公开分发适用性尚未确定。Android 签名密钥和配件身份不进入 Git 或源代码压缩包；普通源代码/CI 构建默认不配置身份。部分车机仍可能卡顿或无法应用图标大小设置。
 
 标准导航小组件需要支持 Android 小组件的启动器；比亚迪内置主页不接受任意小组件。悬浮地图和嵌入地图需要启用“CarPlay 仪表地图”。应用及发布网站支持英语、简体中文、繁体中文（台湾）、阿拉伯语、俄语、乌克兰语和西班牙语。应用的香港／澳门及 Hant 选择使用台湾译文，不宣称提供独立地区翻译。源代码、构建说明及许可证随版本提供。
+
+
+## 手动构建与下载认证调试 APK
+
+[手动构建工作流](.github/workflows/build-authenticated-debug.yml)仅允许在
+`main` 或 `refactor/remove-byd-hardware` 分支运行。手动点击 Run workflow 后，
+成功构建会自动提供 `DiPlay-standalone-debug.apk` 下载，不再有发布开关，
+也不再套一层 ZIP，保留 **1 天**。APK 内的配件身份可被提取；公开仓库中，
+已登录且有仓库读取权限的用户可以下载。运行前请阅读
+[构建说明与公开披露警告](docs/BUILD.md#manual-github-actions-authenticated-debug-build)。
+普通源代码检查仍不包含身份材料。

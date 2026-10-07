@@ -31,7 +31,10 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.TextureView
+import android.view.ViewTreeObserver
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -71,9 +74,11 @@ import com.shilapi.xcertplay.airplay.CarPlayMediaEngine
 import com.shilapi.xcertplay.airplay.SafeAreaRect
 import com.shilapi.xcertplay.host.R
 import com.shilapi.xcertplay.location.AndroidCarPlayLocationProvider
+import com.shilapi.xcertplay.browser.BrowserOutput
 import com.shilapi.xcertplay.media.AndroidMediaSink
 import com.shilapi.xcertplay.media.CarPlayTouchMapper
 import com.shilapi.xcertplay.media.CarPlayVideoLayout
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
 import com.shilapi.xcertplay.network.CarPlayVpnService
 import com.shilapi.xcertplay.orchestration.CarPlayController
 import com.shilapi.xcertplay.orchestration.CarPlayRuntimeConfig
@@ -260,7 +265,11 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
 
-    private var videoView: TextureView? = null
+    // The full-window viewport stays independent of the letterboxed SurfaceView dimensions.
+    private var videoView: View? = null
+    private var fallbackVideoView: SurfaceView? = null
+    private var fallbackVideoBounds: CarPlaySurfaceBounds? = null
+    private var videoSurfaceProbe: ViewTreeObserver.OnPreDrawListener? = null
     private var pictureBinding: CarPlayPicture.Binding? = null
     private var picturePanel: View? = null
     private var picturePanelGeneration = 0
@@ -295,7 +304,14 @@ class CarPlayHostActivity : ComponentActivity() {
     private var externalActivityInProgress = false
     private var sink: AndroidMediaSink? = null
     private var controller: CarPlayController? = null
-    private var currentSurface: Surface? = null
+    private val videoSurfaceOwner = CarPlayVideoSurfaceOwner<Surface>(
+        detach = { surface ->
+            sink?.clearSurface(SCREEN_TYPE_MAIN, surface)
+            sink?.clearSurface(SCREEN_TYPE_ALT, surface)
+        },
+        release = { it.release() },
+    )
+    private val currentSurface: Surface? get() = videoSurfaceOwner.current
     private var currentSurfaceTexture: SurfaceTexture? = null
     private var clusterPresentation: ClusterMapPresentation? = null
     private var clusterSurface: Surface? = null
@@ -337,6 +353,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private var advancedAudioChannelMapping = false
     private var navigationStreamType = 14
     private var debugLogsEnabled = false
+    private var performanceDiagnosticsEnabled = false
     private var autoStartOnBoot = false
     private var manufacturer = AirPlayPersistence.DEFAULT_MANUFACTURER
     private var model = AirPlayPersistence.DEFAULT_MODEL
@@ -463,8 +480,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 existing
             } else {
                 Surface(texture).also {
-                    existing?.release()
-                    currentSurface = it
+                    videoSurfaceOwner.replace(it, releaseOnDetach = true)
                     currentSurfaceTexture = texture
                 }
             }
@@ -481,18 +497,35 @@ class CarPlayHostActivity : ComponentActivity() {
 
         override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
             if (currentSurfaceTexture !== texture) return true
-            currentSurface?.let { surface ->
-                sink?.clearSurface(SCREEN_TYPE_MAIN, surface)
-                sink?.clearSurface(SCREEN_TYPE_ALT, surface)
-                surface.release()
-            }
-            currentSurface = null
+            currentSurface?.let(videoSurfaceOwner::clear)
             currentSurfaceTexture = null
             appendLog("Texture surface destroyed")
             return true
         }
 
         override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+    }
+
+    private val fallbackSurfaceCallback = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            if (isDestroyed || holder !== fallbackVideoView?.holder) return
+            val surface = holder.surface
+            videoSurfaceOwner.replace(surface, releaseOnDetach = false)
+            appendLog("SurfaceView video surface created valid=${surface.isValid}")
+            attachSurface(surface)
+            videoView?.let { updateVideoLayout(it.width, it.height) }
+        }
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            if (holder !== fallbackVideoView?.holder) return
+            // Holder dimensions describe the fitted video, not the host window/CarPlay canvas.
+            videoView?.let { updateVideoLayout(it.width, it.height) }
+        }
+
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            videoSurfaceOwner.clear(holder.surface)
+            appendLog("SurfaceView video surface destroyed")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -583,6 +616,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 AirPlayPersistence.loadAdvancedAudioChannelMapping(this)
         navigationStreamType = AirPlayPersistence.loadNavigationStreamType(this)
         debugLogsEnabled = AirPlayPersistence.loadDebugLogsEnabled(this)
+        loadPerformanceDiagnosticsSetting()
         autoStartOnBoot = AirPlayPersistence.loadAutoStartOnBoot(this)
         manufacturer = AirPlayPersistence.loadManufacturer(this)
         model = AirPlayPersistence.loadModel(this)
@@ -601,6 +635,11 @@ class CarPlayHostActivity : ComponentActivity() {
         locationPermissionAvailable = hasFineLocationPermission()
         loadConnectionSettings()
         wirelessPermissionsReady = !wirelessEnabled || hasRequiredWirelessPermissions()
+    }
+
+    private fun loadPerformanceDiagnosticsSetting() {
+        performanceDiagnosticsEnabled = AirPlayPersistence.loadPerformanceDiagnosticsEnabled(this)
+        PerformanceDiagnostics.setEnabled(performanceDiagnosticsEnabled)
     }
 
     /**
@@ -739,8 +778,11 @@ class CarPlayHostActivity : ComponentActivity() {
         homeScreenVisible = null
     }
 
+    private val browserApprovalUi by lazy { BrowserApprovalUi(this) }
+
     override fun onResume() {
         super.onResume()
+        browserApprovalUi.resume()
         val savedNightMode = AirPlayPersistence.loadCarPlayNightMode(this)
         val savedThreshold = AirPlayPersistence.loadAmbientLightThreshold(this)
         val savedDelay = AirPlayPersistence.loadAmbientDelaySeconds(this)
@@ -769,7 +811,10 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         // The settings screen returns here with FLAG_ACTIVITY_REORDER_TO_FRONT, so this screen is
         // resumed, not recreated: refresh what that screen can change before it is used again.
-        if (!menuOpen) loadConnectionSettings()
+        if (!menuOpen) {
+            loadConnectionSettings()
+            loadPerformanceDiagnosticsSetting()
+        }
         locationPermissionAvailable = hasFineLocationPermission()
         if (locationReportingEnabled && !locationPermissionAvailable && !menuOpen) {
             requestLocationPermission()
@@ -1052,13 +1097,30 @@ class CarPlayHostActivity : ComponentActivity() {
         // Fallback for head units without physical cluster projection (e.g. DiLink 3.0/3.5 without digital cluster):
         // Provide standard virtual cluster stream (1280x720, 16:9 aspect) for CenterMapOverlay and MapEmbedService.
         MapMirrors.streamAspect = MapMirrors.VIRTUAL_STREAM_ASPECT
-        return CarPlayClusterDisplay.config(
+        val requestedScale = AirPlayPersistence.loadVirtualMapScalePercent(this)
+        fun virtualStream(scale: Int) = CarPlayClusterDisplay.config(
             widthPixels = 1280,
             heightPixels = 720,
-            scalePercent = 100,
+            scalePercent = scale,
+            horizontalStep = AirPlayPersistence.loadClusterMarkerHorizontalStep(this),
+            verticalStep = AirPlayPersistence.loadClusterMarkerVerticalStep(this),
             content = AirPlayPersistence.loadClusterContent(this),
             baseSafeArea = CarPlayClusterDisplay.VIRTUAL_SAFE_AREA_PERCENT,
-        ).also {
+        )
+        val requested = virtualStream(requestedScale)
+        val effective = if (requestedScale > 100) {
+            val support = largerCanvasSupport(requested)
+            appendLog("Virtual map: ${support.details}")
+            if (support.supported) requested else {
+                val native = virtualStream(100)
+                val fallback = if (largerCanvasSupport(native).supported) 100
+                    else CarPlayClusterDisplay.STREAM_SCALE_PERCENT
+                AirPlayPersistence.saveClusterMapScalePercent(this, fallback)
+                appendLog("Virtual map: scale $requestedScale% refused (${support.reason}); using $fallback%")
+                virtualStream(fallback)
+            }
+        } else requested
+        return effective.also {
             appendLog("Cluster map: requesting virtual ${it.widthPixels}x${it.heightPixels} (16:9) stream for launcher/center card")
         }
     }
@@ -1102,6 +1164,7 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        browserApprovalUi.pause()
         nightModeController.pause()
         super.onPause()
     }
@@ -1201,6 +1264,8 @@ class CarPlayHostActivity : ComponentActivity() {
         nightModeController.pause()
         pictureBinding?.close()
         pictureBinding = null
+        removeVideoSurfaceProbe()
+        fallbackVideoView?.holder?.removeCallback(fallbackSurfaceCallback)
         mainHandler.removeCallbacks(refreshTurnOverlay)
         AirPlayPersistence.overlaySettingsListener = null
         com.shilapi.xcertplay.hud.BydNavigationOutputs.setTurnOverlayListener(null)
@@ -1220,13 +1285,10 @@ class CarPlayHostActivity : ComponentActivity() {
         mainHandler.removeCallbacks(applyDisplaySize)
         mainHandler.removeCallbacks(expireOldLogLines)
         mainHandler.removeCallbacks(pollConfiguration)
-        currentSurface?.let { surface ->
-            sink?.clearSurface(SCREEN_TYPE_MAIN, surface)
-            sink?.clearSurface(SCREEN_TYPE_ALT, surface)
-            surface.release()
-        }
-        currentSurface = null
+        videoSurfaceOwner.clear()
         currentSurfaceTexture = null
+        fallbackVideoView = null
+        fallbackVideoBounds = null
         sessionLog?.append("Activity destroyed")
         sessionLog?.close()
         sessionLog = null
@@ -1394,6 +1456,7 @@ class CarPlayHostActivity : ComponentActivity() {
         safeAreaEditor = buildSafeAreaEditor().apply { visibility = View.GONE }
         root.addView(safeAreaEditor, FrameLayout.LayoutParams(-1, -1))
         videoView = video
+        observeVideoWindow(video)
         gestureOverlay = gestureLayer
         settingsGestureHint = gestureHint
         stageStatusView = stage
@@ -1845,6 +1908,17 @@ class CarPlayHostActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(12) },
         )
+        content.addView(
+            buildPerformanceDiagnosticsSection(),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(12) },
+        )
+
+        content.addView(BrowserOutputSettings.create(this), LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(20) })
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             content.addView(
@@ -2034,6 +2108,7 @@ class CarPlayHostActivity : ComponentActivity() {
         AirPlayPersistence.saveModel(this, model)
         AirPlayPersistence.saveOemLabel(this, oemLabel)
         AirPlayPersistence.saveDebugLogsEnabled(this, debugLogsEnabled)
+        AirPlayPersistence.savePerformanceDiagnosticsEnabled(this, performanceDiagnosticsEnabled)
         AirPlayPersistence.saveRightHandDrive(this, rightHandDrive)
         CarPlayDock.save(this, carPlayDock)
         AirPlayPersistence.saveHideTopBar(this, hideTopBar)
@@ -2367,6 +2442,16 @@ class CarPlayHostActivity : ComponentActivity() {
             debugLogsEnabled = checked
             appendLog("Debug logs ${if (debugLogsEnabled) "enabled" else "disabled"}")
             updateDebugOverlays()
+        }
+
+    private fun buildPerformanceDiagnosticsSection(): View =
+        settingsSwitchRow(
+            label = getString(R.string.performance_diagnostics),
+            checked = performanceDiagnosticsEnabled,
+            description = getString(R.string.performance_diagnostics_description),
+        ) { checked ->
+            performanceDiagnosticsEnabled = checked
+            PerformanceDiagnostics.setEnabled(checked)
         }
 
     private fun buildStepSliderSection(
@@ -3646,9 +3731,17 @@ class CarPlayHostActivity : ComponentActivity() {
         )
     }
 
-    private fun createMediaEngine(sink: AndroidMediaSink): CarPlayMediaEngine =
+    private fun createMediaEngine(sink: AndroidMediaSink, width: Int, height: Int): CarPlayMediaEngine =
         CarPlayMediaEngine(
-            sink = sink,
+            sink = BrowserOutput.tee(sink, width, height,
+                cancelTouches = { CarPlayBackgroundSession.snapshot()?.controller?.cancelBrowserTouch() },
+                sendTouch = { contacts ->
+                    CarPlayBackgroundSession.snapshot()?.controller?.sendBrowserTouch(contacts)
+                },
+                setTouchOwnership = { enabled, completed ->
+                    val active = CarPlayBackgroundSession.snapshot()?.controller
+                    if (active == null) completed(false) else active.setBrowserTouchOwnership(enabled, completed)
+                }),
             microphoneEnabled = microphoneAvailable,
             audioCaptureDirectory = audioCaptureDirectory(),
         )
@@ -3897,7 +3990,7 @@ class CarPlayHostActivity : ComponentActivity() {
         currentSurface?.let(::attachSurface)
         clusterSurface?.let { renderer.setSurface(SCREEN_TYPE_ALT, it) }
         MapMirrors.reapply()
-        val media = createMediaEngine(renderer)
+        val media = createMediaEngine(renderer, airPlayConfig.main.widthPixels, airPlayConfig.main.heightPixels)
         val pairings = AirPlayPersistence.loadPairings(this) { id, key ->
             AirPlayPersistence.savePairing(this, id, key)
         }
@@ -4167,10 +4260,23 @@ class CarPlayHostActivity : ComponentActivity() {
         val view = videoView ?: return
         if (viewWidth <= 0 || viewHeight <= 0) return
         val content = contentRect(viewWidth, viewHeight)
-        view.setTransform(Matrix().apply {
-            setScale(content.width / viewWidth, content.height / viewHeight)
-            postTranslate(content.left, content.top)
-        })
+        val fallback = fallbackVideoView
+        if (fallback != null) {
+            val bounds = CarPlaySurfaceBounds.from(content)
+            if (fallbackVideoBounds != bounds) {
+                fallbackVideoBounds = bounds
+                fallback.layoutParams = FrameLayout.LayoutParams(bounds.width, bounds.height,
+                    Gravity.TOP or Gravity.LEFT).apply {
+                    leftMargin = bounds.left
+                    topMargin = bounds.top
+                }
+            }
+        } else {
+            (view as? TextureView)?.setTransform(Matrix().apply {
+                setScale(content.width / viewWidth, content.height / viewHeight)
+                postTranslate(content.left, content.top)
+            })
+        }
         if (sidePanelShown) placeSidePanel(viewWidth, viewHeight)
     }
 
@@ -4331,7 +4437,8 @@ class CarPlayHostActivity : ComponentActivity() {
         controller?.sendTouch(emptyList())
         root.post {
             if (generation != picturePanelGeneration || isFinishing || isDestroyed) return@post
-            val panel = CarPlayPicturePanel(this, ::closePicturePanel)
+            val panel = CarPlayPicturePanel(this,
+                adjustmentsAvailable = fallbackVideoView == null, close = ::closePicturePanel)
             val availableWidth = (root.width - dp(24)).coerceAtLeast(1)
             val width = minOf(dp(420), if (root.width < dp(800)) availableWidth else (root.width * 0.42f).toInt())
             val height = minOf(dp(540), root.height - dp(24)).coerceAtLeast(1)
@@ -4409,6 +4516,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun shutdown(terminateProcess: Boolean, reason: String, completion: () -> Unit = {}) {
         if (!shuttingDown.compareAndSet(false, true)) { completion(); return }
+        BrowserOutput.stop()
         resetSidePanel()
         startupRetryBudget.disconnected()
         restartGeneration += 1
@@ -4435,6 +4543,58 @@ class CarPlayHostActivity : ComponentActivity() {
             mainHandler.post { completion() }
             if (terminateProcess) Process.killProcess(Process.myPid())
         }
+    }
+
+    private fun observeVideoWindow(texture: TextureView) {
+        val probe = object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (!texture.isAttachedToWindow) return true
+                removeVideoSurfaceProbe()
+                if (isDestroyed || videoView !== texture) return true
+                val mode = carPlayVideoSurfaceMode(texture.isHardwareAccelerated)
+                appendLog("Video output mode=$mode windowHardwareAccelerated=${texture.isHardwareAccelerated}")
+                if (mode == CarPlayVideoSurfaceMode.TEXTURE) return true
+                useFallbackVideoSurface(texture)
+                return false // Measure the replacement before drawing the software window.
+            }
+        }
+        videoSurfaceProbe = probe
+        texture.viewTreeObserver.addOnPreDrawListener(probe)
+    }
+
+    private fun removeVideoSurfaceProbe() {
+        val probe = videoSurfaceProbe ?: return
+        videoView?.viewTreeObserver?.takeIf { it.isAlive }?.removeOnPreDrawListener(probe)
+        videoSurfaceProbe = null
+    }
+
+    private fun useFallbackVideoSurface(texture: TextureView) {
+        val root = texture.parent as? FrameLayout ?: return
+        val index = root.indexOfChild(texture)
+        val viewport = FrameLayout(this).apply { clipChildren = true }
+        val surfaceView = SurfaceView(this)
+        pictureBinding?.close()
+        pictureBinding = null
+        // Detach our wrapper before removing its TextureView; a late destruction callback
+        // must not clear the framework-owned replacement surface.
+        videoSurfaceOwner.clear()
+        currentSurfaceTexture = null
+        texture.surfaceTextureListener = null
+        root.removeView(texture)
+        videoView = viewport
+        fallbackVideoView = surfaceView
+        surfaceView.holder.addCallback(fallbackSurfaceCallback)
+        viewport.addView(surfaceView, FrameLayout.LayoutParams(-1, -1))
+        viewport.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            val width = right - left
+            val height = bottom - top
+            updateVideoLayout(width, height)
+            if (width != oldRight - oldLeft || height != oldBottom - oldTop) {
+                scheduleDisplaySize(width, height)
+            }
+        }
+        root.addView(viewport, index, texture.layoutParams)
+        appendLog("Using SurfaceView video output: window has no hardware acceleration; picture adjustments unavailable")
     }
 
     private fun attachSurface(surface: Surface) {
@@ -4509,6 +4669,7 @@ class CarPlayHostActivity : ComponentActivity() {
             }
             return true
         }
+        if (BrowserOutput.browserTouchOwned) return true
         val contacts = CarPlayTouchMapper.contacts(event, content)
         val queued = controller?.sendTouch(contacts) ?: false
         when (event.actionMasked) {

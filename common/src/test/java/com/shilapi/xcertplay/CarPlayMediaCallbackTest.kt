@@ -35,15 +35,15 @@ class CarPlayMediaCallbackTest {
     }
 
     @Test
-    fun hardwarePlayAndPauseKeysToggle() {
+    fun standardHardwarePlayAndPauseToggleWhileProprietaryKeyIsIgnored() {
         press(KeyEvent.KEYCODE_MEDIA_PLAY)
         press(KeyEvent.KEYCODE_MEDIA_PAUSE)
         press(CarPlayMediaButton.KEYCODE_BYD_AUTO_MEDIA_PLAY_PAUSE)
 
-        assertEquals(List(3) { CarPlayMediaButton.PLAY_PAUSE }, sent)
+        assertEquals(List(2) { CarPlayMediaButton.PLAY_PAUSE }, sent)
     }
 
-    @Test fun experimentalPlayPauseKeyNeedsOptInAndStopsAfterDisable() {
+    @Test fun proprietaryPlayPauseRemainsIgnoredAcrossOldOptInChanges() {
         var enabled = false
         val experimental = CarPlayMediaCallback(experimentalDiLink3Keys = { enabled }) { index, _ -> sent += index }
         val key = button(KeyEvent(0, 0, KeyEvent.ACTION_DOWN, 331, 0))
@@ -51,10 +51,10 @@ class CarPlayMediaCallbackTest {
         assertEquals(emptyList<Int>(), sent)
         enabled = true
         experimental.onMediaButtonEvent(key)
-        assertEquals(listOf(CarPlayMediaButton.PLAY_PAUSE), sent)
+        assertEquals(emptyList<Int>(), sent)
         enabled = false
         experimental.onMediaButtonEvent(key)
-        assertEquals(listOf(CarPlayMediaButton.PLAY_PAUSE), sent)
+        assertEquals(emptyList<Int>(), sent)
     }
 
     @Test

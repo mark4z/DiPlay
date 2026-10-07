@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay
 
+import com.shilapi.xcertplay.hud.BydHardwareIntegration
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -27,6 +28,7 @@ internal object CarPlayCallKeys {
 
     /** Listens for BYD's hang-up broadcast for the life of the process; idempotent. */
     fun install(context: Context) {
+        if (!BydHardwareIntegration.ENABLED) return
         if (installed) return
         synchronized(this) {
             if (installed) return
@@ -62,6 +64,7 @@ internal object CarPlayCallKeys {
     /** Returns true when the key belongs to a CarPlay call and must not reach the car. */
     fun onKey(context: Context, keyCode: Int, down: Boolean, controller: CarPlayController? = currentController()): Boolean {
         if (!BydOutputSettings.carPlayCallControls(context)) return false
+        if (!CarPlayCallKeyPolicy.isAnswerKey(keyCode) && !CarPlayCallKeyPolicy.isEndKey(keyCode)) return false
         val action = CarPlayCallKeyPolicy.onKey(keyCode, down, BydNavigationOutputs.carPlayCall(), controller.hasSession())
         when (action) {
             CarPlayCallKeyPolicy.Action.PASS -> return false

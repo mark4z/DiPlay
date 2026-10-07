@@ -23,6 +23,7 @@ object BydOemClusterNavi {
 
     /** Blocking, for the ADB routing worker only; never call from the Android main thread. */
     fun holdForLaunch(context: Context, lease: String, current: () -> Boolean): Boolean {
+        if (!BydHardwareIntegration.ENABLED) return false
         val app = context.applicationContext
         return runCatching {
             worker.submit<Boolean> {
@@ -35,6 +36,7 @@ object BydOemClusterNavi {
 
     /** Always enqueue, even when acquire has not saved its journal yet. */
     fun release(context: Context, lease: String? = null) {
+        if (!BydHardwareIntegration.ENABLED) return
         val app = context.applicationContext
         worker.execute {
             val pendingLease = lease ?: runCatching { journal(app)?.lease }.getOrNull()

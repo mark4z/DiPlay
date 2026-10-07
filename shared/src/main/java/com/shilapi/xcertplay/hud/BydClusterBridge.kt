@@ -36,6 +36,7 @@ internal object BydClusterBridge {
     private var mapShown = false
 
     fun initialize(appContext: Context) = synchronized(lock) {
+        if (!BydHardwareIntegration.ENABLED) return@synchronized
         if (context != null) return@synchronized
         context = appContext.applicationContext
         adapter = BydAmapAdapter.find { packageName ->

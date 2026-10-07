@@ -1,0 +1,24 @@
+<resources>
+    <string name="identity_import_title">Локальная аутентификация</string>
+    <string name="identity_import_action">Импорт локальной идентичности</string>
+    <string name="identity_import_installed">Импортированная идентичность сохранена на этом устройстве.</string>
+    <string name="identity_import_none">На этом устройстве нет идентичности, импортированной пользователем.</string>
+    <string name="identity_import_compatibility">Локальная проверка не гарантирует принятие идентичности iPhone или автомобилем.</string>
+    <string name="identity_import_explanation">Выберите identity.pk8, затем соответствующий certificate.p7b на этом устройстве. Используйте только идентичность, на использование которой у вас есть разрешение. Каждый файл должен быть непустым и размером не более 16 KiB. Текущая идентичность заменяется только после успешной локальной проверки обоих файлов. Файлы сохраняются в закрытом хранилище приложения и никуда не отправляются. Локальная проверка не гарантирует принятие идентичности iPhone или автомобилем.</string>
+    <string name="identity_import_choose_key">Выбрать identity.pk8</string>
+    <string name="identity_import_choose_certificate">Выбрать certificate.p7b</string>
+    <string name="identity_import_certificate_step">Шаг 2 из 2: выберите соответствующий certificate.p7b. Закрытый ключ пока сохранён временно; текущая идентичность не изменена. Отмена удалит временные файлы.</string>
+    <string name="identity_import_reading_key">Чтение выбранного закрытого ключа…</string>
+    <string name="identity_import_validating">Проверка идентичности и сертификата…</string>
+    <string name="identity_import_busy">Завершите или отмените импорт идентичности перед подключением.</string>
+    <string name="identity_import_disconnect_required">Отключите CarPlay перед импортом идентичности. Это относится и к соединению, которое запускается или останавливается. Пока сеанс работает, текущая идентичность не заменяется.</string>
+    <string name="identity_import_disconnect_first">Сначала отключить</string>
+    <string name="identity_import_disconnected">Отключено. Нажмите «Импорт локальной идентичности», чтобы начать.</string>
+    <string name="identity_import_cancelled">Импорт отменён. Предыдущая идентичность сохранена.</string>
+    <string name="identity_import_interrupted">Импорт прерван. Начните заново и выберите оба файла. Неполная идентичность не установлена.</string>
+    <string name="identity_import_failed">Не удалось импортировать файлы. Выберите соответствующие друг другу незашифрованный ключ P-256 PKCS#8 и сертификат PKCS#7, каждый непустой и размером не более 16 KiB. Предыдущая идентичность сохранена.</string>
+    <string name="identity_import_picker_unavailable">Не удалось открыть системный выбор файлов. Предыдущая идентичность сохранена.</string>
+    <string name="identity_import_success">Идентичность импортирована и прошла локальные проверки. Можно попробовать подключиться. Принятие реальным устройством ещё требует проверки.</string>
+    <string name="identity_import_saved_not_ready">Идентичность сохранена, но не удалось запустить аутентификацию. Откройте DiPlay заново перед подключением.</string>
+    <string name="identity_import_recovery_failed">Импорт не завершён, хранилище аутентификации не удалось восстановить. Откройте DiPlay заново перед подключением.</string>
+</resources>

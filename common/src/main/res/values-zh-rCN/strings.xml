@@ -35,7 +35,7 @@
     <string name="clipboard_usage_access">DiPlay 使用情况访问权限</string>
     <string name="report_clip_label">诊断报告</string>
     <string name="share_diagnostic_report">分享诊断报告</string>
-    <string name="setup_error_auth">无法加载 CarPlay 认证。请在本应用之上覆盖安装完整的 DiPlay 构建。无需卸载或更改热点设置。</string>
+    <string name="setup_error_auth">无法加载 CarPlay 认证。请打开 DiPlay 主页或连接设置，选择“导入本地身份”，然后选择您获准使用的身份文件。</string>
     <string name="hotspot_state_stopped">已停止</string>
     <string name="hotspot_state_off">已关闭</string>
     <string name="hotspot_wireless_prefix">无线热点：</string>
@@ -180,6 +180,8 @@
     <string name="could_not_start_carplay_return_to_diplay_and_check_app_per">无法启动 CarPlay。请返回 DiPlay 检查应用权限。</string>
     <string name="custom_1_1_icon">自定义 1:1 图标</string>
     <string name="debug_logs">调试日志</string>
+    <string name="performance_diagnostics">性能诊断</string>
+    <string name="performance_diagnostics_description">记录视频和触控耗时以排查延迟。复现问题后，保存诊断报告。数据仅保存在本机，完成后请关闭。</string>
     <string name="default_icon">默认图标</string>
     <string name="default_placeholder_icon">默认占位图标</string>
     <string name="diagnostic_report_saved">诊断报告已保存</string>
@@ -683,4 +685,7 @@
     <string name="car_button_description">CarPlay 会在应用列表中显示此图标和名称。点按即可返回车辆自带的界面。更改将在 CarPlay 下次连接时生效。</string>
     <string name="car_button_saved_next_connection">已保存。CarPlay 将在下次连接时显示新的图标和名称。</string>
     <string name="this_head_unit_has_no_image_picker">此车机没有图片选择器。</string>
+    <string name="byd_hardware_disabled">已停用 BYD 专属硬件接入。车辆电量、轮速、挡位和驻车视频不可用；Android GPS 仍可使用。</string>
+    <string name="standard_call_keys">CarPlay 通话按键</string>
+    <string name="standard_call_keys_description">在 CarPlay 通话中使用标准 Android 接听和挂断按键。默认关闭；不处理车厂专属按键码。</string>
 </resources>

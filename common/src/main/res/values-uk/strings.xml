@@ -36,7 +36,7 @@
     <string name="clipboard_usage_access">Доступ DiPlay до даних використання</string>
     <string name="report_clip_label">Діагностичний звіт</string>
     <string name="share_diagnostic_report">Поділитися діагностичним звітом</string>
-    <string name="setup_error_auth">Не вдалося завантажити автентифікацію CarPlay. Установіть повну збірку DiPlay поверх цього застосунку. Видаляти його чи змінювати точку доступу не потрібно.</string>
+    <string name="setup_error_auth">Не вдалося завантажити автентифікацію CarPlay. На головному екрані DiPlay або в налаштуванні підключення виберіть «Імпорт локальної ідентичності» й укажіть файли, які вам дозволено використовувати.</string>
     <string name="hotspot_state_stopped">зупинено</string>
     <string name="hotspot_state_off">вимкнено</string>
     <string name="hotspot_wireless_prefix">Бездротова точка доступу:\u0020</string>
@@ -635,4 +635,6 @@
     <string name="car_button_description">CarPlay показує цей значок і назву у списку застосунків. Натисніть його, щоб повернутися на екран автомобіля. Зміни застосуються під час наступного підключення CarPlay.</string>
     <string name="car_button_saved_next_connection">Збережено. CarPlay покаже новий значок і назву під час наступного підключення.</string>
     <string name="this_head_unit_has_no_image_picker">На цьому головному пристрої немає вибору зображень.</string>
+    <string name="standard_call_keys">Кнопки виклику CarPlay</string>
+    <string name="standard_call_keys_description">Використовувати стандартні кнопки Android для відповіді та завершення виклику CarPlay. Типово вимкнено; фірмові коди кнопок автомобіля не обробляються.</string>
 </resources>

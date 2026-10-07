@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="existing_wifi_title">Existing Wi-Fi / Same LAN</string>
     <string name="existing_wifi_description">Use an existing router or portable Wi-Fi. Keep the iPhone and car on the same network with Internet access.</string>
     <string name="existing_wifi_hint">Existing Wi-Fi · Keep both devices on the same Wi-Fi and Bluetooth on. No car hotspot is needed.</string>
@@ -35,7 +35,7 @@
     <string name="clipboard_usage_access">DiPlay Usage Access</string>
     <string name="report_clip_label">Diagnostic report</string>
     <string name="share_diagnostic_report">Share diagnostic report</string>
-    <string name="setup_error_auth">CarPlay authentication could not be loaded. Install the complete DiPlay build over this app. No uninstall or hotspot change is needed.</string>
+    <string name="setup_error_auth">CarPlay authentication could not be loaded. Open DiPlay Home or Connection setup and choose Import local identity to select your authorized identity files.</string>
     <string name="hotspot_state_stopped">stopped</string>
     <string name="hotspot_state_off">off</string>
     <string name="hotspot_wireless_prefix">Wireless hotspot:\u0020</string>
@@ -186,6 +186,8 @@
     <string name="could_not_start_carplay_return_to_diplay_and_check_app_per">Could not start CarPlay. Return to DiPlay and check app permissions.</string>
     <string name="custom_1_1_icon">Custom 1:1 icon</string>
     <string name="debug_logs">Debug logs</string>
+    <string name="performance_diagnostics" tools:ignore="MissingTranslation">Performance diagnostics</string>
+    <string name="performance_diagnostics_description" tools:ignore="MissingTranslation">Record video and touch timing to investigate delays. Reproduce the issue, then save a diagnostic report. Local only; turn off when finished.</string>
     <string name="default_icon">Default icon</string>
     <string name="default_placeholder_icon">Default placeholder icon</string>
     <string name="diagnostic_report_saved">Diagnostic report saved</string>
@@ -683,4 +685,7 @@
     <string name="car_button_description">CarPlay shows this icon and name in its app list. Tap it to return to the car\'s own screen. Changes apply the next time CarPlay connects.</string>
     <string name="car_button_saved_next_connection">Saved. CarPlay shows the new icon and name the next time it connects.</string>
     <string name="this_head_unit_has_no_image_picker">This head unit has no image picker.</string>
+    <string name="byd_hardware_disabled">BYD hardware integration is disabled. Vehicle battery, wheel speed, gear and parked-video playback are unavailable; Android GPS remains available.</string>
+    <string name="standard_call_keys">CarPlay call keys</string>
+    <string name="standard_call_keys_description">Use standard Android call and end-call buttons during a CarPlay call. Off by default; proprietary vehicle key codes are not handled.</string>
 </resources>

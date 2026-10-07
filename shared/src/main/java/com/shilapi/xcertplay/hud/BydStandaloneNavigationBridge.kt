@@ -14,6 +14,7 @@ internal object BydStandaloneNavigationBridge {
     private var started = false
 
     fun initialize(appContext: Context) = synchronized(lock) {
+        if (!BydHardwareIntegration.ENABLED) return@synchronized
         context = appContext.applicationContext
         if (output == null) output = BydStandaloneHudOutput.create(appContext)
         if (output != null && !started) {

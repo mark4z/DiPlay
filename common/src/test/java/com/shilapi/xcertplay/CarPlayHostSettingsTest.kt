@@ -10,9 +10,11 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.SeekBar
 import android.widget.RadioButton
+import android.widget.Switch
 import android.widget.TextView
 import com.shilapi.xcertplay.airplay.*
 import com.shilapi.xcertplay.host.R
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
 import com.shilapi.xcertplay.orchestration.*
 import com.shilapi.xcertplay.transport.Iap2IdentificationConfig
 import java.util.concurrent.ExecutorService
@@ -59,12 +61,88 @@ class CarPlayHostSettingsTest {
     }
 
     @After fun tearDown() {
+        PerformanceDiagnostics.setEnabled(false)
         (field("shuttingDown") as AtomicBoolean).set(true)
         (field("mainHandler") as Handler).removeCallbacksAndMessages(null)
         (field("teardownExecutor") as ExecutorService).shutdownNow()
         (field("airPlayCommandExecutor") as ExecutorService).shutdownNow()
         CarPlayBackgroundSession.clear()
         controllers.close()
+    }
+
+    @Test fun performanceDiagnosticsDefaultOffAndStaySeparateFromDebugLogs() {
+        invoke("openSettingsMenu")
+        val switches = views(menu()).filterIsInstance<Switch>().toList()
+        val debug = switches.first { it.contentDescription == activity.getString(R.string.show_on_screen_debug_logs) }
+        val performance = performanceSwitch()
+        assertEquals(switches.indexOf(debug) + 1, switches.indexOf(performance))
+        assertFalse(performance.isChecked)
+        assertFalse(AirPlayPersistence.loadPerformanceDiagnosticsEnabled(activity))
+        assertFalse(PerformanceDiagnostics.enabled)
+        debug.performClick()
+        assertFalse(performance.isChecked)
+        performance.performClick()
+        assertTrue(debug.isChecked)
+        assertTrue(field("performanceDiagnosticsEnabled") as Boolean)
+        assertTrue(PerformanceDiagnostics.enabled)
+        // The overlay previews the capture, but does not save it before Apply.
+        assertFalse(AirPlayPersistence.loadPerformanceDiagnosticsEnabled(activity))
+    }
+
+    @Test fun cancellingPerformanceDiagnosticsRestoresSavedValueAndReopenedSwitch() {
+        invoke("openSettingsMenu")
+        performanceSwitch().performClick()
+        invoke("cancelSettingsEdits")
+        assertFalse(field("performanceDiagnosticsEnabled") as Boolean)
+        assertFalse(AirPlayPersistence.loadPerformanceDiagnosticsEnabled(activity))
+        assertFalse(PerformanceDiagnostics.enabled)
+        invoke("openSettingsMenu")
+        assertFalse(performanceSwitch().isChecked)
+    }
+
+    @Test fun savingPerformanceDiagnosticsPersistsAndCancellingDisableKeepsItEnabled() {
+        attachController()
+        invoke("openSettingsMenu")
+        performanceSwitch().performClick()
+        invoke("saveSettingsAndReconnect")
+        assertTrue(AirPlayPersistence.loadPerformanceDiagnosticsEnabled(activity))
+        assertFalse(AirPlayPersistence.loadDebugLogsEnabled(activity))
+        invoke("openSettingsMenu")
+        assertTrue(performanceSwitch().isChecked)
+        performanceSwitch().performClick()
+        invoke("cancelSettingsEdits")
+        assertTrue(field("performanceDiagnosticsEnabled") as Boolean)
+        assertTrue(AirPlayPersistence.loadPerformanceDiagnosticsEnabled(activity))
+        assertTrue(PerformanceDiagnostics.enabled)
+    }
+
+    @Test fun returningFromFullSettingsReloadsPerformanceDiagnosticsWithoutLosingOpenEdits() {
+        AirPlayPersistence.savePerformanceDiagnosticsEnabled(activity, true)
+        invoke("onResume")
+        assertTrue(field("performanceDiagnosticsEnabled") as Boolean)
+        assertTrue(PerformanceDiagnostics.enabled)
+        invoke("openSettingsMenu")
+        performanceSwitch().performClick()
+        invoke("onResume")
+        assertFalse(field("performanceDiagnosticsEnabled") as Boolean)
+        assertFalse(PerformanceDiagnostics.enabled)
+        invoke("cancelSettingsEdits")
+        assertTrue(field("performanceDiagnosticsEnabled") as Boolean)
+        assertTrue(PerformanceDiagnostics.enabled)
+    }
+
+    @Test fun originalRuntimeKeepsAndroidGpsButDoesNotAdvertiseSavedBydVehicleData() {
+        com.shilapi.xcertplay.hud.BydOutputSettings.setBatteryToIphone(activity, true)
+        com.shilapi.xcertplay.hud.BydOutputSettings.setWheelSpeedToIphone(activity, true)
+        com.shilapi.xcertplay.hud.BydOutputSettings.setVideoWhileParked(activity, true)
+        AirPlayPersistence.saveLocationReportingEnabled(activity, true)
+        invoke("loadPersistedSettings")
+        val runtime = activity.javaClass.getDeclaredMethod("createRuntimeConfig")
+            .apply { isAccessible = true }.invoke(activity) as CarPlayRuntimeConfig
+        assertTrue(runtime.identification.locationInformationEnabled)
+        assertFalse(runtime.identification.vehicleStatusEnabled)
+        assertFalse(runtime.identification.vehicleSpeedEnabled)
+        assertFalse(com.shilapi.xcertplay.hud.BydOutputSettings.videoWhileParkedActive(activity))
     }
 
     @Test fun configuredFingerCountsOpenTheMountedMenuWithoutLeavingCarPlay() {
@@ -484,6 +562,8 @@ class CarPlayHostSettingsTest {
     }
 
     private fun menu() = field("settingsMenu") as View
+    private fun performanceSwitch() = views(menu()).filterIsInstance<Switch>()
+        .first { it.contentDescription == activity.getString(R.string.performance_diagnostics_description) }
     private fun resolutionSlider() = views(menu()).filterIsInstance<SeekBar>()
         .first { it.max == CarPlayDisplayScale.MAX_PERCENT - CarPlayDisplayScale.MIN_PERCENT }
     private fun gestureButton() = views(menu()).filterIsInstance<Button>()

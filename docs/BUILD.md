@@ -33,15 +33,23 @@ DIPLAY_AUTH_ASSETS_DIR=/absolute/path/to/runtime-assets ./gradlew :mobile:assemb
 ```
 
 This task refuses missing or empty runtime inputs. `assembleDebug` remains an identity-free
-source/CI build when the explicit asset input is absent; do not install that output as a
-standalone car-test package. Before delivery, verify both `assets/offline-mfi/identity.pk8`
-and `assets/offline-mfi/certificate.p7b` in the APK against the selected local inputs.
-Update the existing test app without uninstalling it to preserve its settings.
+source/CI build when the explicit asset input is absent. The source-only APK can now
+be provisioned on the Android device using **Home → Import local identity** (also in
+**Connection setup**), selecting `identity.pk8` and then `certificate.p7b`. The files
+remain on the device; no remote identity service or GitHub Secrets are needed for
+this path. See [automatic source APKs](SOURCE-APK.md) for the download and signing
+limitations. Local format/key-pair validation does not establish iPhone trust.
+
+For a deliberately pre-provisioned APK, verify both `assets/offline-mfi/identity.pk8`
+and `assets/offline-mfi/certificate.p7b` against the selected local inputs before
+delivery. Updating with the same application ID and signing key preserves the
+private imported identity and settings. Different CI debug keys cannot update one
+another; uninstalling removes the imported identity and settings.
 
 ## Manual GitHub Actions authenticated debug build
 
 The **Build authenticated debug APK** workflow is manual-only and runs only on
-`main`. Ordinary **Android checks** and **Build DiPlay Android TV source APK**
+`main` or the exact `refactor/remove-byd-hardware` branch. Ordinary **Android checks** and **Build DiPlay Android TV source APK**
 remain source-only and never reference these Secrets.
 
 ### Important boundaries
@@ -54,11 +62,12 @@ remain source-only and never reference these Secrets.
   them. In a **public repository**, signed-in users with repository read access
   can download its Actions artifacts. Treat publishing this APK as public
   disclosure of the identity. Secrets protect the input, not the packaged APK.
-- `publish_apk` is **off by default**. Leaving it off builds, verifies, and deletes
-  the APK; there is no download. Turning it on explicitly publishes one APK
-  artifact with **1-day retention**. Expiry/deletion cannot revoke copies already
-  downloaded. The workflow does not create a GitHub Release.
-- Review the current `main` commit and workflow before running. Anyone who can
+- **Every successful manual run uploads the authenticated APK automatically.**
+  There is no publication toggle or verify-only workflow mode. Starting this
+  workflow requests publication of the extractable identity. The direct `.apk`
+  download has **1-day retention**, with no extra ZIP wrapper. Expiry/deletion
+  cannot revoke copies already downloaded. No GitHub Release is created.
+- Review the selected branch's current commit and workflow before running. Anyone who can
   change trusted workflow/build code may cause Secrets to be disclosed. Do not
   add pull-request triggers or run unreviewed code with credentials.
 
@@ -112,12 +121,12 @@ workflow uses `contents: read` and a checkout without persisted credentials.
 
 ### 3. Start the workflow yourself
 
-Open **Actions → Build authenticated debug APK → Run workflow**, select `main`,
-review the current source, and choose whether to enable `publish_apk` after
-reading the disclosure warning above. Click **Run workflow** yourself. If you
-choose publication and the run succeeds, download
-`DiPlay-authenticated-debug-<run ID>` from that run's **Artifacts** section before
-it expires. It contains `DiPlay-standalone-debug.apk`.
+Open **Actions → Build authenticated debug APK → Run workflow**, select `main`
+or `refactor/remove-byd-hardware`, and review that branch's current source and
+publication warning above. Click **Run workflow** yourself only when you want
+its authenticated APK uploaded. There are no additional input fields. After a
+successful run, download `DiPlay-standalone-debug.apk` directly from that run's
+**Artifacts** section before its 1-day expiry. There is no ZIP to unpack.
 
 For this fork: [manual build workflow](https://github.com/mark4z/DiPlay/actions/workflows/build-authenticated-debug.yml).
 
@@ -138,13 +147,54 @@ Credential-stage tool output is suppressed, including failures; no secret values
 checksums or sensitive build logs are published. If that stage fails, check the
 source-only test/lint logs, then verify your selected inputs privately.
 
-No shared Gradle/cache action is used. The isolated Gradle user home is discarded;
-build/configuration caches and Gradle scans are disabled. The helper removes
-identity files and build intermediates on success, failure and ordinary
-cancellation, and an `always()` step also removes the staged APK and caches. A
-hard-killed runner cannot guarantee cleanup steps execute, so this workflow uses
-GitHub-hosted ephemeral runners, never a persistent self-hosted runner. Only the
-explicitly requested uploaded APK survives the runner.
+### Cache reuse without changing the manual build flow
+
+Use **Run workflow** on `main` or `refactor/remove-byd-hardware`. One manual
+run performs two jobs automatically and uploads the verified authenticated APK:
+
+1. **source-checks** runs the same unit tests and lint without either Secret.
+   Gradle dependency downloads and task outputs can be reused. After the checks
+   pass, an explicit cache-save step saves only `wrapper/dists`, `caches/modules-2`
+   and `caches/build-cache-1` inside that job's temporary Gradle user home. No whole
+   user home, checkout, APK directory, identity directory, configuration cache,
+   daemon log or signing key is archived.
+2. **build** starts on a fresh hosted runner after that job succeeds. It restores
+   only the exact source snapshot key from this run, then uses the existing
+   Secrets to build and verify the same authenticated APK. Gradle's local task
+   cache is read-only (`push=false`); remote build caches, configuration snapshots
+   and scans are disabled. This job has no cache-save action or post-job save hook.
+
+The `auth-source-original-v1` namespace is written only by the manual source-check
+job on `main` or the exact `refactor/remove-byd-hardware` branch. Keys include OS, architecture, JDK, mobile target,
+build/dependency fingerprint, commit and unique run/attempt. Only the
+credential-free job may fall back within that source namespace; the credential
+job never falls back to old or unrelated caches. A miss or eviction still permits
+a normal cold build. Ordinary source CI retains its separate source cache,
+enables task-output caching, and makes pull requests read-only cache consumers.
+No test task is removed.
+
+GitHub caches in public repositories are readable by eligible pull requests,
+including forks; they are not a place to store identity material. See the
+[GitHub dependency-cache security reference](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
+The first run can still be cold. Use later source-job `FROM-CACHE` results and
+whole-run timings to assess warm-build gains; no fixed speedup is guaranteed.
+
+The helper removes identity files and build intermediates on success, failure
+and ordinary cancellation. An `always()` step also removes the staged APK and
+the credential job's temporary Gradle home. A hard-killed runner cannot guarantee
+cleanup steps execute, so this workflow uses GitHub-hosted ephemeral runners,
+never a persistent self-hosted runner. Only the uploaded authenticated APK
+survives that runner; the saved source snapshot has never been
+exposed to credentials.
+
+Cache-policy regression checks are included in `python3 -m unittest discover -s
+scripts/tests -v`. To exercise actual Gradle cache behavior with synthetic text
+and an isolated temporary project/home, run this with an already-installed Gradle
+executable (no Android build or identity inputs are used):
+
+```sh
+python3 scripts/test_gradle_cache_policy.py --gradle /absolute/path/to/gradle
+```
 
 This is the `.hudtest` debug application, signed with a newly generated runner
 **debug key**. It may not update an existing app signed by a different key; do not
@@ -154,3 +204,9 @@ this workflow. A successful build is not a physical CarPlay connectivity test.
 
 See GitHub's [Secrets guide](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
 and [artifact access guide](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts).
+
+APK uploads use pinned [`actions/upload-artifact` v7.0.0](https://github.com/actions/upload-artifact/releases/tag/v7.0.0)
+with `archive: false` and one exact file path. The artifact/download name comes
+from the APK filename. The separate **Build DiPlay Android TV source APK**
+workflow likewise provides `mobile-debug.apk` directly, without an identity,
+and retains its existing 7-day expiry. Test-report bundles remain zipped.

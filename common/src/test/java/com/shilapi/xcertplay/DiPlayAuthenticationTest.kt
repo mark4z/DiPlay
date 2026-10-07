@@ -62,6 +62,35 @@ class DiPlayAuthenticationTest {
         assertThrows(Exception::class.java) { DiPlayBootstrap.ensure(context, MfiTarget.LOCAL) }
     }
 
+    @Test fun reinitializingAfterImportInvalidatesThePreviouslyReadyCache() {
+        // A replacement must not be hidden by an earlier successful bootstrap.
+        DiPlayBootstrap::class.java.getDeclaredField("ready").apply { isAccessible = true }
+            .setBoolean(null, true)
+        DiPlayBootstrap.ensure(context, MfiTarget.LOCAL)
+        assertThrows(Exception::class.java) { DiPlayBootstrap.reinitialize(context, MfiTarget.LOCAL) }
+        assertThrows(Exception::class.java) { DiPlayBootstrap.ensure(context, MfiTarget.LOCAL) }
+    }
+
+    @Test fun cancellingProvisioningDoesNotChangeTheSelectedAuthenticationBackend() {
+        AirPlayPersistence.saveMfiTarget(context, MfiTarget.USB_CH341)
+        DiPlayBootstrap.beginIdentityImport(context).use { session ->
+            // Merely selecting the first (synthetic, invalid) file cannot publish a pair.
+            session.writePrivateKey(byteArrayOf(1, 2, 3).inputStream())
+        }
+        assertFalse(DiPlayBootstrap.hasImportedIdentity(context))
+        assertFalse(directory.exists())
+        assertEquals(MfiTarget.USB_CH341, AirPlayPersistence.loadMfiTarget(context))
+        assertTrue(context.noBackupFilesDir.listFiles()!!.none { it.name.startsWith("offline-mfi") })
+    }
+
+    @Test fun reinitializeKeepsUsbSelectionWithoutRequiringLocalIdentity() {
+        AirPlayPersistence.saveMfiTarget(context, MfiTarget.USB_CH341)
+        DiPlayBootstrap.reinitialize(context, AirPlayPersistence.loadMfiTarget(context))
+        assertEquals(MfiTarget.USB_CH341, AirPlayPersistence.loadMfiTarget(context))
+        assertFalse(directory.exists())
+        assertThrows(Exception::class.java) { DiPlayBootstrap.ensure(context, MfiTarget.LOCAL) }
+    }
+
     @Test fun usbControllerWaitsForHardwareWithoutLocalAssets() {
         val statuses = startAuthentication(MfiTarget.USB_CH341)
         assertTrue(statuses.contains(CarPlayStatus.WaitingForMfi))

@@ -52,6 +52,22 @@ class BydAdbSettingsUiTest {
         assertFalse(BydOutputSettings.navigationAvailable(activity))
     }
 
+    @Test fun navigationMetadataStillPermitsGenericHotspotControlsWithoutVehicleOutputs() {
+        val packages = shadowOf(activity.packageManager)
+        packages.removePackage("com.byd.carsettings")
+        packages.installPackage(PackageInfo().apply { packageName = "com.ts.car.someip.service" })
+        assertTrue(BydOutputSettings.navigationHardwareDetected(activity))
+        assertTrue(CarHotspotSetup.isBydHeadUnit(activity))
+        assertFalse(BydOutputSettings.navigationAvailable(activity))
+        assertFalse(BydOutputSettings.available(activity))
+        render(LocalAdb.Access.READY)
+        assertEquals(View.VISIBLE, controls.visibility)
+        assertEquals(1, switches(controls).size)
+        assertTrue(labels(controls).contains(activity.getString(R.string.auto_car_hotspot_title)))
+    }
+
+    // Direct rendering below keeps the original injected helper coverage; the page no longer
+    // mounts advancedVehicleData. Public Settings visibility is tested by BydVehicleDataSettingsTest.
     @Test fun hotspotAndVehicleSettingsHaveOneOwnerWithoutNavigationServices() {
         render(LocalAdb.Access.READY)
         val advanced = advancedVehicleData()

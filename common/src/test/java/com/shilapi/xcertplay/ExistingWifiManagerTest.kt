@@ -37,7 +37,10 @@ class ExistingWifiManagerTest {
     private val wifi = mock(WifiManager::class.java)
     private val info = mock(WifiInfo::class.java)
     private val network = mock(Network::class.java)
-    private val iface = NetworkInterface.getNetworkInterfaces().toList().first { !it.isLoopback }
+    // Only the interface name/index are real; LinkProperties supplies all test addresses.
+    // A network-isolated JVM may expose loopback only, which is sufficient for these fixtures.
+    private val iface = NetworkInterface.getNetworkInterfaces().toList().firstOrNull { !it.isLoopback }
+        ?: requireNotNull(NetworkInterface.getByInetAddress(InetAddress.getLoopbackAddress()))
     private lateinit var properties: LinkProperties
     private lateinit var callback: ConnectivityManager.NetworkCallback
     private var changes = 0

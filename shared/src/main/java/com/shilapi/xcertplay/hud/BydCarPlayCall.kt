@@ -125,6 +125,7 @@ object BydCarPlayCall {
     private var retryUsed = false
 
     fun attach(appContext: Context) {
+        if (!BydHardwareIntegration.ENABLED) return
         context = appContext.applicationContext
     }
 
@@ -320,6 +321,7 @@ object BydCarPlayCallTool {
 
     @JvmStatic
     fun main(args: Array<String>) {
+        if (!BydHardwareIntegration.ENABLED) return
         try {
             when (args.getOrNull(0)) {
                 "prepare" -> check(ownership.prepare(args.getOrNull(2) ?: return, args.getOrNull(3) ?: return, ::appMayBeAlive)) {

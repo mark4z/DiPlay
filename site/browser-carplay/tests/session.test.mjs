@@ -1,0 +1,770 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { BrowserSession } from '../session.mjs';
+import { MAX_DECODE_QUEUE } from '../core.mjs';
+import { audioSdp, candidate } from './audio-fixtures.mjs';
+
+const CONFIG = { type: 'config', streamId: 1, codec: 'avc1.64001f', width: 1280, height: 720 };
+const ENDPOINT = 'ws://192.168.1.20:8765/carplay';
+const approve = socket => { socket.receive({ type: 'approvalPending', version: 2 }); socket.receive({ type: 'authenticated', version: 2 }); };
+const ownTouch = (session, socket) => { session.setTouchOwnership(true); socket.receive({ ...socket.sent.at(-1), type: 'touchOwnership' }); };
+
+function packet(type = 1) {
+  const buffer = new ArrayBuffer(15);
+  const view = new DataView(buffer);
+  view.setUint8(0, type);
+  view.setBigUint64(1, 10000n, false);
+  new Uint8Array(buffer, 9).set([0, 0, 0, 1, type === 1 ? 0x65 : 0x41, 0x88]);
+  return buffer;
+}
+
+function harness() {
+  const sockets = [], decoders = [], states = [], frames = [], diagnostics = [], timers = new Map();
+  let now = 0, timerId = 0;
+  class FakeSocket {
+    constructor(url) { this.url = url; this.readyState = 0; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
+    send(value) { if (this.readyState !== 1) throw new Error('Closed socket'); this.sent.push(JSON.parse(value)); }
+    close(code) { this.readyState = 3; this.closeCode = code; }
+    open() { this.readyState = 1; this.onopen?.(); }
+    receive(value) { this.onmessage?.({ data: typeof value === 'object' && !(value instanceof ArrayBuffer) ? JSON.stringify(value) : value }); }
+    end(code = 1000, reason = 'MUST NOT BE DISPLAYED') { this.readyState = 3; this.onclose?.({ code, reason }); }
+  }
+  class FakeDecoder {
+    static support = async () => ({ supported: true });
+    static isConfigSupported(config) { return this.support(config); }
+    constructor(callbacks) { Object.assign(this, callbacks); this.state = 'unconfigured'; this.decodeQueueSize = 0; this.chunks = []; decoders.push(this); }
+    configure(config) { this.config = config; this.state = 'configured'; }
+    decode(chunk) { this.chunks.push(chunk); this.decodeQueueSize += 1; }
+    close() { this.state = 'closed'; }
+    emit() { const frame = { closed: false, close() { this.closed = true; } }; this.output(frame); return frame; }
+  }
+  const session = new BrowserSession({
+    WebSocket: FakeSocket, VideoDecoder: FakeDecoder,
+    EncodedVideoChunk: class { constructor(value) { Object.assign(this, value); } },
+    onState: (state, message) => states.push({ state, message }), onFrame: frame => frames.push(frame),
+    onDiagnostics: snapshot => diagnostics.push(snapshot),
+    now: () => now, setTimer: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
+    clearTimer: id => timers.delete(id),
+  });
+  return { session, sockets, decoders, states, frames, diagnostics, timers, FakeDecoder,
+    advance: ms => { now += ms; },
+    connect() { session.connect('192.168.1.20', '8765'); sockets.at(-1).open(); return sockets.at(-1); },
+    async ready() { const socket = this.connect(); approve(socket); socket.receive(CONFIG); await Promise.resolve(); return socket; },
+  };
+}
+
+test('constructing the viewer cannot connect; explicit connect sends approval request first and only once', () => {
+  const h = harness();
+  assert.equal(h.sockets.length, 0);
+  assert.equal(h.session.closed, true);
+  const socket = h.connect();
+  assert.equal(socket.url, ENDPOINT);
+  assert.equal(socket.binaryType, 'arraybuffer');
+  assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
+  socket.open();
+  assert.equal(socket.sent.length, 1);
+  assert.throws(() => h.session.connect('192.168.1.20', '8765'));
+  assert.equal(h.sockets.length, 1);
+});
+
+test('approval deadline stops independently of video availability', () => {
+  const h = harness();
+  const socket = h.connect();
+  assert.equal([...h.timers.values()][0].delay, 30000);
+  approve(socket);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.session.authenticated, true);
+  assert.equal(h.states.at(-1).state, 'waiting');
+  assert.equal(h.decoders.length, 0);
+});
+
+test('first config is probed, then deltas are dropped until a complete keyframe', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  assert.deepEqual(socket.sent.at(-1), { type: 'requestKeyframe' });
+  socket.receive(packet(2));
+  assert.equal(h.decoders[0].chunks.length, 0);
+  socket.receive(packet(1));
+  socket.receive(packet(2));
+  assert.equal(h.decoders[0].chunks.length, 2);
+  assert.equal(h.decoders[0].config.description, undefined);
+  assert.equal(h.decoders[0].config.streamId, undefined);
+  assert.equal(h.session.streamId, 1);
+  const frame = h.decoders[0].emit();
+  assert.equal(h.states.at(-1).state, 'live');
+  assert.equal(h.frames[0], frame);
+});
+
+test('decode queue is bounded and overload resynchronizes instead of queuing deltas', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  socket.receive(packet(1));
+  for (let i = 1; i < MAX_DECODE_QUEUE; i++) socket.receive(packet(2));
+  assert.equal(h.decoders[0].chunks.length, MAX_DECODE_QUEUE);
+  h.advance(1100);
+  socket.receive(packet(2));
+  assert.equal(h.decoders[0].state, 'configured');
+  assert.equal(h.decoders.length, 1);
+  assert.equal(h.decoders[0].chunks.length, MAX_DECODE_QUEUE);
+  assert.equal(h.session.needsKeyframe, true);
+  assert.equal(h.states.at(-1).state, 'recovering');
+  assert.deepEqual(socket.sent.at(-1), { type: 'requestKeyframe' });
+  h.decoders[0].decodeQueueSize = 0;
+  socket.receive(packet(1));
+  assert.equal(h.decoders[0].state, 'closed');
+  assert.equal(h.decoders[1].chunks.length, 1);
+  assert.equal(h.decoders[0].emit().closed, true, 'stale output must be closed');
+});
+
+test('decode errors request a keyframe, limit retry storms, and never reconnect automatically', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  for (let i = 0; i < 4; i++) { h.advance(1100); h.decoders.at(-1).error(new Error('private payload')); }
+  assert.equal(h.session.closed, true);
+  assert.equal(socket.readyState, 3);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.states.some(s => s.message.includes('private payload')), false);
+});
+
+test('keyframe requests are throttled while dropping delta packets', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  for (let i = 0; i < 200; i++) socket.receive(packet(2));
+  assert.equal(socket.sent.filter(m => m.type === 'requestKeyframe').length, 1);
+  h.advance(1000);
+  socket.receive(packet(2));
+  assert.equal(socket.sent.filter(m => m.type === 'requestKeyframe').length, 2);
+  assert.equal(h.decoders[0].chunks.length, 0);
+});
+
+test('unsupported codec fails closed with no decode fallback', async () => {
+  const h = harness();
+  h.FakeDecoder.support = async () => ({ supported: false });
+  const socket = await h.ready();
+  assert.equal(h.session.closed, true);
+  assert.equal(h.decoders.length, 0);
+  assert.equal(socket.readyState, 3);
+  assert.match(h.states.at(-1).message, /cannot decode/);
+});
+
+test('closing during asynchronous codec detection prevents stale decoder creation', async () => {
+  const h = harness();
+  let resolve;
+  h.FakeDecoder.support = () => new Promise(r => { resolve = r; });
+  const socket = h.connect();
+  approve(socket);
+  socket.receive(CONFIG);
+  h.session.close();
+  resolve({ supported: true });
+  await Promise.resolve();
+  assert.equal(h.decoders.length, 0);
+  assert.equal(h.session.closed, true);
+  assert.equal(h.session.streamId, null);
+  assert.equal(h.timers.size, 0);
+});
+
+test('newer configuration wins over older asynchronous codec detection', async () => {
+  const h = harness();
+  const pending = [];
+  h.FakeDecoder.support = () => new Promise(resolve => pending.push(resolve));
+  const socket = h.connect();
+  approve(socket);
+  socket.receive(CONFIG);
+  socket.receive({ ...CONFIG, streamId: 2, width: 1920 });
+  pending[1]({ supported: true });
+  await Promise.resolve();
+  pending[0]({ supported: true });
+  await Promise.resolve();
+  assert.equal(h.decoders.length, 1);
+  assert.equal(h.decoders[0].config.codedWidth, 1920);
+  assert.equal(h.session.streamId, 2);
+  h.decoders[0].emit();
+  ownTouch(h.session, socket);
+  h.session.sendContacts([{ id: 0, x: .1, y: .2 }]);
+  assert.equal(socket.sent.at(-1).streamId, 2);
+});
+
+test('rejects unauthenticated video/config and malformed or oversized control data', () => {
+  for (const value of [packet(1), CONFIG, 'not json', ' '.repeat(16385), { type: 'unknown' }, null]) {
+    const h = harness();
+    const socket = h.connect();
+    socket.receive(value);
+    assert.equal(h.session.closed, true);
+    assert.equal(h.decoders.length, 0);
+  }
+});
+
+test('touch is gated until decoded video and disconnect is idempotent', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  const contacts = [{ id: 0, x: .2, y: .4 }];
+  assert.equal(h.session.sendContacts(contacts), false);
+  h.decoders[0].emit();
+  assert.equal(h.session.sendContacts(contacts), false, 'decoded video alone cannot enable control');
+  ownTouch(h.session, socket);
+  assert.equal(h.session.sendContacts(contacts), true);
+  assert.deepEqual(socket.sent.at(-1), { type: 'touch', streamId: 1, contacts });
+  h.session.close();
+  const count = h.states.length;
+  h.session.close();
+  assert.equal(h.states.length, count);
+  assert.equal(h.session.sendContacts(contacts), false);
+  assert.equal(h.session.streamId, null);
+  assert.equal(h.decoders[0].emit().closed, true);
+});
+
+test('control backpressure closes the connection rather than losing a touch release', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  h.decoders[0].emit();
+  ownTouch(h.session, socket);
+  socket.bufferedAmount = 16385;
+  assert.equal(h.session.sendContacts([]), false);
+  assert.equal(h.session.closed, true);
+  assert.match(h.states.at(-1).message, /release touch/);
+});
+
+test('bridge loss never leaks close reason, and reconnect requires another explicit connect', () => {
+  const h = harness();
+  h.connect().end(1008);
+  assert.equal(h.session.closed, true);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.states.some(s => s.message.includes('MUST NOT BE DISPLAYED')), false);
+  h.connect();
+  assert.equal(h.sockets.length, 2);
+  assert.equal(h.session.authenticated, false);
+});
+
+test('waiting status invalidates video and old output while keeping authenticated socket', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  h.decoders[0].emit();
+  socket.receive({ type: 'status', code: 'waiting' });
+  assert.equal(h.session.closed, false);
+  assert.equal(h.session.authenticated, true);
+  assert.equal(h.session.streaming, false);
+  assert.equal(h.session.streamId, null);
+  assert.equal(h.session.sendContacts([]), false);
+  assert.equal(h.decoders[0].emit().closed, true);
+  assert.equal(h.states.at(-1).state, 'waiting');
+});
+
+test('configuration replacement disables touch immediately and assigns only the new stream after probing', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  h.decoders[0].emit();
+  ownTouch(h.session, socket);
+  h.session.sendContacts([{ id: 0, x: .1, y: .2 }]);
+  assert.equal(socket.sent.at(-1).streamId, 1);
+  let resolve;
+  h.FakeDecoder.support = () => new Promise(r => { resolve = r; });
+  socket.receive({ ...CONFIG, streamId: 2 });
+  assert.equal(h.session.streamId, null);
+  assert.equal(h.session.sendContacts([]), false);
+  assert.equal(h.session.sendContacts([{ id: 0, x: .3, y: .4 }]), false);
+  resolve({ supported: true });
+  await Promise.resolve();
+  assert.equal(h.session.streamId, 2);
+  h.decoders.at(-1).emit();
+  ownTouch(h.session, socket);
+  h.session.sendContacts([{ id: 1, x: .5, y: .6 }]);
+  assert.deepEqual(socket.sent.at(-1), { type: 'touch', streamId: 2, contacts: [{ id: 1, x: .5, y: .6 }] });
+  h.session.close();
+});
+
+test('waiting during codec negotiation never restores a stale stream identifier', async () => {
+  const h = harness();
+  let resolve;
+  h.FakeDecoder.support = () => new Promise(r => { resolve = r; });
+  const socket = h.connect();
+  approve(socket);
+  socket.receive(CONFIG);
+  socket.receive({ type: 'status', code: 'waiting' });
+  resolve({ supported: true });
+  await Promise.resolve();
+  assert.equal(h.session.streamId, null);
+  assert.equal(h.decoders.length, 0);
+  assert.equal(h.session.sendContacts([]), false);
+  h.session.close();
+});
+
+test('authentication and connection timeout callbacks close the one active session', () => {
+  const h = harness();
+  h.connect();
+  [...h.timers.values()][0].callback();
+  assert.equal(h.session.closed, true);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.sockets.length, 1);
+});
+
+
+test('close diagnostics report numeric code and pairing phase without server contents', () => {
+  const h = harness();
+  const socket = h.connect();
+  socket.end(1002);
+  assert.match(h.states.at(-1).message, /WebSocket 1002; requesting Android approval/);
+  assert.doesNotMatch(h.states.at(-1).message, /MUST NOT BE DISPLAYED|synthetic-test-token/);
+});
+
+test('error waits briefly for the close code rather than hiding it', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  socket.receive(packet());
+  h.decoders[0].emit();
+  socket.onerror();
+  assert.equal(h.session.closed, false);
+  assert.equal([...h.timers.values()][0].delay, 1000);
+  socket.end(1006);
+  assert.equal(h.session.closed, true);
+  assert.equal(h.timers.size, 0);
+  assert.match(h.states.at(-1).message, /WebSocket 1006; streaming video/);
+});
+
+test('error without a close event terminates after a bounded wait', () => {
+  const h = harness();
+  const socket = h.connect();
+  socket.onerror();
+  [...h.timers.values()][0].callback();
+  assert.equal(h.session.closed, true);
+  assert.match(h.states.at(-1).message, /requesting Android approval; no close code/);
+  assert.equal(socket.onclose, null);
+});
+
+test('close diagnostics do not reflect arbitrary values and reset on reconnect', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  socket.end('untrusted-code');
+  assert.match(h.states.at(-1).message, /WebSocket unknown; waiting for video/);
+  assert.doesNotMatch(h.states.at(-1).message, /untrusted-code/);
+  h.connect().end(1008);
+  assert.match(h.states.at(-1).message, /rejected this session.*WebSocket 1008; requesting Android approval/);
+});
+
+
+test('approvalPending does not authenticate, release controls, or extend the deadline', () => {
+  const h = harness();
+  const socket = h.connect();
+  const timer = [...h.timers.values()][0];
+  socket.receive({ type: 'approvalPending', version: 2 });
+  assert.equal(h.session.authenticated, false);
+  assert.equal(h.session.approvalPending, true);
+  assert.equal(h.states.at(-1).state, 'approvalPending');
+  assert.equal(h.session.setTouchOwnership(true), false);
+  assert.equal(h.session.sendContacts([]), false);
+  assert.equal(h.session.send({ type: 'requestKeyframe' }), false);
+  h.session.requestKeyframe();
+  assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
+  assert.equal([...h.timers.values()][0], timer);
+  timer.callback();
+  assert.equal(h.session.closed, true);
+  assert.equal(h.timers.size, 0);
+  assert.match(h.states.at(-1).message, /Approval timed out/);
+  assert.equal(h.sockets.length, 1);
+  h.connect();
+  assert.equal(h.session.approvalPending, false);
+  h.session.close();
+});
+
+test('legacy, unversioned, newer, and out-of-order handshakes all fail closed', () => {
+  for (const sequence of [
+    [{ type: 'authenticated' }], [{ type: 'authenticated', version: 2 }],
+    [{ type: 'approvalPending' }], [{ type: 'approvalPending', version: 1 }],
+    [{ type: 'approvalPending', version: '2' }], [{ type: 'approvalPending', version: 3 }],
+    [{ type: 'auth', token: 'MUST NOT BE DISPLAYED' }], [{ type: 'error' }],
+    [{ type: 'approvalPending', version: 2 }, { type: 'authenticated', version: 1 }],
+    [{ type: 'approvalPending', version: 2 }, { type: 'approvalPending', version: 2 }],
+    [{ type: 'approvalPending', version: 2 }, CONFIG],
+  ]) {
+    const h = harness();
+    const socket = h.connect();
+    sequence.forEach(message => socket.receive(message));
+    assert.equal(h.session.closed, true, JSON.stringify(sequence));
+    assert.equal(h.session.authenticated, false);
+    assert.equal(h.decoders.length, 0);
+    assert.match(h.states.at(-1).message, /latest DiPlay APK.*updated browser viewer/);
+    assert.doesNotMatch(h.states.at(-1).message, /MUST NOT BE DISPLAYED/);
+    assert.equal(h.timers.size, 0);
+  }
+});
+
+test('rejection, expiry, and upgrade errors have clear fixed messages and never reconnect', () => {
+  for (const [code, expected] of [
+    ['approvalRejected', /rejected on Android/], ['approvalTimeout', /Approval timed out/],
+    ['upgradeRequired', /latest DiPlay APK.*updated browser viewer/],
+  ]) {
+    for (const viaClose of [false, true]) {
+      const h = harness();
+      const socket = h.connect();
+      socket.receive({ type: 'approvalPending', version: 2 });
+      if (viaClose) socket.end(1008, code);
+      else socket.receive({ type: 'error', code, version: 2, message: 'MUST NOT BE DISPLAYED' });
+      assert.equal(h.session.closed, true);
+      assert.equal(h.session.authenticated, false);
+      assert.match(h.states.at(-1).message, expected);
+      assert.doesNotMatch(h.states.at(-1).message, /MUST NOT BE DISPLAYED/);
+      assert.equal(h.sockets.length, 1);
+      assert.equal(h.timers.size, 0);
+    }
+  }
+});
+
+test('error codes never resolve inherited object keys or display arbitrary bridge content', () => {
+  for (const code of ['constructor', '__proto__', 'toString', 'MUST NOT BE DISPLAYED', { toString: 1 }, ['approvalRejected'], null]) {
+    const h = harness();
+    const socket = h.connect();
+    socket.receive({ type: 'error', code, version: 2 });
+    assert.equal(typeof h.states.at(-1).message, 'string');
+    assert.match(h.states.at(-1).message, /latest DiPlay APK/);
+  }
+});
+
+test('preapproval disconnect and stale socket callbacks cannot authorize a later attempt', () => {
+  const h = harness();
+  const old = h.connect();
+  old.receive({ type: 'approvalPending', version: 2 });
+  const staleMessage = old.onmessage;
+  h.session.close();
+  const current = h.connect();
+  staleMessage({ data: JSON.stringify({ type: 'authenticated', version: 2 }) });
+  assert.equal(h.session.authenticated, false);
+  assert.equal(h.session.closed, false);
+  assert.equal(h.session.approvalPending, false);
+  approve(current);
+  assert.equal(h.session.authenticated, true);
+  h.session.close();
+  h.session.receiveText('{"type":"approvalPending","version":2}');
+  h.session.receiveText('{"type":"authenticated","version":2}');
+  assert.equal(h.session.authenticated, false);
+});
+
+test('touch ownership requires explicit request and matching stream and request acknowledgments', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  const contacts = [{ id: 0, x: .5, y: .5 }];
+  assert.equal(h.session.setTouchOwnership(true), false, 'cannot acquire before decoded output');
+  h.decoders[0].emit();
+  socket.receive({ type: 'touchOwnership', enabled: true, streamId: 1, requestId: 1 });
+  assert.equal(h.session.touchOwned, false, 'unsolicited acknowledgment is not an opt-in');
+  assert.equal(h.session.setTouchOwnership(true), true);
+  const request = socket.sent.at(-1);
+  assert.deepEqual(request, { type: 'setTouchOwnership', enabled: true, streamId: 1, requestId: 1 });
+  assert.equal(h.session.touchOwned, false);
+  assert.equal(h.session.touchPending, true);
+  assert.equal(h.session.sendContacts(contacts), false);
+  socket.receive({ ...request, type: 'touchOwnership', streamId: 2 });
+  socket.receive({ ...request, type: 'touchOwnership', requestId: 2 });
+  assert.equal(h.session.touchOwned, false);
+  socket.receive({ ...request, type: 'touchOwnership' });
+  assert.equal(h.session.touchPending, false);
+  assert.equal(h.session.sendContacts(contacts), true);
+  assert.equal(h.session.setTouchOwnership(false), true);
+  const disable = socket.sent.at(-1);
+  assert.deepEqual(disable, { type: 'setTouchOwnership', enabled: false, streamId: 1, requestId: 2 });
+  assert.equal(h.session.touchOwned, false, 'local disable does not wait for acknowledgment');
+  assert.equal(h.session.sendContacts(contacts), false);
+  socket.receive({ ...request, type: 'touchOwnership' });
+  assert.equal(h.session.touchOwned, false, 'late enable cannot reverse disable');
+  assert.equal(h.session.setTouchOwnership(true), true);
+  const secondEnable = socket.sent.at(-1);
+  assert.equal(secondEnable.requestId, 3);
+  socket.receive({ ...request, type: 'touchOwnership' });
+  socket.receive({ ...disable, type: 'touchOwnership' });
+  assert.equal(h.session.touchOwned, false, 'earlier acknowledgments cannot satisfy later opt-in');
+  assert.equal(h.session.touchPending, true);
+  socket.receive({ ...secondEnable, type: 'touchOwnership' });
+  assert.equal(h.session.touchOwned, true);
+  socket.receive({ ...secondEnable, type: 'touchOwnership', enabled: false });
+  assert.equal(h.session.touchOwned, false, 'Android can revoke ownership');
+  assert.equal(h.session.touchRequested, false);
+  h.session.close();
+});
+
+test('reconfiguration preserves intent, requires a new ACK, and disconnect clears ownership', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  h.decoders[0].emit();
+  ownTouch(h.session, socket);
+  const oldRequest = { type: 'touchOwnership', enabled: true, streamId: 1, requestId: 1 };
+  socket.receive({ ...CONFIG, streamId: 2 });
+  assert.equal(h.session.touchRequested, true);
+  assert.equal(h.session.touchOwned, false);
+  assert.equal(h.session.touchPending, false);
+  socket.receive(oldRequest);
+  await Promise.resolve();
+  h.decoders.at(-1).emit();
+  socket.receive(oldRequest);
+  assert.equal(h.session.touchOwned, false);
+  assert.equal(h.session.touchPending, true, 'fresh output requests ownership again');
+  assert.equal(socket.sent.at(-1).streamId, 2);
+  assert.equal(socket.sent.at(-1).requestId, 3);
+  socket.receive({ ...socket.sent.at(-1), type: 'touchOwnership' });
+  assert.equal(h.session.touchOwned, true);
+  h.session.close();
+  assert.equal(h.session.touchPending, false);
+  assert.equal(h.session.currentTouchRequestId, null);
+  assert.equal(h.session.touchOwned, false);
+});
+
+test('malformed ownership acknowledgments fail closed', async () => {
+  for (const change of [{ enabled: 'true' }, { streamId: 0 }, { streamId: undefined },
+    { requestId: undefined }, { requestId: -1 }, { requestId: '1' }, { requestId: Number.MAX_SAFE_INTEGER + 1 }]) {
+    const h = harness();
+    const socket = await h.ready();
+    h.decoders[0].emit();
+    h.session.setTouchOwnership(true);
+    socket.receive({ type: 'touchOwnership', enabled: true, streamId: 1, requestId: 1, ...change });
+    assert.equal(h.session.closed, true);
+    assert.equal(h.session.touchOwned, false);
+  }
+});
+
+
+test('a 60fps burst drains the existing decoder before resync instead of restart starvation', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  socket.receive(packet(1));
+  h.decoders[0].emit();
+  ownTouch(h.session, socket);
+  const oldEnable = socket.sent.at(-1);
+  for (let i = 1; i < MAX_DECODE_QUEUE; i++) socket.receive(packet(2));
+  socket.receive(packet(2));
+  assert.equal(h.decoders.length, 1, 'overload must not discard work already decoding');
+  assert.equal(h.session.touchRequested, true);
+  assert.equal(h.session.touchOwned, false);
+  assert.equal(h.session.sendContacts([{ id: 0, x: .2, y: .2 }]), false);
+  const disable = socket.sent.findLast(m => m.type === 'setTouchOwnership');
+  assert.equal(disable.enabled, false, 'native contacts must be released immediately');
+  for (let i = 0; i < 120; i++) { h.advance(17); socket.receive(packet(i % 60 ? 2 : 1)); }
+  assert.equal(h.decoders.length, 1, 'even keyframes cannot exceed the full decoder queue');
+  assert.equal(h.session.closed, false);
+  assert.equal(h.decoders[0].emit().closed, true, 'old outputs cannot restore control or live state');
+  h.decoders[0].decodeQueueSize = 0;
+  socket.receive(packet(2));
+  assert.equal(h.decoders.length, 1, 'no arbitrary delta may restart after loss');
+  socket.receive(packet(1));
+  assert.equal(h.decoders.length, 2);
+  assert.equal(h.decoders[1].chunks.length, 1);
+  h.decoders[1].emit();
+  const freshEnable = socket.sent.at(-1);
+  assert.equal(freshEnable.type, 'setTouchOwnership');
+  assert.equal(freshEnable.enabled, true);
+  assert.ok(freshEnable.requestId > disable.requestId);
+  socket.receive({ ...oldEnable, type: 'touchOwnership' });
+  socket.receive({ ...disable, type: 'touchOwnership' });
+  assert.equal(h.session.touchOwned, false);
+  socket.receive({ ...freshEnable, type: 'touchOwnership' });
+  assert.equal(h.session.touchOwned, true);
+  assert.equal(h.sockets.length, 1);
+  h.session.close();
+});
+
+test('touch intent survives config probing but can be cancelled before the new stream is ready', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  h.decoders[0].emit();
+  ownTouch(h.session, socket);
+  let resolve;
+  h.FakeDecoder.support = () => new Promise(r => { resolve = r; });
+  socket.receive({ ...CONFIG, streamId: 2 });
+  assert.equal(h.session.touchRequested, true);
+  assert.equal(h.session.touchOwned, false);
+  assert.equal(h.session.setTouchOwnership(false), true);
+  resolve({ supported: true });
+  await Promise.resolve();
+  const count = socket.sent.length;
+  h.decoders.at(-1).emit();
+  assert.equal(socket.sent.length, count, 'cancelled intent must not reacquire on later output');
+  assert.equal(h.session.touchRequested, false);
+  h.session.close();
+});
+
+test('recovering retains intent only in the approved socket, not inactive status or reconnection', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  h.decoders[0].emit();
+  ownTouch(h.session, socket);
+  h.decoders[0].error();
+  assert.equal(h.session.touchRequested, true);
+  assert.equal(h.session.touchOwned, false);
+  socket.receive({ type: 'status', code: 'disconnected' });
+  assert.equal(h.session.touchRequested, false);
+  socket.receive({ ...CONFIG, streamId: 2 });
+  await Promise.resolve();
+  h.decoders.at(-1).emit();
+  assert.equal(h.session.touchOwned, false);
+  ownTouch(h.session, socket);
+  h.decoders.at(-1).error();
+  socket.end(1006);
+  h.connect();
+  assert.equal(h.session.touchRequested, false);
+  assert.equal(h.session.authenticated, false);
+  h.session.close();
+});
+
+test('no-output recovery deadline cannot be extended by repeated bursts or codec resets', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  socket.receive(packet(1));
+  for (let i = 1; i < MAX_DECODE_QUEUE; i++) socket.receive(packet(2));
+  socket.receive(packet(2));
+  const deadline = [...h.timers.values()][0];
+  assert.equal(deadline.delay, 10000);
+  for (let i = 0; i < 200; i++) socket.receive(packet(2));
+  h.decoders[0].decodeQueueSize = 0;
+  socket.receive(packet(1));
+  assert.equal([...h.timers.values()][0], deadline);
+  assert.equal(h.session.closed, false);
+  deadline.callback();
+  assert.equal(h.session.closed, true);
+  assert.equal(h.timers.size, 0);
+  assert.match(h.states.at(-1).message, /no recovered output for 10 seconds/);
+});
+
+test('usable recovered output clears its watchdog and never persists consent into a new socket', async () => {
+  const h = harness();
+  const socket = await h.ready();
+  h.decoders[0].error();
+  assert.equal(h.timers.size, 1);
+  socket.receive(packet(1));
+  h.decoders.at(-1).emit();
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.session.closed, false);
+  h.session.close();
+});
+
+test('audio is approval-gated and independent of video recovery on the same socket', async () => {
+  const preapproval = harness();
+  const rejectedAudio = [];
+  preapproval.session.onAudioPacket = value => rejectedAudio.push(value);
+  const pending = preapproval.connect();
+  assert.equal(preapproval.session.setAudioEnabled(true, 1), false);
+  const audio = new ArrayBuffer(36);
+  new Uint8Array(audio)[0] = 3;
+  pending.receive(audio);
+  assert.equal(preapproval.session.closed, true);
+  assert.equal(rejectedAudio.length, 0);
+
+  const h = harness();
+  const packets = [], messages = [];
+  let resets = 0;
+  h.session.onAudioPacket = value => packets.push(value);
+  h.session.onAudioMessage = value => messages.push(value);
+  h.session.onAudioReset = () => { resets++; };
+  const socket = await h.ready();
+  assert.equal(h.session.setAudioEnabled(true, 1), true);
+  assert.deepEqual(socket.sent.at(-1), { type: 'audioMode', enabled: true, requestId: 1, transport: 'webrtc-opus' });
+  socket.receive({ type: 'audioState', enabled: true, epoch: 1 });
+  socket.receive(audio);
+  assert.equal(packets[0], audio);
+  assert.equal(messages[0].epoch, 1);
+  assert.equal(h.decoders[0].chunks.length, 0);
+  h.decoders[0].error();
+  socket.receive(audio);
+  socket.receive({ ...CONFIG, streamId: 2 });
+  await Promise.resolve();
+  socket.receive(audio);
+  assert.equal(resets, 0, 'video-only recovery must not tear down audio');
+  assert.equal(packets.length, 3);
+  h.session.close();
+  assert.equal(resets, 1);
+  assert.equal(h.session.setAudioEnabled(true, 1), false);
+});
+
+test('diagnostic milestones measure only the current approved attempt and never repeat per frame', async () => {
+  const h = harness();
+  assert.equal(h.diagnostics.length, 0);
+  h.session.connect('192.168.1.20', '8765');
+  h.advance(250);
+  const socket = h.sockets[0];
+  socket.open();
+  h.advance(100);
+  socket.receive({ type: 'approvalPending', version: 2 });
+  h.advance(2000);
+  socket.receive({ type: 'authenticated', version: 2 });
+  socket.receive(CONFIG);
+  await Promise.resolve();
+  h.advance(500);
+  for (let i = 0; i < 1000; i++) h.decoders[0].emit();
+  // Recovery within the same approved session must not add another first video.
+  socket.receive({ ...CONFIG, streamId: 2 });
+  await Promise.resolve();
+  h.decoders.at(-1).emit();
+  h.advance(150);
+  socket.end(1006, 'MUST NOT BE DISPLAYED token=private sdp=private');
+  assert.deepEqual(h.diagnostics.at(-1), {
+    attempt: 1, transport: 'ws:', events: [
+      { stage: 'connect', elapsedMs: 0 },
+      { stage: 'wsOpen', elapsedMs: 250 },
+      { stage: 'approvalPending', elapsedMs: 350 },
+      { stage: 'approved', elapsedMs: 2350 },
+      { stage: 'firstVideo', elapsedMs: 2850 },
+      { stage: 'closed', elapsedMs: 3000, closeCode: 1006 },
+    ],
+  });
+  assert.equal(h.diagnostics.length, 6, 'only bounded milestone updates, never frames or controls');
+  assert.doesNotMatch(JSON.stringify(h.diagnostics), /MUST NOT BE DISPLAYED|private|192\.168|8765|avc1/);
+  h.connect();
+  assert.deepEqual(h.diagnostics.at(-1), { attempt: 2, transport: 'ws:', events: [
+    { stage: 'connect', elapsedMs: 0 }, { stage: 'wsOpen', elapsedMs: 0 },
+  ] });
+  h.session.close();
+});
+
+test('diagnostics distinguish constructor failure, pre-open close, timeout, and observed close codes', () => {
+  const blocked = harness();
+  blocked.session.WebSocket = class { constructor() { throw new Error('secret error'); } };
+  blocked.session.connect('192.168.1.20', '8765');
+  assert.deepEqual(blocked.diagnostics.at(-1).events, [
+    { stage: 'connect', elapsedMs: 0 }, { stage: 'closed', elapsedMs: 0, closeCode: null },
+  ]);
+  assert.equal(blocked.timers.size, 0);
+
+  const h = harness();
+  h.session.connect('192.168.1.20', '8765');
+  const old = h.sockets[0];
+  const staleClose = old.onclose;
+  h.advance(1234);
+  old.end(1006);
+  assert.deepEqual(h.diagnostics.at(-1).events, [
+    { stage: 'connect', elapsedMs: 0 }, { stage: 'closed', elapsedMs: 1234, closeCode: 1006 },
+  ]);
+  h.session.connect('192.168.1.20', '8765');
+  staleClose({ code: 1008, reason: 'MUST NOT BE DISPLAYED' });
+  assert.equal(h.diagnostics.at(-1).events.length, 1, 'old callbacks cannot mark the new attempt');
+  h.advance(60000);
+  [...h.timers.values()][0].callback();
+  assert.deepEqual(h.diagnostics.at(-1).events.at(-1), { stage: 'closed', elapsedMs: 60000, closeCode: null });
+  h.session.close();
+  assert.equal(h.diagnostics.at(-1).events.length, 2, 'repeated close is idempotent');
+  assert.doesNotMatch(JSON.stringify([blocked.diagnostics, h.diagnostics]), /secret|MUST NOT BE DISPLAYED/);
+});
+
+test('diagnostics cannot turn approval rejection into success or invent a received close code', () => {
+  const h = harness();
+  const socket = h.connect();
+  socket.receive({ type: 'approvalPending', version: 2 });
+  h.advance(800);
+  socket.receive({ type: 'error', code: 'approvalRejected', version: 2, token: 'secret' });
+  assert.deepEqual(h.diagnostics.at(-1).events.map(event => event.stage), ['connect', 'wsOpen', 'approvalPending', 'closed']);
+  assert.equal(h.diagnostics.at(-1).events.at(-1).closeCode, null, 'viewer-initiated close code is not a received CloseEvent');
+  assert.equal(h.session.authenticated, false);
+  assert.equal(h.sockets.length, 1);
+  assert.doesNotMatch(JSON.stringify(h.diagnostics), /secret/);
+});
+
+
+test('WebRTC signaling stays approval-gated, audio-only and separate from video configuration', async () => {
+  const h = harness(), messages = []; h.session.onAudioMessage = message => messages.push(message);
+  const answer = { type: 'audioAnswer', transport: 'webrtc-opus', requestId: 1, epoch: 1, sdp: audioSdp('recvonly') };
+  const socket = h.connect(); assert.equal(h.session.sendAudioSignal(answer), false); approve(socket);
+  assert.equal(h.session.setAudioEnabled(true, 1, 'test'), true); assert.equal(socket.sent.at(-1).source, 'test');
+  socket.receive({ type: 'audioOffer', requestId: 1, epoch: 1, transport: 'webrtc-opus', sdp: audioSdp('sendonly') });
+  socket.receive({ type: 'audioIce', requestId: 1, epoch: 1, transport: 'webrtc-opus', ...candidate });
+  assert.deepEqual(messages.map(message => message.type), ['audioOffer', 'audioIce']);
+  assert.equal(h.session.sendAudioSignal(answer), true);
+  for (const invalid of [{ ...answer, type: 'offer' }, { ...answer, transport: 'pcm' }, { ...answer, epoch: 0 },
+    { ...answer, sdp: audioSdp('sendrecv') }, { ...answer, type: 'audioIce', ...candidate, sdpMLineIndex: 1 }])
+    assert.equal(h.session.sendAudioSignal(invalid), false);
+  assert.equal(h.session.sendAudioSignal({ type: 'audioAlive', requestId: 1, epoch: 1, transport: 'webrtc-opus' }), true);
+  assert.equal(h.decoders.length, 0, 'synthetic test needs no video or CarPlay configuration'); h.session.close();
+});

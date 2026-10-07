@@ -9,37 +9,30 @@ import org.junit.Test
 
 class CarPlayMediaButtonTest {
     @Test
-    fun steeringWheelKeysMapToCarPlayMediaPresses() {
+    fun standardAndroidKeysStillMapToCarPlayMediaPresses() {
         assertEquals(CarPlayMediaButton.NEXT, CarPlayMediaButton.forKeyCode(KeyEvent.KEYCODE_MEDIA_NEXT))
         assertEquals(CarPlayMediaButton.PREVIOUS, CarPlayMediaButton.forKeyCode(KeyEvent.KEYCODE_MEDIA_PREVIOUS))
-        // BYD rewrites its play/pause key into PLAY or PAUSE from the session state; both toggle.
+        // Standard Android play and pause keys both toggle the CarPlay media report.
         assertEquals(CarPlayMediaButton.PLAY_PAUSE, CarPlayMediaButton.forKeyCode(KeyEvent.KEYCODE_MEDIA_PLAY))
         assertEquals(CarPlayMediaButton.PLAY_PAUSE, CarPlayMediaButton.forKeyCode(KeyEvent.KEYCODE_MEDIA_PAUSE))
         assertEquals(CarPlayMediaButton.PLAY_PAUSE, CarPlayMediaButton.forKeyCode(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
         assertEquals(CarPlayMediaButton.PLAY_PAUSE, CarPlayMediaButton.forKeyCode(KeyEvent.KEYCODE_HEADSETHOOK))
-        assertEquals(CarPlayMediaButton.PLAY_PAUSE, CarPlayMediaButton.forKeyCode(353))
-        // DiLink 3 (Han, GCC) sends KEYCODE_AUTO_MEDIA_PLAY_PAUSE unchanged.
-        assertNull(CarPlayMediaButton.forKeyCode(331))
-        assertEquals(CarPlayMediaButton.PLAY_PAUSE,
-            CarPlayMediaButton.forKeyCode(331, experimentalDiLink3Keys = true))
     }
 
     @Test
-    fun dilink3CarPlayVoiceKeysOpenSiriOnlyThroughTheWheelKeyService() {
-        assertTrue(CarPlayMediaButton.opensSiriWhileCarPlay(327))
-        assertTrue(CarPlayMediaButton.opensSiriWhileCarPlay(328))
-        assertFalse(CarPlayMediaButton.opensSiriWhileCarPlay(304))
-        assertFalse(CarPlayMediaButton.opensSiri(327))
+    fun proprietaryMediaAndVoiceKeysCannotBeEnabledByOldOptIn() {
+        for (key in listOf(304, 312, 327, 328, 331, 353)) {
+            assertNull(CarPlayMediaButton.forKeyCode(key))
+            assertNull(CarPlayMediaButton.forKeyCode(key, experimentalDiLink3Keys = true))
+            assertFalse(CarPlayMediaButton.opensSiri(key))
+            assertFalse(CarPlayMediaButton.opensSiriWhileCarPlay(key))
+        }
     }
 
     @Test
-    fun theVoiceKeyOpensSiri() {
-        // Recorded on DiLink 5.0: short press 304 (scan 290), long press 312 (scan 312).
-        assertTrue(CarPlayMediaButton.opensSiri(304))
-        assertTrue(CarPlayMediaButton.opensSiri(312))
+    fun standardVoiceAssistStillOpensSiri() {
         assertTrue(CarPlayMediaButton.opensSiri(KeyEvent.KEYCODE_VOICE_ASSIST))
         assertFalse(CarPlayMediaButton.opensSiri(KeyEvent.KEYCODE_MEDIA_NEXT))
-        assertNull(CarPlayMediaButton.forKeyCode(304))
     }
 
     @Test

@@ -2,6 +2,7 @@
 // UI copy and visual language adapted from DiAuto. See docs/THIRD_PARTY_NOTICES.md.
 package com.shilapi.xcertplay
 
+import com.shilapi.xcertplay.hud.BydHardwareIntegration
 import android.Manifest
 import android.app.AlertDialog
 import android.app.Dialog
@@ -49,6 +50,8 @@ import com.shilapi.xcertplay.hud.BydVehicleField
 import com.shilapi.xcertplay.hud.BydVehicleFieldStore
 import com.shilapi.xcertplay.hud.BydVehicleProbeOutcome
 import com.shilapi.xcertplay.host.R
+import com.shilapi.xcertplay.media.PerformanceDiagnostics
+import com.shilapi.xcertplay.mfi.LocalMfiIdentityStore
 import com.shilapi.xcertplay.network.CarHotspotSettings
 import com.shilapi.xcertplay.network.CarHotspotTethering
 import com.shilapi.xcertplay.network.WifiP2pChannels
@@ -57,9 +60,11 @@ import com.shilapi.xcertplay.settings.SettingsTheme
 import com.shilapi.xcertplay.settings.SettingsWidgets
 import com.shilapi.xcertplay.transport.EvChargingConnectors
 import java.io.File
+import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
 /** DiAuto's visual language, with a connection flow for an independent CarPlay receiver. */
@@ -71,6 +76,20 @@ class DiPlayActivity : ComponentActivity() {
     private var pendingCarHotspotSetup = false
     private var hotspotJoinControls: HotspotJoinControls? = null
     private var setupError: String? = null
+    private enum class IdentityImportStep { KEY_PICKER, READING_KEY, CERTIFICATE_READY, CERTIFICATE_PICKER, VALIDATING }
+    private class IdentityImportAttempt {
+        @Volatile var cancelled = false
+        @Volatile var session: LocalMfiIdentityStore.ImportSession? = null
+        val input = AtomicReference<InputStream?>()
+        var step = IdentityImportStep.KEY_PICKER
+    }
+    private var identityImportAttempt: IdentityImportAttempt? = null
+    private var identityImportDialog: AlertDialog? = null
+    private var identityImportButton: Button? = null
+    private var identityImportMessage: Int? = null
+    private var localIdentityImported = false
+    private var identityImportInterrupted = false
+    private var identityDisconnectPending = false
     private var status: TextView? = null
     private var connectButton: Button? = null
     private var disconnectButton: Button? = null
@@ -170,6 +189,15 @@ class DiPlayActivity : ComponentActivity() {
         if (uri != null) exportDiagnostics(uri)
     }
 
+    // Register both launchers on every creation in the same order. A recreated Activity never
+    // resumes an import: returned URIs are ignored unless this instance owns the matching step.
+    private val identityKeyPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        receiveIdentityDocument(result.resultCode, result.data?.data, privateKey = true)
+    }
+    private val identityCertificatePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        receiveIdentityDocument(result.resultCode, result.data?.data, privateKey = false)
+    }
+
     private var languagePreferenceAtCreate = AppLocale.SYSTEM
 
     override fun attachBaseContext(newBase: Context) {
@@ -178,6 +206,7 @@ class DiPlayActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        PerformanceDiagnostics.setEnabled(AirPlayPersistence.loadPerformanceDiagnosticsEnabled(this))
         languagePreferenceAtCreate = AppLocale.preference(this)
         com.shilapi.xcertplay.hud.BydNavigationOutputs.onAppOpened(applicationContext)
         WheelKeyService.restoreIfNeeded(this)
@@ -188,9 +217,13 @@ class DiPlayActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.statusBars())
         }
         setupError = runCatching { DiPlayBootstrap.ensure(this, AirPlayPersistence.loadMfiTarget(this)) }.exceptionOrNull()?.let {
-            android.util.Log.e("DiPlaySetup", "CarPlay authentication could not be loaded", it)
+            // Provider/crypto exceptions can contain private paths. Keep setup diagnostics generic.
+            android.util.Log.e("DiPlaySetup", "CarPlay authentication could not be loaded")
             getString(R.string.setup_error_auth)
         }
+        localIdentityImported = runCatching { DiPlayBootstrap.hasImportedIdentity(this) }.getOrDefault(false)
+        identityImportInterrupted = savedInstanceState?.getBoolean("identity_import_pending") ?: false
+        if (identityImportInterrupted) identityImportMessage = R.string.identity_import_interrupted
         pendingCarHotspotSetup = savedInstanceState?.getBoolean("pending_car_hotspot") ?: false
         bydVehicleAdvancedExpanded = savedInstanceState?.getBoolean("byd_vehicle_advanced") ?: false
         page = savedInstanceState?.getString("page") ?: intent.getStringExtra("page") ?: "home"
@@ -214,6 +247,8 @@ class DiPlayActivity : ComponentActivity() {
     }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("page", page)
+        // Deliberately save neither document URIs nor staging paths/credential bytes.
+        outState.putBoolean("identity_import_pending", identityImportAttempt != null || identityImportInterrupted)
         outState.putBoolean("pending_car_hotspot", pendingCarHotspotSetup)
         outState.putBoolean("byd_vehicle_advanced", bydVehicleAdvancedExpanded)
         super.onSaveInstanceState(outState)
@@ -253,7 +288,7 @@ class DiPlayActivity : ComponentActivity() {
         if (initialLaunch) {
             initialLaunch = false
             startCarHotspotOnLaunch()
-            if (setupError == null && !CarPlayBackgroundSession.hasSession() &&
+            if (setupError == null && identityImportAttempt == null && !identityImportInterrupted && !CarPlayBackgroundSession.hasSession() &&
                 DiPlayPreferences.autoConnect(this) && intent.getStringExtra("page") == null) {
                 handler.post { connect(AirPlayPersistence.loadWirelessEnabled(this)) }
             }
@@ -267,6 +302,7 @@ class DiPlayActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        cancelIdentityImport(updateUi = false)
         hotspotJoinControls?.close()
         cancelUsbPermissionSetup()
         WheelKeyService.cancelLearning()
@@ -300,6 +336,7 @@ class DiPlayActivity : ComponentActivity() {
         // A restore still waiting for layout keeps its target: the old page was never laid out.
         val previousScrollY = (pendingScrollY ?: rootScroll?.scrollY)?.takeIf { renderedPage == page }
         status = null; connectButton = null; disconnectButton = null; lastRunning = null; carButtonCard = null
+        identityImportButton = null
         bydAdbControls = null
         adbSwitches.clear()
         adbStatus = null
@@ -391,6 +428,7 @@ class DiPlayActivity : ComponentActivity() {
 
             content.addView(card)
             setupError?.let { content.addView(label(it, 13, WARNING).apply { setPadding(0, dp(6), 0, 0) }) }
+            identityImportControls(content, compact = true)
             return
         }
 
@@ -472,6 +510,7 @@ class DiPlayActivity : ComponentActivity() {
         }
         setupError?.let { body.addView(label(it, 16, WARNING).apply { setPadding(0, dp(16), 0, 0) }) }
         content.addView(body)
+        identityImportControls(content)
     }
 
     private fun settings(content: LinearLayout) {
@@ -494,6 +533,11 @@ class DiPlayActivity : ComponentActivity() {
             card.addView(button(getString(R.string.open_connection_setup), false) { page = "connection"; render() }, matchButton(12, 60))
         }
         section(content, getString(R.string.diagnostics), R.drawable.ic_dp_diagnostics) { card ->
+            toggle(card, getString(R.string.performance_diagnostics), getString(R.string.performance_diagnostics_description),
+                AirPlayPersistence.loadPerformanceDiagnosticsEnabled(this)) {
+                AirPlayPersistence.savePerformanceDiagnosticsEnabled(this, it)
+                PerformanceDiagnostics.setEnabled(it)
+            }
             exportButton = button(if (exportInProgress) getString(R.string.saving_report) else getString(R.string.save_diagnostic_report), false) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) exportDiagnostics()
                 else chooseReportDestination()
@@ -652,26 +696,31 @@ class DiPlayActivity : ComponentActivity() {
             }
             mediaChannelControl(card)
             navigationChannelControl(card)
+            toggle(card, getString(R.string.standard_call_keys), getString(R.string.standard_call_keys_description),
+                BydOutputSettings.carPlayCallControls(this)) { BydOutputSettings.setCarPlayCallControls(this, it) }
         }
         section(content, getString(R.string.location), R.drawable.ic_dp_navigation) { card ->
             toggle(card, getString(R.string.report_location_to_iphone),
                 getString(R.string.sends_precise_android_location_as_carplay_gps_data_when_th),
                 AirPlayPersistence.loadLocationReportingEnabled(this), save = ::onLocationReportingChanged)
             card.addView(label(getString(R.string.location_reporting_reconnects), 14, MUTED))
-            card.addView(button(getString(if (bydVehicleAdvancedExpanded)
-                R.string.hide_advanced_vehicle_data else R.string.advanced_vehicle_data), false) {
-                bydVehicleAdvancedExpanded = !bydVehicleAdvancedExpanded
-                render()
-            }, matchButton(12, 56))
-            if (bydVehicleAdvancedExpanded) {
-                advancedVehicleData(card)
-                // Dashboard song needs ADB, not the navigation receiver; show it here when that card is hidden.
-                if (!BydOutputSettings.available(this)) clusterSongSwitch(card)
+            if (!BydHardwareIntegration.ENABLED) card.addView(label(getString(R.string.byd_hardware_disabled), 14, MUTED))
+            if (BydHardwareIntegration.ENABLED) {
+                card.addView(button(getString(if (bydVehicleAdvancedExpanded)
+                    R.string.hide_advanced_vehicle_data else R.string.advanced_vehicle_data), false) {
+                    bydVehicleAdvancedExpanded = !bydVehicleAdvancedExpanded
+                    render()
+                }, matchButton(12, 56))
+                if (bydVehicleAdvancedExpanded) {
+                    advancedVehicleData(card)
+                    // Dashboard song needs ADB, not the navigation receiver; show it here when that card is hidden.
+                    if (!BydOutputSettings.available(this)) clusterSongSwitch(card)
+                }
             }
         }
         // Cluster video does not require a BYD navigation broadcast receiver.
         section(content, getString(R.string.carplay_map_on_instrument_cluster_experimental), R.drawable.ic_dp_dashboard) { card ->
-            toggle(card, getString(R.string.adb_cluster_activity_mode),
+            if (BydHardwareIntegration.ENABLED) toggle(card, getString(R.string.adb_cluster_activity_mode),
                 getString(R.string.adb_cluster_activity_description), AirPlayPersistence.loadAdbClusterEnabled(this)) {
                 AirPlayPersistence.saveAdbClusterEnabled(this, it)
                 ClusterActivityOutput.stopForSettings()
@@ -740,8 +789,8 @@ class DiPlayActivity : ComponentActivity() {
                         card.addView(button(getString(R.string.btn_auto_apply_permissions), false) { autoApplyPermissions() }, matchButton(8, 54))
                     }
                 }
-                if (clusterDisplay != null || adbCluster) {
-                    if (DiLink51ClusterLayout.supported() && !adbCluster) {
+                if (clusterMapEnabled) {
+                    if (BydHardwareIntegration.ENABLED && DiLink51ClusterLayout.supported() && !adbCluster) {
                         val automatic = DiLink51ClusterLayout.automatic(this)
                         toggle(card, getString(R.string.follow_instrument_theme_and_map_card),
                             getString(R.string.show_the_side_map_only_when_its_card_is_open_and_switch_to), automatic) {
@@ -788,7 +837,7 @@ class DiPlayActivity : ComponentActivity() {
                                 // DiLink 5.1 layout (always the map), are set up at connection, so they reconnect.
                                 val controller = CarPlayBackgroundSession.snapshot()?.controller
                                 if (customCard || CarPlayClusterDisplay.usesCustomTurnCard(next) ||
-                                    DiLink51ClusterLayout.supported() || controller == null) {
+                                    (BydHardwareIntegration.ENABLED && DiLink51ClusterLayout.supported()) || controller == null) {
                                     reconnectForClusterMap()
                                 } else controller.showDashboardContent(next.url) { applied ->
                                     runOnUiThread {
@@ -838,7 +887,8 @@ class DiPlayActivity : ComponentActivity() {
                         if (!diLink4) {
                             choice(card, getString(if (turnCard) R.string.turn_card_size else R.string.cluster_map_size),
                                 listOf(getString(R.string.cluster_size_standard), getString(R.string.cluster_size_larger), getString(R.string.cluster_size_largest), getString(R.string.cluster_size_smallest)),
-                                sizes.indexOf(AirPlayPersistence.loadClusterMapScalePercent(this)).coerceAtLeast(0)) {
+                                sizes.indexOf(if (BydHardwareIntegration.ENABLED) AirPlayPersistence.loadClusterMapScalePercent(this)
+                                    else AirPlayPersistence.loadVirtualMapScalePercent(this)).coerceAtLeast(0)) {
                                 AirPlayPersistence.saveClusterMapScalePercent(this, sizes[it])
                             }
                         }
@@ -860,7 +910,7 @@ class DiPlayActivity : ComponentActivity() {
                                 reconnectForClusterMap()
                             }, matchButton(10, 56))
                         }
-                        if (!diLink4) {
+                        if (BydHardwareIntegration.ENABLED && !diLink4) {
                             toggle(card, getString(R.string.dashboard_map_only_in_small_and_full_navi),
                                 getString(R.string.dashboard_map_only_in_small_and_full_navi_description),
                                 BydOutputSettings.clusterStreamPause(this)) {
@@ -1103,6 +1153,7 @@ class DiPlayActivity : ComponentActivity() {
     private fun connectionSetup(content: LinearLayout) {
         content.addView(label(getString(R.string.connection_setup), 34, TEXT, true))
         content.addView(label(getString(R.string.set_up_once_your_details_stay_saved_for_the_next_drive_cha), 17, MUTED).apply { setPadding(0, dp(8), 0, dp(24)) })
+        identityImportControls(content)
         section(content, getString(R.string.s_1_choose_your_connection)) { card -> wirelessLinkControls(card) }
         section(content, getString(R.string.s_2_pair_your_iphone)) { card ->
             card.addView(label(getString(R.string.keep_bluetooth_and_wi_fi_on_your_iphone_pair_with_the_car), 16, MUTED))
@@ -1118,6 +1169,222 @@ class DiPlayActivity : ComponentActivity() {
         section(content, getString(R.string.prefer_a_cable)) { card ->
             card.addView(label(getString(R.string.use_a_usb_data_cable_and_the_car_s_usb_data_port_unlock_yo), 16, MUTED))
             card.addView(button(getString(R.string.connect_with_usb), false) { connect(false) }, matchButton(12, 60))
+        }
+    }
+
+    private fun identityImportControls(parent: LinearLayout, compact: Boolean = false) {
+        val container = card().apply {
+            if (compact) setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        container.addView(label(getString(R.string.identity_import_title), if (compact) 16 else 20, TEXT, true))
+        container.addView(label(getString(if (localIdentityImported) R.string.identity_import_installed else R.string.identity_import_none),
+            if (compact) 13 else 15, MUTED).apply { setPadding(0, dp(6), 0, 0) })
+        identityImportMessage?.let { message ->
+            container.addView(label(getString(message), if (compact) 13 else 15,
+                if (message == R.string.identity_import_success) ACCENT else WARNING).apply { setPadding(0, dp(6), 0, 0) })
+        }
+        identityImportButton = button(getString(R.string.identity_import_action), false) { requestIdentityImport() }
+            .apply { isEnabled = identityImportAttempt == null && !identityDisconnectPending }
+        container.addView(identityImportButton, matchButton(10, if (compact) 48 else 60))
+        container.addView(label(getString(R.string.identity_import_compatibility), if (compact) 12 else 14, MUTED)
+            .apply { setPadding(0, dp(8), 0, 0) })
+        parent.addView(container, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+    }
+
+    private fun requestIdentityImport() {
+        if (identityImportAttempt != null || identityDisconnectPending || identityImportDialog?.isShowing == true) return
+        if (CarPlayBackgroundSession.hasSession()) { showIdentityDisconnectFirst(); return }
+        identityImportDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.identity_import_action)
+            .setMessage(R.string.identity_import_explanation)
+            .setPositiveButton(R.string.identity_import_choose_key) { _, _ ->
+                identityImportDialog = null
+                // A USB launch or reconnect may have arrived while the explanation was open.
+                if (CarPlayBackgroundSession.hasSession()) { showIdentityDisconnectFirst() }
+                else {
+                    identityImportInterrupted = false
+                    identityImportMessage = null
+                    val attempt = IdentityImportAttempt()
+                    identityImportAttempt = attempt
+                    pendingWireless = false
+                    render()
+                    launchIdentityPicker(attempt, privateKey = true)
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showIdentityDisconnectFirst() {
+        if (isFinishing || isDestroyed || identityDisconnectPending) return
+        identityImportDialog?.dismiss()
+        identityImportDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.identity_import_action)
+            .setMessage(R.string.identity_import_disconnect_required)
+            .setPositiveButton(R.string.identity_import_disconnect_first) { _, _ ->
+                identityImportDialog = null
+                identityDisconnectPending = true
+                pendingWireless = false
+                refreshStatus()
+                // Only this explicit user action stops an active/connecting/stopping session.
+                CarPlayBackgroundSession.stop {
+                    runOnUiThread {
+                        identityDisconnectPending = false
+                        if (!isFinishing && !isDestroyed) {
+                            identityImportMessage = R.string.identity_import_disconnected
+                            render()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun identityDocumentIntent(privateKey: Boolean) = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = "*/*" // Providers label PKCS files differently; validation checks their contents.
+        putExtra(Intent.EXTRA_LOCAL_ONLY, true)
+        putExtra(Intent.EXTRA_TITLE, getString(if (privateKey) R.string.identity_import_choose_key else R.string.identity_import_choose_certificate))
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // No broad storage permission and no persistent URI grant. Copy only the two selections.
+    }
+
+    private fun launchIdentityPicker(attempt: IdentityImportAttempt, privateKey: Boolean) {
+        if (!ownsIdentityImport(attempt)) return
+        if (CarPlayBackgroundSession.hasSession()) {
+            cancelIdentityImport()
+            showIdentityDisconnectFirst()
+            return
+        }
+        attempt.step = if (privateKey) IdentityImportStep.KEY_PICKER else IdentityImportStep.CERTIFICATE_PICKER
+        val launched = runCatching {
+            val intent = identityDocumentIntent(privateKey)
+            if (privateKey) identityKeyPicker.launch(intent) else identityCertificatePicker.launch(intent)
+        }.isSuccess
+        if (!launched) cancelIdentityImport(R.string.identity_import_picker_unavailable)
+    }
+
+    private fun receiveIdentityDocument(resultCode: Int, uri: Uri?, privateKey: Boolean) {
+        val attempt = identityImportAttempt ?: return
+        val expected = if (privateKey) IdentityImportStep.KEY_PICKER else IdentityImportStep.CERTIFICATE_PICKER
+        if (!ownsIdentityImport(attempt) || attempt.step != expected) return
+        if (resultCode != RESULT_OK || uri == null) { cancelIdentityImport(); return }
+        // A document picker returns content URIs; reject other schemes without opening anything.
+        if (uri.scheme != "content") { cancelIdentityImport(R.string.identity_import_failed); return }
+        if (CarPlayBackgroundSession.hasSession()) {
+            cancelIdentityImport()
+            showIdentityDisconnectFirst()
+            return
+        }
+        attempt.step = if (privateKey) IdentityImportStep.READING_KEY else IdentityImportStep.VALIDATING
+        identityImportDialog?.dismiss()
+        identityImportDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.identity_import_action)
+            .setMessage(if (privateKey) R.string.identity_import_reading_key else R.string.identity_import_validating)
+            .setNegativeButton(R.string.cancel) { _, _ -> cancelIdentityImport() }
+            .setOnCancelListener { cancelIdentityImport() }
+            .show()
+        val app = applicationContext
+        Thread({
+            val result = runCatching {
+                check(!attempt.cancelled)
+                val session = if (privateKey) DiPlayBootstrap.beginIdentityImport(app).also { attempt.session = it }
+                    else checkNotNull(attempt.session)
+                check(!attempt.cancelled)
+                app.contentResolver.openInputStream(uri).use { input ->
+                    checkNotNull(input)
+                    attempt.input.set(input)
+                    try {
+                        check(!attempt.cancelled)
+                        if (privateKey) session.writePrivateKey(input) else session.writeCertificate(input)
+                    } finally {
+                        attempt.input.compareAndSet(input, null)
+                    }
+                }
+                check(!attempt.cancelled)
+                if (!privateKey) session.validate()
+            }
+            if (attempt.cancelled) {
+                runCatching { attempt.session?.close() }
+            } else handler.post {
+                if (!ownsIdentityImport(attempt)) return@post
+                identityImportDialog?.dismiss()
+                identityImportDialog = null
+                if (result.isFailure) { cancelIdentityImport(R.string.identity_import_failed); return@post }
+                if (CarPlayBackgroundSession.hasSession()) {
+                    cancelIdentityImport()
+                    showIdentityDisconnectFirst()
+                    return@post
+                }
+                if (privateKey) showIdentityCertificateStep(attempt) else commitIdentityImport(attempt)
+            }
+        }, "DiPlay-local-identity-import").start()
+    }
+
+    private fun showIdentityCertificateStep(attempt: IdentityImportAttempt) {
+        if (!ownsIdentityImport(attempt)) return
+        attempt.step = IdentityImportStep.CERTIFICATE_READY
+        identityImportDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.identity_import_choose_certificate)
+            .setMessage(R.string.identity_import_certificate_step)
+            .setPositiveButton(R.string.identity_import_choose_certificate) { _, _ ->
+                identityImportDialog = null
+                launchIdentityPicker(attempt, privateKey = false)
+            }
+            .setNegativeButton(R.string.cancel) { _, _ -> cancelIdentityImport() }
+            .setOnCancelListener { cancelIdentityImport() }
+            .show()
+    }
+
+    private fun commitIdentityImport(attempt: IdentityImportAttempt) {
+        if (!ownsIdentityImport(attempt)) return
+        // This runs on the main thread like HostActivity startup. No UI/USB start can interleave
+        // the final session check and the store's atomic pair commit. Provider I/O and initial
+        // validation happened off-main; the bounded reload never touches a document provider.
+        if (CarPlayBackgroundSession.hasSession()) {
+            cancelIdentityImport()
+            showIdentityDisconnectFirst()
+            return
+        }
+        val committed = runCatching {
+            DiPlayBootstrap.completeIdentityImport(this, checkNotNull(attempt.session), AirPlayPersistence.loadMfiTarget(this))
+        }
+        if (committed.isFailure) {
+            // Recovery can itself fail (for example, unavailable storage). Never keep a stale
+            // bootstrap-ready flag or enable Connect until the previous pair can be loaded.
+            val recovered = runCatching {
+                DiPlayBootstrap.reinitialize(this, AirPlayPersistence.loadMfiTarget(this))
+            }.isSuccess
+            setupError = if (recovered) null else getString(R.string.setup_error_auth)
+            cancelIdentityImport(if (recovered) R.string.identity_import_failed else R.string.identity_import_recovery_failed)
+            return
+        }
+        val ready = committed.getOrThrow()
+        setupError = if (ready) null else getString(R.string.setup_error_auth)
+        localIdentityImported = true
+        cancelIdentityImport(if (ready) R.string.identity_import_success else R.string.identity_import_saved_not_ready)
+    }
+
+    private fun ownsIdentityImport(attempt: IdentityImportAttempt): Boolean =
+        identityImportAttempt === attempt && !attempt.cancelled && !isFinishing && !isDestroyed
+
+    private fun cancelIdentityImport(message: Int = R.string.identity_import_cancelled, updateUi: Boolean = true) {
+        val attempt = identityImportAttempt
+        identityImportAttempt = null
+        attempt?.cancelled = true
+        identityImportDialog?.dismiss()
+        identityImportDialog = null
+        if (attempt != null) {
+            // A document provider may be slow. Invalidate first; never wait for it on the UI thread.
+            Thread({
+                runCatching { attempt.input.getAndSet(null)?.close() }
+                runCatching { attempt.session?.close() }
+            }, "DiPlay-local-identity-discard").start()
+        }
+        if (updateUi && !isFinishing && !isDestroyed) {
+            identityImportMessage = message
+            render()
         }
     }
 
@@ -2166,7 +2433,7 @@ class DiPlayActivity : ComponentActivity() {
      * trigger one automatic field re-probe.
      */
     private fun validateSavedVehicleConfigurationAutomatically() {
-        if (!BydOutputSettings.legacyVehicleProbe(this)) return
+        if (!BydHardwareIntegration.ENABLED || !BydOutputSettings.legacyVehicleProbe(this)) return
         val saved = BydVehicleFieldStore.load(applicationContext) ?: return
         if (adbSwitchChangePending || vehicleAdbWorkInProgress()) {
             automaticVehicleValidationPending = true
@@ -2302,7 +2569,7 @@ class DiPlayActivity : ComponentActivity() {
     }
 
     private fun scheduleAutomaticVehicleValidation() {
-        if (!BydOutputSettings.legacyVehicleProbe(this)) {
+        if (!BydHardwareIntegration.ENABLED || !BydOutputSettings.legacyVehicleProbe(this)) {
             automaticVehicleValidationPending = false
             handler.removeCallbacks(automaticVehicleValidation)
             return
@@ -2349,6 +2616,7 @@ class DiPlayActivity : ComponentActivity() {
         BydAdbAccess.State.NOT_APPROVED -> getString(R.string.adb_enabled_not_approved)
         BydAdbAccess.State.ADB_OFF -> getString(R.string.adb_off)
         BydAdbAccess.State.PAIRING_ONLY -> getString(R.string.adb_pairing_only)
+        BydAdbAccess.State.DISABLED -> getString(R.string.byd_hardware_disabled)
     }
 
     private fun gearLetter(value: Int): String = when (value) {
@@ -2768,6 +3036,9 @@ class DiPlayActivity : ComponentActivity() {
     }
 
     private fun connect(wireless: Boolean) {
+        if (identityImportAttempt != null || identityDisconnectPending) {
+            toast(getString(R.string.identity_import_busy)); return
+        }
         startupHotspotCancelled = true
         if (wireless && pendingCarHotspotSetup) { toast(getString(R.string.save_your_hotspot_details_in_connection_setup_first)); page = "connection"; render(); return }
         if (setupError != null) { toast(setupError!!); return }
@@ -2901,7 +3172,8 @@ class DiPlayActivity : ComponentActivity() {
             disconnectButton?.isEnabled = true
             lastRunning = running
         }
-        connectButton?.isEnabled = setupError == null
+        connectButton?.isEnabled = setupError == null && identityImportAttempt == null && !identityDisconnectPending
+        identityImportButton?.isEnabled = identityImportAttempt == null && !identityDisconnectPending
     }
     private fun authorizeClusterRouting() {
         val app = applicationContext
@@ -2950,6 +3222,14 @@ class DiPlayActivity : ComponentActivity() {
                     appendLine("Saved resolution preference (may differ from active session): ${AirPlayPersistence.loadDisplayScalePercent(appContext)}%")
                     appendLine("Session: ${if (CarPlayBackgroundSession.active) "active" else if (CarPlayBackgroundSession.hasSession()) "connecting" else "stopped"}")
                     appendLine("Head-unit board: ${Build.BOARD}; hardware: ${Build.HARDWARE}; build: ${Build.DISPLAY}")
+                    appendLine()
+                    appendLine("--- Browser connection diagnostics (local, bounded, no media or addresses) ---")
+                    appendLine(com.shilapi.xcertplay.browser.BrowserOutput.connectionDiagnosticReport())
+                    appendLine()
+                    appendLine("--- Performance diagnostics ---")
+                    PerformanceDiagnostics.snapshot().lineSequence().forEach { line ->
+                        DiagnosticRedactor.redact(line)?.let { appendLine(it) }
+                    }
                     appendLine()
                     appendLine("--- Current cluster display diagnostics (even when disabled) ---")
                     appendLine(ClusterMapPresentation.diagnosticReport(appContext))

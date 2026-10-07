@@ -10,6 +10,7 @@ import java.lang.reflect.Modifier
 object Byd13CatalogProbeMain {
     @JvmStatic
     fun main(args: Array<String>) {
+        if (!BydHardwareIntegration.ENABLED) return
         val wanted = buildSet {
             for (field in BydVehicleField.entries) {
                 add(field.symbol)

@@ -5,6 +5,7 @@ import com.shilapi.xcertplay.iap2.message.Iap2Messages
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.*
@@ -24,272 +25,134 @@ class BydCarPlayCallLifecycleTest {
     private val app get() = RuntimeEnvironment.getApplication()
     private val writer get() = ReflectionHelpers.getField<ExecutorService>(BydCarPlayCall, "writer")
     private fun drain() { writer.submit {}.get(5, TimeUnit.SECONDS) }
-    private fun ringing(id: String) = Iap2Messages.buildRaw(CarPlayCallState.CALL_STATE_UPDATE) {
-        u8(2, 2); string(4, id)
-    }
+    private fun call(id: String, status: Int = 2, name: String = "Caller") =
+        Iap2Messages.buildRaw(CarPlayCallState.CALL_STATE_UPDATE) {
+            string(1, name); u8(2, status); string(4, id)
+        }
 
     @Before fun setup() {
         drain()
+        ReflectionHelpers.getField<ScheduledFuture<*>?>(BydCarPlayCall, "retry")?.cancel(false)
         ReflectionHelpers.getField<CarPlayCallState>(BydCarPlayCall, "state").clear()
-        ReflectionHelpers.setField(BydCarPlayCall, "shown", null)
-        ReflectionHelpers.setField(BydCarPlayCall, "watcherToken", null)
-        ReflectionHelpers.setField(BydCarPlayCall, "watcherRunning", false)
-        ReflectionHelpers.setField(BydCarPlayCall, "cleanupPending", false)
-        ReflectionHelpers.setField(BydCarPlayCall, "prepared", false)
+        listOf("shown", "watcherToken", "retry", "retryCard").forEach {
+            ReflectionHelpers.setField(BydCarPlayCall, it, null)
+        }
+        listOf("watcherRunning", "cleanupPending", "prepared", "retryUsed").forEach {
+            ReflectionHelpers.setField(BydCarPlayCall, it, false)
+        }
         BydCarPlayCall.attach(app)
         BydOutputSettings.setCarPlayCalls(app, false)
         Shell.commands.clear()
-        Shell.rejectPhase = null
-        Shell.endFailures = 0
-        Shell.omitCompletion = false
-        Shell.rejectWatcher = false
-        Shell.omitReadiness = false
-        Shell.omitCancelCompletion = false
-        Shell.emptyWatcherReply = false
     }
 
     @After fun cleanup() {
-        Shell.endFailures = 0
-        Shell.omitCompletion = false
-        Shell.omitCancelCompletion = false
-        BydCarPlayCall.end(); drain()
+        BydOutputSettings.setCarPlayCalls(app, false)
+        BydCarPlayCall.end()
+        drain()
+        ReflectionHelpers.getField<ScheduledFuture<*>?>(BydCarPlayCall, "retry")?.cancel(false)
+        ReflectionHelpers.setField(BydCarPlayCall, "context", null)
     }
 
     @Test fun defaultOffTracksCallWithoutAnyShellOrWatcherMutation() {
-        BydCarPlayCall.onFrame(ringing("a")); drain()
-        assertNotNull(BydCarPlayCall.current())
-        assertTrue(Shell.commands.isEmpty())
+        BydCarPlayCall.onFrame(call("a"))
+        assertEquals(CarPlayCallCard(CarPlayCallCard.Phase.RINGING, "Caller"), BydCarPlayCall.current())
+        assertHardwareIdle()
     }
 
-    @Test fun backToBackCallsUseDifferentTokensForWritesWatcherAndCleanup() {
+    @Test fun savedEnabledPreferenceCannotStartCallOutputWatcherOrRetry() {
         BydOutputSettings.setCarPlayCalls(app, true)
-        BydCarPlayCall.onFrame(ringing("a")); drain()
-        val first = tokenFrom(Shell.commands.first { it.contains(" ringing ") })
-        assertTrue(Shell.commands.any { it.contains(" watch $first ${app.packageName} ") })
-        BydCarPlayCall.end(); drain()
-        assertTrue(Shell.commands.any { it.endsWith(" end - $first") })
-        BydCarPlayCall.onFrame(ringing("b")); drain()
-        val next = tokenFrom(Shell.commands.last { it.contains(" ringing ") })
-        assertNotEquals(first, next)
-        assertTrue(Shell.commands.any { it.contains(" watch $next ${app.packageName} ") })
-        assertTrue(Shell.commands.none { it.contains("rm -f") })
+        assertTrue(app.getSharedPreferences("diplay_byd_outputs", Context.MODE_PRIVATE)
+            .getBoolean("carplay_calls", false))
+        BydCarPlayCall.onFrame(call("saved"))
+        BydCarPlayCall.settingChanged(true)
+        assertEquals(CarPlayCallCard.Phase.RINGING, BydCarPlayCall.current()?.phase)
+        assertHardwareIdle()
     }
 
-    @Test fun disablingBeforeQueuedUpdateExecutesPreventsLateCallWrites() {
+    @Test fun incomingActiveHeldAndDisconnectedFramesStillTrackGenericCallState() {
+        BydOutputSettings.setCarPlayCalls(app, true)
+        BydCarPlayCall.onFrame(call("lifecycle"))
+        assertEquals(CarPlayCallCard.Phase.RINGING, BydCarPlayCall.current()?.phase)
+        assertHardwareIdle()
+        BydCarPlayCall.onFrame(call("lifecycle", status = 4))
+        val active = BydCarPlayCall.current()!!
+        assertEquals(CarPlayCallCard.Phase.ACTIVE, active.phase)
+        assertNotNull(active.activeSinceMillis)
+        assertHardwareIdle()
+        BydCarPlayCall.onFrame(call("lifecycle", status = 5))
+        assertEquals(active, BydCarPlayCall.current())
+        BydCarPlayCall.onFrame(call("lifecycle", status = 0))
+        assertNull(BydCarPlayCall.current())
+        assertHardwareIdle()
+    }
+
+    @Test fun repeatedSettingChangesPreserveTheCallWithoutActivatingHardware() {
+        BydOutputSettings.setCarPlayCalls(app, true)
+        BydCarPlayCall.onFrame(call("unchanged"))
+        val current = BydCarPlayCall.current()
+        repeat(2) {
+            BydOutputSettings.setCarPlayCalls(app, false)
+            BydCarPlayCall.settingChanged(false)
+            BydOutputSettings.setCarPlayCalls(app, true)
+            BydCarPlayCall.settingChanged(true)
+            BydCarPlayCall.onFrame(call("unchanged"))
+            assertEquals(current, BydCarPlayCall.current())
+            assertHardwareIdle()
+        }
+    }
+
+    @Test fun queuedSettingAndSessionChangesCannotProduceLateHardwareWrites() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         writer.execute { entered.countDown(); release.await(5, TimeUnit.SECONDS) }
         assertTrue(entered.await(5, TimeUnit.SECONDS))
         try {
             BydOutputSettings.setCarPlayCalls(app, true)
-            BydCarPlayCall.onFrame(ringing("a"))
-            BydOutputSettings.setCarPlayCalls(app, false)
-            BydCarPlayCall.settingChanged(false)
-        } finally { release.countDown() }
+            BydCarPlayCall.onFrame(call("old"))
+            BydCarPlayCall.settingChanged(true)
+            BydCarPlayCall.end()
+            BydCarPlayCall.onFrame(call("new", status = 1, name = "New caller"))
+            BydCarPlayCall.settingChanged(true)
+        } finally {
+            release.countDown()
+        }
+        assertEquals(CarPlayCallCard(CarPlayCallCard.Phase.DIALING, "New caller"), BydCarPlayCall.current())
+        assertHardwareIdle()
+    }
+
+    @Test fun sessionEndClearsCallStateAndNextSessionNeverAcquiresHardwareOwnership() {
+        BydOutputSettings.setCarPlayCalls(app, true)
+        BydCarPlayCall.onFrame(call("old", status = 4, name = "Old caller"))
+        assertHardwareIdle()
+        BydCarPlayCall.end()
+        assertNull(BydCarPlayCall.current())
+        assertHardwareIdle()
+        BydCarPlayCall.onFrame(call("new", name = "New caller"))
+        assertEquals(CarPlayCallCard(CarPlayCallCard.Phase.RINGING, "New caller"), BydCarPlayCall.current())
+        assertHardwareIdle()
+    }
+
+    private fun assertHardwareIdle() {
         drain()
-        assertTrue(Shell.commands.isEmpty())
-    }
-
-    @Test fun failedFirstShowRetainsCleanupOwnershipAndStartsTheWatcher() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.rejectPhase = "ringing"
-        BydCarPlayCall.onFrame(ringing("a")); drain()
-        val token = tokenFrom(Shell.commands.first { it.contains(" ringing ") })
-        assertEquals(token, ReflectionHelpers.getField<String?>(BydCarPlayCall, "watcherToken"))
+        assertFalse(BydHardwareIntegration.ENABLED)
+        assertTrue("No BYD shell command may run", Shell.commands.isEmpty())
         assertNull(ReflectionHelpers.getField<Any?>(BydCarPlayCall, "shown"))
-        assertTrue(Shell.commands.any { it.contains(" watch $token ${app.packageName} ") })
-        BydCarPlayCall.end(); drain()
-        assertTrue(Shell.commands.any { it.endsWith(" end - $token") })
-    }
-
-    @Test fun failedCleanupRemainsRetryableEvenWhenNoCallWasMarkedShown() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.rejectPhase = "ringing"
-        BydCarPlayCall.onFrame(ringing("a")); drain()
-        val token = tokenFrom(Shell.commands.first { it.contains(" ringing ") })
-        Shell.endFailures = 1
-        BydCarPlayCall.end(); drain()
-        assertEquals(token, ReflectionHelpers.getField<String?>(BydCarPlayCall, "watcherToken"))
-        BydOutputSettings.setCarPlayCalls(app, false)
-        BydCarPlayCall.settingChanged(false); drain()
-        assertEquals(2, Shell.commands.count { it.endsWith(" end - $token") })
         assertNull(ReflectionHelpers.getField<String?>(BydCarPlayCall, "watcherToken"))
-    }
-
-    @Test fun failedActiveUpdateMustCleanUpBeforeShowingAnotherCall() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        BydCarPlayCall.onFrame(ringing("a")); drain()
-        val oldToken = tokenFrom(Shell.commands.first { it.contains(" ringing ") })
-        Shell.rejectPhase = "active"
-        BydCarPlayCall.onFrame(Iap2Messages.buildRaw(CarPlayCallState.CALL_STATE_UPDATE) {
-            u8(2, 4); string(4, "a")
-        }); drain()
-        Shell.rejectPhase = null
-        BydCarPlayCall.onFrame(ringing("b")); drain()
-        val end = Shell.commands.indexOfFirst { it.endsWith(" end - $oldToken") }
-        val next = Shell.commands.indexOfLast { it.contains(" ringing ") }
-        assertTrue(end >= 0 && end < next)
-        assertNotEquals(oldToken, tokenFrom(Shell.commands[next]))
-    }
-
-    @Test fun missingCompletionAckCannotMarkAnUnknownWriteAsShown() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.omitCompletion = true
-        BydCarPlayCall.onFrame(ringing("a")); drain()
-        assertNull(ReflectionHelpers.getField<Any?>(BydCarPlayCall, "shown"))
-        val token = tokenFrom(Shell.commands.first { it.contains(" ringing ") })
-        assertEquals(token, ReflectionHelpers.getField<String?>(BydCarPlayCall, "watcherToken"))
-        Shell.omitCompletion = false
-        BydCarPlayCall.end(); drain()
-        assertTrue(Shell.commands.any { it.endsWith(" end - $token") })
-    }
-
-    @Test fun unknownShowAndCleanupRepliesBlockFurtherCallMutationUntilCleanupIsConfirmed() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.omitCompletion = true
-        BydCarPlayCall.onFrame(ringing("a")); drain()
-        val token = tokenFrom(Shell.commands.first { it.contains(" ringing ") })
-        BydCarPlayCall.onFrame(Iap2Messages.buildRaw(CarPlayCallState.CALL_STATE_UPDATE) {
-            u8(2, 4); string(4, "a")
-        }); drain()
-        assertTrue(Shell.commands.any { it.endsWith(" end - $token") })
-        assertTrue(Shell.commands.none { it.contains(" active ") })
-        assertNull(ReflectionHelpers.getField<Any?>(BydCarPlayCall, "shown"))
-        Shell.omitCompletion = false
-        BydCarPlayCall.settingChanged(true); drain()
-        assertTrue(Shell.commands.any { it.contains(" active ") })
-        assertNotNull(ReflectionHelpers.getField<Any?>(BydCarPlayCall, "shown"))
-    }
-
-    @Test fun refusedWatcherLaunchCannotBeMarkedRunningOrWriteCallFields() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.rejectWatcher = true
-        BydCarPlayCall.onFrame(ringing("unprotected")); drain()
         assertFalse(ReflectionHelpers.getField<Boolean>(BydCarPlayCall, "watcherRunning"))
-        assertTrue(Shell.commands.none { it.contains(" ringing ") })
+        assertFalse(ReflectionHelpers.getField<Boolean>(BydCarPlayCall, "cleanupPending"))
+        assertFalse(ReflectionHelpers.getField<Boolean>(BydCarPlayCall, "prepared"))
+        assertNull(ReflectionHelpers.getField<ScheduledFuture<*>?>(BydCarPlayCall, "retry"))
+        assertFalse(ReflectionHelpers.getField<Boolean>(BydCarPlayCall, "retryUsed"))
     }
-
-    @Test fun aMissingChildReadinessRecordCannotPermitVehicleMutation() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.omitReadiness = true
-        BydCarPlayCall.onFrame(ringing("not-ready")); drain()
-        assertTrue(Shell.commands.none { it.contains(" ringing ") })
-    }
-
-    @Test fun anEmptyBackgroundLaunchReplyStillNeedsTheChildReadinessRecord() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.emptyWatcherReply = true
-        Shell.omitReadiness = true
-        BydCarPlayCall.onFrame(ringing("empty-launch")); drain()
-        assertFalse(ReflectionHelpers.getField<Boolean>(BydCarPlayCall, "watcherRunning"))
-        assertTrue(Shell.commands.none { it.contains(" ringing ") })
-        assertTrue(Shell.commands.any { it.contains(" cancel - ") })
-    }
-
-    @Test fun vehicleWritesFollowPreparationAndInitializedChildAcknowledgement() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        BydCarPlayCall.onFrame(ringing("ordered")); drain()
-        val prepare = Shell.commands.indexOfFirst { it.contains(" prepare - ") }
-        val launch = Shell.commands.indexOfFirst { it.startsWith("nohup") }
-        val probe = Shell.commands.indexOfFirst { it.contains(" probe - ") }
-        val show = Shell.commands.indexOfFirst { it.contains(" ringing ") }
-        assertTrue(prepare >= 0 && prepare < launch && launch < probe && probe < show)
-        val pid = android.os.Process.myPid().toString()
-        assertTrue(Shell.commands[show].endsWith(" $pid"))
-    }
-
-    @Test fun failedWatcherHasOneRealWriterRetryEvenWhenTheCallFrameNeverChanges() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.rejectWatcher = true
-        BydCarPlayCall.onFrame(ringing("unchanged")); drain()
-        assertTrue(Shell.commands.none { it.contains(" ringing ") })
-        Shell.rejectWatcher = false
-        awaitRetry()
-        assertEquals(1, Shell.commands.count { it.contains(" ringing ") })
-        assertNotNull(ReflectionHelpers.getField<Any?>(BydCarPlayCall, "shown"))
-    }
-
-    @Test fun missingPristineCancelAcknowledgementRetainsItsTokenUntilConfirmedRetry() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.rejectWatcher = true
-        Shell.omitCancelCompletion = true
-        BydCarPlayCall.onFrame(ringing("cancel-pending")); drain()
-        val original = ReflectionHelpers.getField<String?>(BydCarPlayCall, "watcherToken")!!
-        assertTrue(ReflectionHelpers.getField<Boolean>(BydCarPlayCall, "prepared"))
-        Shell.omitCancelCompletion = false
-        Shell.rejectWatcher = false
-        awaitRetry()
-        val firstCancel = Shell.commands.indexOfFirst { it.endsWith(" cancel - $original") }
-        val retryCancel = Shell.commands.indexOfLast { it.endsWith(" cancel - $original") }
-        val newPrepare = Shell.commands.indexOfLast { it.contains(" prepare - ") }
-        assertTrue(firstCancel >= 0 && retryCancel > firstCancel && newPrepare > retryCancel)
-        assertTrue(Shell.commands.none { it.endsWith(" end - $original") })
-        assertEquals(1, Shell.commands.count { it.contains(" ringing ") })
-    }
-
-    @Test fun disablingTheOptionCancelsTheUnchangedCallRetryWithoutHardwareWrites() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        Shell.rejectWatcher = true
-        BydCarPlayCall.onFrame(ringing("disabled")); drain()
-        BydOutputSettings.setCarPlayCalls(app, false)
-        BydCarPlayCall.settingChanged(false); drain()
-        Shell.rejectWatcher = false
-        Thread.sleep(1200); drain()
-        assertTrue(Shell.commands.none { it.contains(" ringing ") || it.contains(" end - ") })
-    }
-
-    @Test fun refusedEndGetsOnlyOneAutomaticRetryUntilAnExplicitNewCleanupEvent() {
-        BydOutputSettings.setCarPlayCalls(app, true)
-        BydCarPlayCall.onFrame(ringing("end-retry")); drain()
-        val path = ReflectionHelpers.getField<String?>(BydCarPlayCall, "watcherToken")!!
-        Shell.endFailures = 10
-        BydCarPlayCall.end(); drain()
-        awaitRetry()
-        Thread.sleep(1200); drain()
-        assertEquals(2, Shell.commands.count { it.endsWith(" end - $path") })
-        Shell.endFailures = 0
-        BydCarPlayCall.end(); drain()
-        assertEquals(3, Shell.commands.count { it.endsWith(" end - $path") })
-        assertNull(ReflectionHelpers.getField<String?>(BydCarPlayCall, "watcherToken"))
-    }
-
-    private fun awaitRetry() {
-        val future = ReflectionHelpers.getField<java.util.concurrent.ScheduledFuture<*>?>(BydCarPlayCall, "retry")
-            ?: error("Expected a bounded retry")
-        future.get(5, TimeUnit.SECONDS)
-        drain()
-    }
-
-    private fun tokenFrom(command: String): String =
-        Regex("/data/local/tmp/diplay-carplay-call-[A-Za-z0-9_.]+-[0-9a-f-]{36}")
-            .find(command)!!.value
 
     @Implements(BydAdbShell::class, isInAndroidSdk = false)
     class Shell {
         @Implementation fun run(context: Context, command: String): String? {
             commands.add(command)
-            if (command.startsWith("nohup") && rejectWatcher) return "nohup: watcher launch refused"
-            if (command.startsWith("nohup") && emptyWatcherReply) return ""
-            if (command.contains(" cancel - ") && omitCancelCompletion) return ""
-            if (command.contains(" probe ")) return if (rejectWatcher || omitReadiness) "watch=ERR" else "watch=0"
-            if (rejectPhase?.let { command.contains(" $it ") } == true) return "write=ERR call write refused"
-            if (command.contains(" end - ") && endFailures > 0) {
-                endFailures--
-                return "write=ERR cleanup refused"
-            }
-            val phaseOrEnd = command.contains(" end - ") ||
-                listOf("ringing", "dialing", "active").any { command.contains(" $it ") }
-            return if (omitCompletion && phaseOrEnd) "state=0" else "state=0\nwrite=0"
+            return null
         }
         companion object {
             val commands = CopyOnWriteArrayList<String>()
-            @Volatile var rejectPhase: String? = null
-            @Volatile var endFailures = 0
-            @Volatile var omitCompletion = false
-            @Volatile var rejectWatcher = false
-            @Volatile var omitReadiness = false
-            @Volatile var omitCancelCompletion = false
-            @Volatile var emptyWatcherReply = false
         }
     }
 }

@@ -49,8 +49,12 @@ class AuthenticationToolsTest(unittest.TestCase):
 
     def fake_gradle(self, command, **kwargs):
         self.assertIn(":mobile:assembleStandaloneDebug", command)
-        for flag in ("--no-daemon", "--no-build-cache", "--no-configuration-cache", "--no-scan"):
+        for flag in ("--no-daemon", "--build-cache", "--no-configuration-cache", "--no-scan"):
             self.assertIn(flag, command)
+        self.assertIn("--init-script", command)
+        self.assertEqual(command[command.index("--init-script") + 1],
+                         str(self.root / "scripts/gradle-readonly-cache.init.gradle"))
+        self.assertNotIn("--no-build-cache", command)
         self.assertEqual(kwargs["stdout"], subprocess.DEVNULL)
         self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
         environment = kwargs["env"]
@@ -231,17 +235,24 @@ class AuthenticationToolsTest(unittest.TestCase):
         self.assertTrue(set(builder.SECRET_FILES).isdisjoint(self.environment))
         self.assertNotIn("DIPLAY_AUTH_ASSETS_DIR", self.environment)
 
-    def test_workflow_is_manual_default_off_and_uncached(self):
+    def test_workflow_is_manual_auto_upload_with_no_credential_cache_save(self):
         workflow = (ROOT / ".github/workflows/build-authenticated-debug.yml").read_text()
         self.assertIn("  workflow_dispatch:", workflow)
         self.assertNotIn("  push:", workflow)
         self.assertNotIn("  pull_request", workflow)
-        self.assertIn("default: false", workflow)
+        self.assertNotIn("publish_apk", workflow)
+        self.assertNotIn("    inputs:", workflow)
+        self.assertIn('--publish-dir "$AUTH_APK_DIR"', workflow)
+        self.assertIn("archive: false", workflow)
         self.assertIn("retention-days: 1", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("if: ${{ always() }}", workflow)
         self.assertNotIn("setup-gradle", workflow)
-        self.assertNotIn("actions/cache", workflow)
+        credential_job = workflow.split("\n  build:\n", 1)[1]
+        self.assertIn("needs: source-checks", credential_job)
+        self.assertIn("actions/cache/restore@", credential_job)
+        self.assertNotIn("actions/cache/save@", credential_job)
+        self.assertNotIn("uses: actions/cache@", credential_job)
         before_credentials = workflow.split("      - name: Build and verify authenticated APK")[0]
         self.assertIn(":shared:testDebugUnitTest", before_credentials)
         self.assertIn(":common:testDebugUnitTest", before_credentials)

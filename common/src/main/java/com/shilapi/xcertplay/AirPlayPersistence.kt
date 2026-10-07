@@ -56,6 +56,7 @@ object AirPlayPersistence {
     private const val KEY_MANUAL_HOTSPOT_CHANNEL = "manual_hotspot_channel"
     private const val KEY_MANUAL_HOTSPOT_SECURITY = "manual_hotspot_security"
     private const val KEY_DEBUG_LOGS_ENABLED = "debug_logs_enabled"
+    private const val KEY_PERFORMANCE_DIAGNOSTICS_ENABLED = "performance_diagnostics_enabled"
     private const val KEY_MANUFACTURER = "manufacturer"
     private const val KEY_MODEL = "model"
     private const val KEY_OEM_LABEL = "oem_label"
@@ -99,7 +100,7 @@ object AirPlayPersistence {
 
     const val DEFAULT_MANUFACTURER = "DiPlay"
     const val DEFAULT_MODEL = "DiPlay"
-    const val DEFAULT_OEM_LABEL = "BYD"
+    const val DEFAULT_OEM_LABEL = "Tesla"
     const val DEFAULT_MFI_I2C_PATH = "/dev/i2c-1"
 
     fun loadAmbientDelaySeconds(context: Context): Int =
@@ -395,6 +396,16 @@ object AirPlayPersistence {
     fun saveDebugLogsEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_DEBUG_LOGS_ENABLED, enabled)
+            .apply()
+    }
+
+    fun loadPerformanceDiagnosticsEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_PERFORMANCE_DIAGNOSTICS_ENABLED, false)
+
+    fun savePerformanceDiagnosticsEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_PERFORMANCE_DIAGNOSTICS_ENABLED, enabled)
             .apply()
     }
 
@@ -713,10 +724,15 @@ object AirPlayPersistence {
         overlaySettingsListener?.invoke()
     }
 
-    fun loadClusterMapScalePercent(context: Context): Int = CarPlayClusterDisplay.STREAM_SCALE_PERCENT.let { default ->
+    fun loadClusterMapScalePercent(context: Context): Int =
+        loadMapScalePercent(context, CarPlayClusterDisplay.STREAM_SCALE_PERCENT)
+
+    /** Preserve the original virtual stream's 1280×720 default while honoring saved map settings. */
+    fun loadVirtualMapScalePercent(context: Context): Int = loadMapScalePercent(context, 100)
+
+    private fun loadMapScalePercent(context: Context, default: Int): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_CLUSTER_MAP_SCALE, default)
             .takeIf { it in CarPlayClusterDisplay.scalePresets } ?: default
-    }
 
     fun saveClusterMapScalePercent(context: Context, percent: Int) {
         if (percent !in CarPlayClusterDisplay.scalePresets) return
