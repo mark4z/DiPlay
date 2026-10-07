@@ -25,6 +25,14 @@ CarPlay and the CarPlay icon are Apple Inc. marks/assets. This asset is not cove
 - Bouncy Castle 1.79 — The Legion of the Bouncy Castle Inc.; Bouncy Castle license (MIT-style).
 - JmDNS 3.6.3 — JmDNS contributors; Apache License 2.0.
 - SLF4J — QOS.ch; MIT license.
+- WebRTC Android SDK `io.github.webrtc-sdk:android:150.7871.01` — WebRTC project
+  authors and WebRTC SDKs; WebRTC BSD-3-Clause, packaging MIT, and the included
+  third-party component licenses. The unmodified upstream notice corpus is in
+  `docs/licenses/dependencies/WebRTC-150.7871.01-THIRD-PARTY.md`, with the SDK MIT
+  notice alongside it. See [dependency provenance and integration](WEBRTC_DEPENDENCY.md).
+- AndroidX Media3 common 1.11.1 — Android Open Source Project; Apache License 2.0.
+  Its maintained Sonic audio processor supplies streaming PCM resampling for the
+  optional browser-audio path.
 
 Gradle dependency declarations and version catalog accompany the source. License files available in the resolved artifacts are included under `docs/licenses/dependencies/`.
 

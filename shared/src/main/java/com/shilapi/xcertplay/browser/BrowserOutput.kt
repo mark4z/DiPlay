@@ -105,7 +105,8 @@ object BrowserOutput {
         ui?.finished?.invoke(id)
     }
 
-    fun start(address: InetAddress, origin: String = VIEWER_ORIGIN): String = synchronized(lock) {
+    fun start(address: InetAddress, origin: String = VIEWER_ORIGIN, context: android.content.Context? = null): String = synchronized(lock) {
+        context?.let(BrowserAudioOutput::initialize)
         check(server == null) { "Stop the current browser session first" }
         val generation = ++serverGeneration
         val transport = BrowserLanServer(address, origin,
@@ -120,7 +121,7 @@ object BrowserOutput {
                 waitingForKey = true
                 server?.sendText("{\"type\":\"authenticated\",\"version\":2}")
                 server?.bindAudioTransport()?.let {
-                    BrowserAudioOutput.connect(it.sendText, it.sendAudio, it.resetAudio)
+                    BrowserAudioOutput.connect(it.sendText)
                 }
                 sendConfig()
                 requestKeyframe()
@@ -217,7 +218,7 @@ object BrowserOutput {
                     if (generation != mediaGeneration) return@synchronized
                     ++streamId
                     format = null; recovery = null; waitingForKey = true; releaseTouches()
-                    BrowserAudioOutput.setEnabled(false)
+                    BrowserAudioOutput.restoreNative()
                     if (viewerConnected) server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
                 }
             }
@@ -281,8 +282,10 @@ object BrowserOutput {
                     require(id is Number && id.toDouble().isFinite() && id.toDouble() == id.toLong().toDouble())
                     require(id.toLong() in 1..9_007_199_254_740_991L)
                     BrowserAudioOutput.setEnabled(json.get("enabled") as? Boolean
-                        ?: throw IllegalArgumentException("Boolean required"), id.toLong())
+                        ?: throw IllegalArgumentException("Boolean required"), id.toLong(),
+                        json.optString("transport"), json.optString("source") == "test")
                 }
+                "audioAnswer", "audioIce", "audioReady", "audioAlive" -> BrowserAudioOutput.receive(json)
                 "touch" -> {
                     if (!browserTouchOwned || json.optLong("streamId", -1L) != streamId) return
                     if (format == null) { releaseTouches(); return }
