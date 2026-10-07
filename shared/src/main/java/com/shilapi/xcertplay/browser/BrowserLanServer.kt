@@ -162,7 +162,9 @@ class BrowserLanServer(
     /** Internal socket seam for loopback JVM tests; the public listener still enforces RFC1918. */
     internal fun acceptConnection(socket: Socket, expectedHost: String, privatePeer: Boolean =
         BrowserLanProtocol.isPrivateIpv4(socket.inetAddress) ||
-            (secureIdentity != null && socket.inetAddress.hostAddress in setOf(BrowserViewerAssets.ADDRESS, BrowserViewerAssets.COMPAT_ADDRESS))) {
+            (secureIdentity != null && socket.inetAddress.hostAddress?.let {
+                it == BrowserViewerAssets.ADDRESS || it == BrowserViewerAssets.COMPAT_ADDRESS
+            } == true)) {
         synchronized(lock) {
             val attempt = diagnostics.begin()
             val rejection = when {

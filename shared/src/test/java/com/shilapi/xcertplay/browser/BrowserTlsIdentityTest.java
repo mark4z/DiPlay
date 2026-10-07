@@ -308,7 +308,11 @@ public class BrowserTlsIdentityTest {
     }
 
     @Test public void rejectsUntrustedAndIncompleteChainsWithoutChangingPlatformTrust() throws Exception {
-        failure("CHAIN_UNTRUSTED", pemChain(rsaLeaf), pkcs8(rsaKey));
+        // Trust managers may cache an intermediate after another test's successful chain.
+        // A fresh root-only manager makes this intentionally incomplete fixture deterministic.
+        BrowserTlsIdentity.Failure uncached = assertThrows(BrowserTlsIdentity.Failure.class,
+                () -> BrowserTlsIdentity.readWithTrust(pemChain(rsaLeaf), pkcs8(rsaKey), trust(root)));
+        assertEquals("CHAIN_UNTRUSTED", uncached.code);
         BrowserTlsIdentity.Failure production = assertThrows(BrowserTlsIdentity.Failure.class,
                 () -> BrowserTlsIdentity.read(chain(rsaLeaf), pkcs8(rsaKey)));
         assertEquals("CHAIN_UNTRUSTED", production.code);

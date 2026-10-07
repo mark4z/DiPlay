@@ -220,10 +220,13 @@ class BrowserTlsTransportTest {
                 listener.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 1)
                 raw.connect(InetSocketAddress("127.0.0.1", listener.localPort), 3_000)
                 client = (BrowserTlsIdentityTest.syntheticClientContext().socketFactory
-                    .createSocket(raw, BrowserViewerAssets.HOSTNAME, listener.localPort, true) as SSLSocket).apply {
+                    .createSocket(raw, if (sni == null) "127.0.0.1" else BrowserViewerAssets.HOSTNAME, listener.localPort, true) as SSLSocket).apply {
                     soTimeout = 3_000
                     val parameters = sslParameters
-                    parameters.endpointIdentificationAlgorithm = "HTTPS"
+                    // A named peer can automatically recreate SNI even after an empty list.
+                    // Only the missing-SNI negative fixture uses a numeric peer/no identity check;
+                    // it must still be rejected by the server before any HTTP or approval.
+                    parameters.endpointIdentificationAlgorithm = if (sni == null) null else "HTTPS"
                     parameters.serverNames = sni?.let { listOf(SNIHostName(it)) } ?: emptyList()
                     sslParameters = parameters
                 }
