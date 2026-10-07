@@ -4,7 +4,8 @@ import { audioEnvironment, audioSdp, flush } from './audio-fixtures.mjs';
 
 // Minimal DOM/WebCodecs stubs exercise the actual page module's event wiring.
 // This supplements (not replaces) a real browser/hardware acceptance test.
-test('viewer requires explicit connection/touch and releases frames/contacts on interrupted flows', async t => {
+for (const embedded of [false, true]) {
+test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer requires explicit connection/touch and releases frames/contacts on interrupted flows`, async t => {
   class Events {
     constructor() { this.listeners = new Map(); }
     addEventListener(name, handler) { const handlers = this.listeners.get(name) || []; handlers.push(handler); this.listeners.set(name, handlers); }
@@ -30,14 +31,18 @@ test('viewer requires explicit connection/touch and releases frames/contacts on 
   }
   const elements = Object.fromEntries(['connection', 'ip', 'port', 'parked', 'touch', 'connect', 'disconnect',
     'video', 'viewport', 'placeholder', 'status', 'indicator', 'origin', 'touch-status', 'audio', 'audio-test', 'audio-status',
-    'connection-timeline', 'connection-attempt', 'connection-transport'].map(id => [id, new Element()]));
+    'connection-timeline', 'connection-attempt', 'connection-transport', 'manual-endpoint', 'local-endpoint',
+    'local-endpoint-value', 'connection-instructions', 'transport-warning', 'browser-requirements', 'lan-diagnostics',
+    'connection-troubleshooting'].map(id => [id, new Element()]));
   elements.parked.checked = true;
   elements.touch.checked = true;
+  elements.ip.value = 'untrusted.invalid'; // Restored form values cannot override the embedded endpoint.
+  elements.port.value = '12345';
   const document = Object.assign(new Events(), { visibilityState: 'visible', getElementById: id => elements[id], createElement: kind => kind === 'audio' ? audioEnv.dependencies.createAudio() : new Element() });
   const sockets = [], decoders = [], raf = new Map();
   let rafId = 0, fetches = 0;
   class Socket {
-    constructor() { this.readyState = 0; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
+    constructor(url) { this.url = url; this.readyState = 0; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
     open() { this.readyState = 1; this.onopen?.(); }
     send(text) { this.sent.push(JSON.parse(text)); }
     receive(message) { this.onmessage?.({ data: JSON.stringify(message) }); }
@@ -63,15 +68,17 @@ test('viewer requires explicit connection/touch and releases frames/contacts on 
   };
   const window = Object.assign(new Events(), { VideoDecoder: Decoder, EncodedVideoChunk: class {}, PointerEvent: class {}, ResizeObserver: class { observe() {} } });
   window.top = window.self = window;
-  Object.assign(globalThis, { document, window, location: { protocol: 'https:', origin: 'https://viewer.example' }, isSecureContext: true,
+  const origin = embedded ? 'https://tesla.mark4z.asia:9999' : 'https://mark4z.github.io';
+  Object.assign(globalThis, { document, window, location: { protocol: 'https:', origin,
+    search: '?endpoint=wss://untrusted.invalid&ip=8.8.8.8&port=443', hash: '#ws://untrusted.invalid' }, isSecureContext: true,
     VideoDecoder: Decoder, EncodedVideoChunk: window.EncodedVideoChunk, WebSocket: Socket, ResizeObserver: window.ResizeObserver,
     devicePixelRatio: 1, RTCPeerConnection: audioEnv.dependencies.PeerConnection, MediaStream: audioEnv.dependencies.MediaStream,
     fetch: () => { fetches++; throw new Error('The viewer must not fetch an HTTP health probe.'); },
     requestAnimationFrame: callback => { raf.set(++rafId, callback); return rafId; }, cancelAnimationFrame: id => raf.delete(id) });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Chrome/154.0.0.0' } });
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: embedded ? 'Tesla Chromium/130.0.0.0' : 'Chrome/154.0.0.0' } });
   const paint = () => { const callbacks = [...raf.values()]; raf.clear(); callbacks.forEach(callback => callback()); };
   const pointer = (pointerId, clientX = 500, clientY = 500) => ({ pointerId, clientX, clientY, pointerType: 'touch', buttons: 1 });
-  await import('../viewer.mjs?ui-test');
+  await import(`../viewer.mjs?ui-test-${embedded}`);
 
   assert.equal(sockets.length, 0, 'page load must not connect');
   assert.equal(audioPeers.length, 0, 'page load must not create a peer connection');
@@ -80,7 +87,20 @@ test('viewer requires explicit connection/touch and releases frames/contacts on 
   assert.equal(elements.parked.checked, false, 'restored parked state is not fresh consent');
   assert.equal(elements.touch.checked, false);
   assert.equal(elements.connect.disabled, true);
-  assert.equal(elements.origin.textContent, 'https://viewer.example');
+  assert.equal(elements.origin.textContent, origin);
+  assert.equal(elements['manual-endpoint'].hidden, embedded);
+  assert.equal(elements['local-endpoint'].hidden, !embedded);
+  assert.equal(elements.ip.required, !embedded);
+  assert.equal(elements.port.required, !embedded);
+  if (embedded) {
+    assert.equal(elements['local-endpoint-value'].textContent, 'wss://tesla.mark4z.asia:9999/carplay');
+    assert.equal(elements.ip.value, '');
+    assert.equal(elements.port.value, '');
+    assert.equal(elements.ip.disabled, true);
+    assert.equal(elements.port.disabled, true);
+    assert.equal(elements['lan-diagnostics'].hidden, true);
+    assert.match(elements['transport-warning'].textContent, /TLS/);
+  }
   assert.match(elements['connection-transport'].textContent, /Page: HTTPS\. Secure context: yes.*not attempted/);
   assert.equal(elements['connection-timeline'].children.length, 0);
   elements.connection.dispatch('submit');
@@ -88,6 +108,7 @@ test('viewer requires explicit connection/touch and releases frames/contacts on 
 
   elements.parked.checked = true;
   elements.parked.dispatch('change');
+  if (!embedded) {
   elements.ip.value = 'ws://192.168.1.20:8765/carplay';
   elements.port.value = '8765';
   elements.connection.dispatch('submit');
@@ -96,14 +117,20 @@ test('viewer requires explicit connection/touch and releases frames/contacts on 
   assert.match(elements.status.textContent, /only the private IPv4/);
   elements.ip.value = '192.168.1.20';
   elements.port.value = '8765';
+  } else {
+    elements.ip.value = 'untrusted.invalid'; // Even tampered hidden inputs are ignored.
+    elements.port.value = '443';
+  }
   elements.connection.dispatch('submit');
   elements.connection.dispatch('submit');
   assert.equal(sockets.length, 1, 'repeated submit cannot duplicate connection');
   assert.equal(elements.ip.disabled, true);
   assert.match(elements['connection-attempt'].textContent, /Attempt 1/);
-  assert.match(elements['connection-transport'].textContent, /ws:\/\/ \(plaintext LAN WebSocket\)/);
+  assert.match(elements['connection-transport'].textContent, embedded
+    ? /wss:\/\/ \(TLS WebSocket\)/ : /ws:\/\/ \(plaintext LAN WebSocket\)/);
   assert.doesNotMatch(elements['connection-transport'].textContent, /192\.168/);
   const socket = sockets[0];
+  assert.equal(socket.url, embedded ? 'wss://tesla.mark4z.asia:9999/carplay' : 'ws://192.168.1.20:8765/carplay');
   socket.open();
   assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
   socket.receive({ type: 'approvalPending', version: 2 });
@@ -267,11 +294,13 @@ test('viewer requires explicit connection/touch and releases frames/contacts on 
   rejected.receive({ type: 'error', code: 'approvalRejected', version: 2 });
   assert.equal(rejected.readyState, 3);
   assert.match(elements.status.textContent, /rejected on Android/);
-  assert.equal(elements.ip.disabled, false);
-  assert.equal(elements.port.disabled, false);
+  assert.equal(elements.ip.disabled, embedded);
+  assert.equal(elements.port.disabled, embedded);
   assert.equal(elements.connect.disabled, false);
   assert.equal(elements.touch.checked, false);
   assert.equal(elements.touch.disabled, true);
   assert.equal(sockets.length, 3);
   assert.equal(fetches, 0, 'HTTPS viewer never automatically requests the HTTP health endpoint');
 });
+
+}

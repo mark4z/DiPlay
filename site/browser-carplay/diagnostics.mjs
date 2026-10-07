@@ -19,7 +19,10 @@ export function transportCaption({ protocol, secureContext, transport = null }) 
   const secure = secureContext === true ? 'yes' : 'no';
   const link = transport === 'ws:' ? 'ws:// (plaintext LAN WebSocket)'
     : transport === 'wss:' ? 'wss:// (TLS WebSocket)' : 'not attempted';
-  return `Page: ${page}. Secure context: ${secure}. WebSocket transport: ${link}. HTTPS page delivery does not encrypt a ws:// LAN link.`;
+  const protection = transport === 'wss:'
+    ? 'TLS protects this WebSocket link; Android approval is still required.'
+    : 'HTTPS page delivery does not encrypt a ws:// LAN link.';
+  return `Page: ${page}. Secure context: ${secure}. WebSocket transport: ${link}. ${protection}`;
 }
 
 export function milestoneText(event) {

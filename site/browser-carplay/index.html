@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws:; worker-src 'self'; img-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws: wss://tesla.mark4z.asia:9999; worker-src 'self'; img-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>DiPlay · Browser CarPlay preview</title>
-  <link rel="stylesheet" href="viewer.css?v=connection-diag-v1">
-  <script type="module" src="viewer.mjs?v=webrtc-audio-v1"></script>
+  <link rel="stylesheet" href="viewer.css?v=embedded-https-v1">
+  <script type="module" src="viewer.mjs?v=embedded-https-v1"></script>
 </head>
 <body>
 <main>
@@ -25,18 +25,25 @@
       <h2>Before you connect</h2>
       <ol>
         <li>Park safely. Enable the experimental browser bridge in DiPlay.</li>
-        <li>Set the bridge’s allowed website origin to <output id="origin">this page’s HTTPS origin</output>.</li>
-        <li>Enter its private IPv4 address and port below. Click Connect, allow Chrome’s local-network permission if you choose, then tap Accept in DiPlay on Android.</li>
+        <li>DiPlay must allow this website origin: <output id="origin">this page’s HTTPS origin</output>.</li>
+        <li id="connection-instructions">Enter its private IPv4 address and port below. Click Connect, allow Chrome’s local-network permission if you choose, then tap Accept in DiPlay on Android.</li>
       </ol>
-      <p class="warning">The local WebSocket link is unencrypted, including video, audio signaling, and touch controls. WebRTC audio media uses DTLS-SRTP encryption, but its signaling still depends on your trusted LAN. Use only your own trusted private network. HTTPS protects this page, not that local link.</p>
+      <p id="transport-warning" class="warning">The external viewer’s local ws:// WebSocket link is unencrypted, including video, audio signaling, and touch controls. WebRTC audio media uses DTLS-SRTP encryption, but its signaling still depends on your trusted LAN. Use only your own trusted private network. HTTPS protects this page, not that ws:// link.</p>
     </div>
     <form id="connection" autocomplete="off">
+      <div id="local-endpoint" hidden>
+        <p>Built-in DiPlay viewer · TLS connection</p>
+        <output id="local-endpoint-value"></output>
+        <small>No IP address is needed. Every connection requires a fresh Accept on Android within 30 seconds.</small>
+      </div>
+      <div id="manual-endpoint">
       <label for="ip">Android bridge IP address</label>
       <input id="ip" name="ip" type="text" inputmode="decimal" placeholder="192.168.1.20" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="15" required aria-describedby="ip-help">
       <small id="ip-help">Private IPv4 only. Enter the address shown in DiPlay, without ws:// or a path.</small>
       <label for="port">Port</label>
       <input id="port" name="port" type="text" inputmode="numeric" placeholder="8765" autocomplete="off" spellcheck="false" maxlength="5" required aria-describedby="port-help">
       <small id="port-help">1–65535. Every connection requires a fresh Accept on Android within 30 seconds.</small>
+      </div>
       <label class="check"><input id="parked" type="checkbox" required> I’m safely parked and will disconnect before driving.</label>
       <div class="actions">
         <button id="connect" type="submit" disabled>Connect display</button>
@@ -50,7 +57,7 @@
     <p id="connection-attempt">No connection attempted.</p>
     <ol id="connection-timeline" aria-label="Latest connection attempt milestones" aria-live="polite" aria-relevant="additions text"></ol>
     <p class="diagnostic-help">The last reached stage helps locate a failure. WebSocket open means the browser handshake succeeded; Android approval and video are separate steps. Code 1006 means no normal close frame was received and does not identify the cause.</p>
-    <details>
+    <details id="lan-diagnostics">
       <summary>Check LAN reachability separately</summary>
       <p>While parked, manually enter the HTTP health URL shown in DiPlay in the browser address bar, for example http://192.168.1.20:8765/health. A response identifying the DiPlay browser service proves that this browser can reach that APK’s health endpoint over the LAN. It does not prove the HTTPS viewer has local-network permission, that its WebSocket handshake is allowed, or that Android approved a session.</p>
       <p>This HTTPS page never fetches the HTTP health endpoint, because that request can be blocked as mixed content. Navigating away disconnects an active session. Return to this HTTPS viewer and click Connect for a new attempt. Do not bypass browser or certificate warnings.</p>
@@ -78,8 +85,8 @@
   </section>
   <details>
     <summary>Browser requirements &amp; privacy</summary>
-    <p>Open this page over HTTPS in Chrome 147 or later with WebCodecs and Local Network Access support. Embedded WebViews, older browsers, and many in-car browsers may not support this flow. Install the latest DiPlay APK and reload this viewer together: both must support Android approval (protocol v2). A supported codec is checked when the bridge sends its configuration. H.265 support depends on the browser and device.</p>
-    <p>If a connection is blocked, check the site’s local-network permission, the bridge’s allowed origin, and that both devices share a trusted LAN. Do not disable browser security, ignore certificate warnings, or expose the bridge to the internet.</p>
+    <p id="browser-requirements">Open this page over HTTPS in Chrome 147 or later with WebCodecs and Local Network Access support. Embedded WebViews, older browsers, and many in-car browsers may not support this flow. Install the latest DiPlay APK and reload this viewer together: both must support Android approval (protocol v2). A supported codec is checked when the bridge sends its configuration. H.265 support depends on the browser and device.</p>
+    <p id="connection-troubleshooting">If a connection is blocked, check the site’s local-network permission, the bridge’s allowed origin, and that both devices share a trusted LAN. Do not disable browser security, ignore certificate warnings, or expose the bridge to the internet.</p>
     <p>Click Play audio here to move playback from Android to this browser. Stop browser audio to return playback to Android. Test audio plays a short, quiet tone without muting Android. Audio needs WebRTC/Opus support; it is experimental and is not a guarantee of synchronized audio/video or call support. This viewer has no analytics, third-party scripts, internet media uploads, recording, credential storage, or microphone access. Video and audio stay between the Android bridge and this browser. The parked checkbox is your confirmation; this page does not detect vehicle speed.</p>
     <p><a href="https://groups.google.com/a/chromium.org/g/blink-dev/c/O6GMKt44Ups" target="_blank" rel="noopener noreferrer">Chrome’s local WebSocket requirements</a></p>
   </details>

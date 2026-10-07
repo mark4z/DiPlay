@@ -1,7 +1,7 @@
 name: Android checks
 on:
   push:
-    branches: [main, feature/browser-carplay]
+    branches: [main, feature/browser-carplay, feature/embedded-https-viewer]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -46,6 +46,9 @@ jobs:
       - name: Verify source APK has no bundled identity
         if: ${{ success() }}
         run: python3 scripts/check_source_apk.py mobile/build/outputs/apk/debug/mobile-debug.apk
+      - name: Verify bundled viewer matches canonical source
+        if: ${{ success() }}
+        run: python3 scripts/check_embedded_viewer_apk.py mobile/build/outputs/apk/debug/mobile-debug.apk
       - name: Upload credential-free mobile APK directly
         if: ${{ success() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -66,3 +69,4 @@ jobs:
             samples/home/build/reports/tests/
             samples/home/build/reports/lint-results-debug.html
             samples/maphost/build/reports/lint-results-debug.html
+

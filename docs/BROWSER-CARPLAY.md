@@ -4,9 +4,53 @@ Status: source implementation, **not verified on Android/Tesla hardware**. Nativ
 CarPlay remains the normal output. Browser output is off after process launch,
 requires an explicit parked confirmation, and is never saved as a preference.
 
+## Embedded HTTPS viewer (local certificate, experimental)
+
+The APK now bundles the canonical `site/browser-carplay` runtime files. In settings,
+open **Embedded HTTPS viewer**, select the nginx certificate ZIP on the Android
+phone, confirm parked, and explicitly start the local VPN after Android's consent
+screen. The ZIP must contain a currently valid, system-trusted chain for
+`tesla.mark4z.asia` and its matching private key. The import is bounded and
+memory-only; no certificate or key is built into the app, fetched from a server,
+written to preferences, retained through process restart, or sent to CI.
+
+The fixed page is `https://tesla.mark4z.asia:9999/`; the viewer automatically uses
+`wss://tesla.mark4z.asia:9999/carplay`. DNS must resolve that hostname to
+`100.99.9.9`; the APK does not modify DNS or public records. The server binds only
+that exact assigned address, using the tested dual-TUN arrangement with a second
+`192.168.247.2` interface. The primary interface may be DOWN while retaining its
+address, so the secure listener checks address presence rather than requiring UP.
+Each TUN has only its own /32 address/route and only this app is allowed. There
+is no default route, packet forwarding, remote VPN, or Internet relay.
+
+A normal system-trust TLS self-check pins the exact hostname, SNI, and destination
+before enabling Android approvals. The listener also checks SNI, exact HTTP Host,
+and exact WebSocket Origin. It serves only the small bounded HTML/CSS/MJS
+allowlist, with strict response CSP and no arbitrary filesystem or ZIP paths.
+The embedded page still requires a manual parked confirmation and Connect;
+every connection still requires foreground Android approval. Touch stays off
+until the existing ownership ACK, and optional audio stays WebRTC/DTLS-SRTP.
+No microphone feature is introduced. The older external-viewer mode is retained.
+
+Stop (in settings or the notification), VPN revocation, task removal, startup
+failure, and service destruction cancel the session and close both TUN descriptors,
+listener, accepted sockets, and self-check sockets. A late startup completion is
+closed by the canceled owner. No session is restored automatically. Cleanup
+failures are surfaced and a new session is blocked until the app is reset.
+
+Device validation remains required: successful Tesla HTTP `/health` on the dual
+TUN arrangement establishes that TCP path only. It does not establish HTTPS,
+SNI/provider behavior, video, audio, or touch on this combined implementation.
+Do not bypass certificate or browser security warnings. Test Cancel during ZIP
+selection/import, deny VPN permission, Stop during startup/handshake, VPN revoke,
+repeat start/stop, app/task closure, reconnect approval, and both TUN removal.
+Then test the exact HTTPS page on the phone and Tesla, media playback, audio
+stop/reconnect, and touch revoke. Android unit tests/lint/APK build run in Actions;
+source-only browser checks are not an Android or Tesla pass.
+
 ## Architecture and browser gate
 
-An independently hosted **HTTPS** static page (`site/browser-carplay`) decodes
+The bundled or independently hosted **HTTPS** static page (`site/browser-carplay`) decodes
 CarPlay's existing compressed H.264/HEVC access units with WebCodecs. The Android
 app tees the main screen without decode/re-encode, preserving native video/audio.
 Video and two-contact CarPlay touch retain the existing WebSocket path. Explicitly selected
@@ -30,7 +74,7 @@ WebSocket access is unavailable. It never suggests ignoring certificate errors,
 changing browser security flags, routing media through a relay, or opening a router
 port. User permission must be granted personally in the browser's normal prompt.
 
-## Start / stop
+## External hosted viewer: start / stop
 
 1. Deploy the static viewer directory to an HTTPS origin you control.
    Verified additive viewer destination:
@@ -207,3 +251,4 @@ times. The page also distinguishes its HTTPS/secure-context status from the
 unencrypted local `ws://` transport. A 1006 close is an abnormal closure indication,
 not proof of a certificate, local-network permission or routing failure. Compare
 its last reached stage with Android's report to find where the attempt stopped.
+

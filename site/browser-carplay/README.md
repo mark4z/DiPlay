@@ -6,45 +6,73 @@ standalone CarPlay receiver. Browser microphone uplink is not included.
 
 ## Deployment and connection
 
-The Android bridge pins the exact HTTPS origin **https://mark4z.github.io**.
-The published viewer is https://mark4z.github.io/tesla-browser-lab/browser-carplay/.
-Other origins are rejected; deployment elsewhere requires a separately reviewed
-source change, not an input field or security fallback.
-This source change does not publish the page. Do not add `upgrade-insecure-requests`
-to the hosting policy: the deliberately local `ws://` link uses Chrome's Local
-Network Access exemption, not a public TLS endpoint. Hosting may set an explicit
-`frame-ancestors 'none'` CSP response header in addition to the page's top-level
-guard (that directive cannot be enforced through a meta element).
+### Built-in HTTPS viewer (preferred)
 
-Use Chrome 147+ with WebCodecs and Local Network Access support. Chrome's
+The APK packages this directory's canonical HTML, CSS, and ES modules and serves
+it at **https://tesla.mark4z.asia:9999/**. The Gradle `syncBrowserViewerAssets`
+task copies only the root runtime files into `browser-carplay/` assets before
+Android `preBuild`; README and tests are excluded. There is no second viewer
+source tree, build-time CDN fetch, external script, font, or media dependency.
+
+On that exact HTTPS origin, the viewer selects only
+**wss://tesla.mark4z.asia:9999/carplay**. IP and port inputs are hidden, disabled,
+and not required. No query parameter, fragment, persisted setting, server video
+configuration, or hostname field can change this endpoint. The built-in page
+never falls back to plaintext WS or to the externally hosted viewer after a
+connection failure.
+
+The hostname must resolve to the Android device on the trusted private LAN, and
+its TLS certificate must be trusted and valid for this hostname. The viewer does
+not install certificates or weaken browser security. Do not bypass certificate
+warnings. The same-origin WSS path does not need the external viewer's Chrome 147
+Local Network Access mixed-content exemption. WebCodecs video support and actual
+H.264/H.265 decoding remain device-dependent; a Tesla browser or other in-car
+browser is not guaranteed to support them.
+
+1. Park, enable the browser bridge in DiPlay, and connect both devices to the same
+   trusted private LAN.
+2. Manually open the built-in HTTPS URL shown above. All viewer assets come from
+   the APK on that connection; loading the page does not connect the WebSocket.
+3. Confirm parked use and click **Connect display**. No IP address entry is needed.
+4. Within 30 seconds, tap **Accept** in DiPlay's Android connection prompt. TLS
+   does not replace approval; each connection requires a fresh manual decision.
+5. Enable touch separately if wanted. It stays inactive until Android
+   acknowledges ownership. Up to two contacts match the existing CarPlay HID mapper.
+
+### External GitHub Pages viewer (compatibility)
+
+The externally published viewer remains at
+https://mark4z.github.io/tesla-browser-lab/browser-carplay/, with the exact allowed
+origin **https://mark4z.github.io**. This source change does not publish it.
+External pages continue to require Chrome 147+ with WebCodecs and Local Network
+Access support. Chrome's
 [WebSocket launch notes](https://groups.google.com/a/chromium.org/g/blink-dev/c/O6GMKt44Ups)
-describe the permission-gated exemption for explicit local IP addresses. Browser
-policy, rollouts, decoder availability, and embedded/in-car browser limitations
-can still prevent a connection. The viewer does not disable security checks or
-offer an HTTP/codec-library workaround. HEVC support is device-dependent.
+describe the permission-gated exemption for explicit local IP addresses.
 
-1. Park and enable the bridge in DiPlay on the trusted private Wi-Fi interface.
-2. Connect both devices to the same trusted private LAN.
-3. Enter the displayed private IPv4 address and port (1–65535) in separate fields.
-   The destination is always `ws://<RFC1918 IPv4>:<port>/carplay`; no URL, token,
-   hostname, alternate path, URL parameters, or scan/discovery is accepted.
-4. Confirm parked use and click **Connect display**. Personally decide whether to
-   allow the browser's local-network permission. The page does not grant it.
-5. Within 30 seconds, tap **Accept** in the Android connection prompt. Each
-   connection requires a fresh decision; there is no remembered browser grant.
-6. Video starts only after Android accepts. Enable touch separately if wanted;
-   it stays inactive until Android acknowledges ownership. Up to two contacts
-   match the existing CarPlay HID mapper.
+Enter the private IPv4 address and plaintext WebSocket port shown by DiPlay in
+separate fields, then confirm parked use, click Connect, personally decide on
+Chrome's local-network permission, and Accept on Android. This destination is
+always `ws://<RFC1918 IPv4>:<port>/carplay` with port 1–65535. No hostname, URL,
+credentials, alternate path, parameter, discovery, or scan is accepted. The fixed
+embedded hostname cannot be entered as a private IP or used as an endpoint override.
+
+Do not add `upgrade-insecure-requests` to the external hosting policy: its
+`ws://` link deliberately uses Chrome's Local Network Access exemption. Hosting
+may set a `frame-ancestors 'none'` CSP response header in addition to the page's
+top-level guard. That directive cannot be enforced through a meta element.
+Browser policy, rollouts, and embedded browser limitations can still prevent
+this external connection; there is no HTTP or codec-library workaround.
 
 Click **Play audio here** after approval to move sound to the browser. A successful
 user-gesture WebRTC audio start is required. **Test audio (3 seconds)** can check a short synthetic downlink after approval, even without a CarPlay source; it never mutes Android. Stopping browser audio, hiding the page,
 or disconnecting returns playback to Android.
 
-The LAN WebSocket is **unencrypted**, including video, audio signaling, and touch
-controls. Audio media uses WebRTC DTLS-SRTP encryption, but its signaling still
+The external viewer’s `ws://` LAN WebSocket is **unencrypted**, including video,
+audio signaling, and touch controls. The built-in viewer’s `wss://` link protects
+those messages with TLS. Audio media uses WebRTC DTLS-SRTP encryption, but its signaling still
 depends on the trusted LAN and Android approval. Use only a trusted network. Do not expose the bridge to the internet. The viewer has no
 pairing credentials, persistent approvals, or raw network-data logging. HTTPS
-secures page delivery, not the local transport.
+secures page delivery; only WSS also protects the WebSocket transport.
 
 Hide/leave the page, lock the screen, uncheck parked use, or click Disconnect to
 close the session. Touch is released on pointer cancel/lost capture, focus loss,
@@ -55,11 +83,11 @@ not a vehicle-speed sensor.
 ## Connection diagnostics and LAN checks
 
 The visible **Connection diagnostics** panel shows page scheme, secure-context
-status, and the actual connection target’s `ws://` transport separately. HTTPS
-protects this page’s delivery; it does not encrypt video, audio signaling, or
-controls on the plaintext LAN WebSocket. Audio media is separately protected by
-WebRTC DTLS-SRTP. These labels describe transport, not a browser
-permission verdict or a promise that a connection will work.
+status, and the actual connection target's `ws://` or `wss://` transport separately.
+WSS encrypts the WebSocket link with TLS. HTTPS delivery alone does not encrypt
+the external viewer's plaintext WS video, audio signaling, or controls. Audio
+media is separately protected by WebRTC DTLS-SRTP. These labels describe transport,
+not a browser permission verdict or a promise that a connection will work.
 
 Every valid, user-initiated Connect starts a fresh in-memory timeline:
 
@@ -80,7 +108,7 @@ console logs, persistence, or diagnostic uploads. A close code identifies an
 observation, not a root cause: for example, **1006** means an abnormal closure with
 no normal close frame, not proof of a specific permission, origin, or LAN failure.
 
-To check the route independently, while parked manually navigate to the HTTP
+For the external viewer, to check the route independently, while parked manually navigate to the HTTP
 health URL shown by the diagnostic APK, for example
 `http://192.168.1.20:8765/health`. A successful response identifying
 `service=diplay-browser`, `protocol=2`, and `build=connection-diag-v1` shows that
@@ -291,7 +319,7 @@ For parked manual validation:
 A bounded read-only snapshot can be retrieved in the console with:
 
 ```js
-(await import('./viewer.mjs?v=webrtc-audio-v1')).getAudioDiagnostics()
+(await import('./viewer.mjs?v=embedded-https-v1')).getAudioDiagnostics()
 ```
 
 It includes packet count, jitter in milliseconds, concealed sample count, and
@@ -313,7 +341,9 @@ node --check site/browser-carplay/audio.mjs
 node --check site/browser-carplay/audio-protocol.mjs
 ```
 
-The dependency-free tests exercise strict endpoint validation, framing, codec
+The dependency-free tests exercise exact-origin WSS selection, forbidden endpoint
+overrides, external viewer compatibility, packaged local-asset dependency closure,
+strict endpoint validation, framing, codec
 configuration, letterbox geometry, stable contacts, approval/version gating,
 rejection/expiry, stale touch acknowledgments, timeouts, codec negotiation races,
 backpressure, recovery, and explicit reconnect. Diagnostic tests cover exact
@@ -323,6 +353,11 @@ bounded retention, new-attempt reset, and absence of automatic HTTP health probe
 Audio tests cover readiness ordering, Opus stereo negotiation, local ICE/size/count
 bounds, legacy fail-closed behavior, delayed promises, repeated/cancelled gestures,
 RTP liveness, explicit test tone signaling, privacy-safe stats, and native fallback.
-They use synthetic bytes and identifiers only. Real HTTPS-to-LAN browser permission,
+Both embedded TLS and external LAN UI flows exercise approval, touch ownership,
+audio, repeated Connect, hide/return, cancellation, and explicit reconnect. The
+Gradle source-contract checks do not replace building and inspecting a real APK.
+Tests use synthetic bytes and identifiers only. Real TLS certificate/hostname
+validation, DNS routing, HTTPS-to-LAN browser permission,
 hardware AVC/HEVC decoding, physical two-finger gestures, background suspension,
 and CarPlay hardware integration still require a parked-device test.
+

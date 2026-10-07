@@ -117,6 +117,7 @@ class LocalIdentityImportUiTest {
         assertExistingPair(existing)
         assertNull(shadowOf(activity).nextStartedActivityForResult)
         latestDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
         val second = shadowOf(activity).nextStartedActivityForResult
         assertEquals(activity.getString(R.string.identity_import_choose_certificate), second.intent.getStringExtra(Intent.EXTRA_TITLE))
         receive(Activity.RESULT_CANCELED, null, privateKey = false)
@@ -138,9 +139,11 @@ class LocalIdentityImportUiTest {
         assertNull(attempt())
         assertNull(shadowOf(activity).nextStartedActivityForResult)
         latestDialog().getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
         assertEquals(0, stops)
         call("requestIdentityImport")
         latestDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
         assertEquals(1, stops)
         assertNull(shadowOf(activity).nextStartedActivityForResult)
         assertTrue(texts().contains(activity.getString(R.string.identity_import_disconnected)))
@@ -231,6 +234,7 @@ class LocalIdentityImportUiTest {
         val progress = latestDialog()
         val started = System.nanoTime()
         progress.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
         assertTrue("cancel must not wait for provider I/O", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 1000)
         assertNull(attempt())
         assertTrue(input.closed.await(3, TimeUnit.SECONDS))
@@ -265,6 +269,9 @@ class LocalIdentityImportUiTest {
     private fun beginKeyPicker() {
         call("requestIdentityImport")
         latestDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        // AlertDialog queues its listener and dismissal on the main Looper.
+        // Run those callbacks before inspecting the import state or picker intent.
+        shadowOf(Looper.getMainLooper()).idle()
         assertNotNull(attempt())
         assertFalse(button(R.string.identity_import_action).isEnabled)
     }
@@ -338,3 +345,4 @@ class LocalIdentityImportUiTest {
         }
     }
 }
+

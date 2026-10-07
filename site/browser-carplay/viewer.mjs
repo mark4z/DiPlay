@@ -1,7 +1,7 @@
-import { Contacts, fitRect, mapPointer } from './core.mjs?v=browser-av-v3';
-import { BrowserSession } from './session.mjs?v=webrtc-audio-v1';
+import { Contacts, EMBEDDED_VIEWER_ORIGIN, EMBEDDED_VIEWER_ENDPOINT, fitRect, mapPointer } from './core.mjs?v=embedded-https-v1';
+import { BrowserSession } from './session.mjs?v=embedded-https-v1';
 import { BrowserAudioPlayer } from './audio.mjs?v=webrtc-audio-v1';
-import { milestoneText, transportCaption } from './diagnostics.mjs?v=connection-diag-v1';
+import { milestoneText, transportCaption } from './diagnostics.mjs?v=embedded-https-v1';
 
 const byId = id => document.getElementById(id);
 const form = byId('connection');
@@ -34,7 +34,22 @@ let live = false;
 let audioState = { enabled: false, ready: false, pending: false };
 let audioPlayer = null;
 
+// The browser's actual origin is the only selector. URL parameters, fragments,
+// persisted input and server-provided config can never override the destination.
+const embeddedViewer = location.protocol === 'https:' && location.origin === EMBEDDED_VIEWER_ORIGIN;
 byId('origin').textContent = location.protocol === 'https:' ? location.origin : 'an HTTPS website origin';
+byId('manual-endpoint').hidden = embeddedViewer;
+byId('local-endpoint').hidden = !embeddedViewer;
+ip.required = port.required = !embeddedViewer;
+if (embeddedViewer) {
+  ip.value = port.value = '';
+  byId('local-endpoint-value').textContent = EMBEDDED_VIEWER_ENDPOINT;
+  byId('connection-instructions').textContent = 'This viewer is served by DiPlay on your Android device. Confirm parked use, click Connect, then tap Accept in DiPlay on Android. No IP address entry is needed.';
+  byId('transport-warning').textContent = 'HTTPS and WSS protect page delivery, video, audio signaling, and touch controls with TLS. WebRTC audio media uses DTLS-SRTP. Keep both devices on your trusted private LAN. Android approval is still required. Do not bypass certificate warnings.';
+  byId('browser-requirements').textContent = 'The built-in HTTPS viewer needs WebCodecs video decoding and a valid TLS connection. No Chrome 147 Local Network Access exemption is needed for the same-origin WSS link. In-car browser and H.265 support still depend on the browser and device. Install the latest DiPlay APK and reload this viewer together; both must support Android approval (protocol v2).';
+  byId('connection-troubleshooting').textContent = 'If a connection is blocked, check that DiPlay is enabled, both devices share a trusted private LAN, and the built-in HTTPS page loads with a valid certificate. Do not disable browser security, ignore certificate warnings, or expose the bridge to the internet.';
+  byId('lan-diagnostics').hidden = true;
+}
 // Restored form state must never count as a fresh safety/control choice.
 parked.checked = touch.checked = false;
 
@@ -45,7 +60,7 @@ function compatibilityError() {
   // LNA has no reliable synchronous feature probe. Known old Chromium/WebView
   // builds are blocked here; the browser enforces its actual permission policy.
   const chromium = /(?:Chrome|Chromium)\/(\d+)/.exec(navigator.userAgent);
-  if (!chromium || Number(chromium[1]) < 147 || /; wv\)/.test(navigator.userAgent)) return 'Use Chrome 147 or later with WebCodecs and Local Network Access. This browser is unsupported.';
+  if (!embeddedViewer && (!chromium || Number(chromium[1]) < 147 || /; wv\)/.test(navigator.userAgent))) return 'Use Chrome 147 or later with WebCodecs and Local Network Access. This browser is unsupported.';
   return null;
 }
 
@@ -85,7 +100,7 @@ function updateControls() {
   const active = !session.closed;
   connect.disabled = Boolean(blocked) || active || !parked.checked;
   disconnect.disabled = !active;
-  ip.disabled = port.disabled = active;
+  ip.disabled = port.disabled = embeddedViewer || active;
   audioButton.disabled = !session.authenticated || !active || !parked.checked;
   audioTestButton.disabled = audioButton.disabled || audioState.pending || audioState.enabled;
   audioButton.textContent = audioState.pending ? 'Cancel audio start'
@@ -246,7 +261,8 @@ form.addEventListener('submit', event => {
   if (blocked || !parked.checked || !session.closed || document.visibilityState !== 'visible') return;
   try {
     touch.checked = false;
-    session.connect(ip.value, port.value);
+    if (embeddedViewer) session.connect(undefined, undefined, location.origin);
+    else session.connect(ip.value, port.value);
   } catch (error) {
     status.textContent = error.message;
     indicator.dataset.state = 'error';
@@ -269,6 +285,8 @@ window.addEventListener('pageshow', event => { if (event.persisted) leavePage();
 if (window.ResizeObserver) new ResizeObserver(releaseContacts).observe(viewport);
 else window.addEventListener('resize', releaseContacts);
 
-status.textContent = blocked || 'Ready. Confirm you are parked, then enter the bridge IP and port to request Android approval.';
+status.textContent = blocked || (embeddedViewer
+  ? 'Ready. Confirm you are parked, then click Connect to request Android approval over TLS.'
+  : 'Ready. Confirm you are parked, then enter the bridge IP and port to request Android approval.');
 indicator.dataset.state = blocked ? 'error' : 'closed';
 updateControls();

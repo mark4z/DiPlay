@@ -4,7 +4,7 @@ import java.util.ArrayDeque
 
 /** Fixed vocabulary only: diagnostics never retain request headers, addresses or payloads. */
 enum class BrowserConnectionStage {
-    TCP_ACCEPTED, HTTP_PARSED, HTTP_REJECTED, HEALTH_SERVED,
+    TCP_ACCEPTED, TLS_HANDSHAKE_STARTED, TLS_READY, HTTP_PARSED, HTTP_REJECTED, HEALTH_SERVED, ASSET_SERVED,
     WEBSOCKET_ACCEPTED, WEBSOCKET_REJECTED, APPROVAL_REQUEST_RECEIVED,
     PROMPT_PENDING, PROMPT_SHOWN, PROMPT_UNAVAILABLE, APPROVED, CLOSED, DEADLINE,
 }
@@ -70,3 +70,4 @@ internal class BrowserConnectionDiagnostics(private val capacity: Int = 128) {
         }
     }
 }
+

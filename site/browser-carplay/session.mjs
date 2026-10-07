@@ -1,6 +1,6 @@
 import { AUDIO_TRANSPORT, positiveId, validAudioSdp, validAudioCandidate } from './audio-protocol.mjs?v=webrtc-audio-v1';
-import { MAX_DECODE_QUEUE, parseConfig, parseEndpoint, parseVideoPacket } from './core.mjs?v=browser-av-v3';
-import { ConnectionDiagnostics } from './diagnostics.mjs?v=connection-diag-v1';
+import { MAX_DECODE_QUEUE, parseConfig, parseEndpoint, parseVideoPacket } from './core.mjs?v=embedded-https-v1';
+import { ConnectionDiagnostics } from './diagnostics.mjs?v=embedded-https-v1';
 
 export const PROTOCOL_VERSION = 2;
 const UPGRADE_ADVICE = 'Install the latest DiPlay APK and reload the updated browser viewer; both must support Android approval (protocol v2).';
@@ -45,9 +45,10 @@ export class BrowserSession {
     this.backpressured = false;
   }
 
-  connect(ip, port) {
+  connect(ip, port, pageOrigin = null) {
     if (!this.closed) throw new Error('Disconnect the current session first.');
-    const endpoint = parseEndpoint(ip, port);
+    const endpoint = parseEndpoint(ip, port, pageOrigin);
+    const tls = endpoint.startsWith('wss:');
     this.closed = false;
     this.authenticated = false;
     this.approvalPending = false;
@@ -56,20 +57,26 @@ export class BrowserSession {
     this.consecutiveRecoveries = 0;
     // parseEndpoint constructs the exact transport used below; retain its scheme
     // only, never the private address or a full endpoint in diagnostics.
-    this.diagnostics.start(endpoint.startsWith('ws:') ? 'ws:' : null);
-    this.reportState('connecting', 'Connecting. Allow local-network access only if you trust this network.');
+    this.diagnostics.start(tls ? 'wss:' : 'ws:');
+    this.reportState('connecting', tls
+      ? 'Connecting securely to this DiPlay device. Android approval is still required.'
+      : 'Connecting. Allow local-network access only if you trust this network.');
     let socket;
     try {
       socket = new this.WebSocket(endpoint);
     } catch {
-      this.close('The browser blocked this connection. Use HTTPS and Chrome 147+ with local-network permission.', true);
+      this.close(tls
+        ? 'The browser blocked the TLS connection. Check DiPlay and this trusted LAN; do not bypass certificate warnings.'
+        : 'The browser blocked this connection. Use HTTPS and Chrome 147+ with local-network permission.', true);
       return;
     }
     this.socket = socket;
     socket.binaryType = 'arraybuffer';
     const current = () => !this.closed && this.socket === socket;
     // This includes time for the browser's user-mediated LAN permission prompt.
-    this.armTimeout(60000, 'Connection timed out. Check local-network permission and the bridge IP and port.');
+    this.armTimeout(60000, tls
+      ? 'Connection timed out. Check DiPlay, this trusted LAN, and that the embedded HTTPS page still loads.'
+      : 'Connection timed out. Check local-network permission and the bridge IP and port.');
     socket.onopen = () => {
       if (!current()) return;
       socket.onopen = null;
@@ -92,7 +99,9 @@ export class BrowserSession {
       // A CloseEvent normally follows error and carries the useful numeric code.
       // Bound the wait for implementations that never deliver that event.
       if (current()) this.armTimeout(1000,
-        `Connection failed (${this.phaseLabel()}; no close code). Check the LAN permission, IP and port, and allowed website origin in DiPlay.`);
+        `Connection failed (${this.phaseLabel()}; no close code). ${tls
+          ? 'Check DiPlay and this trusted LAN. Do not bypass certificate warnings.'
+          : 'Check the LAN permission, IP and port, and allowed website origin in DiPlay.'}`);
     };
     socket.onclose = event => {
       if (!current()) return;

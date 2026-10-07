@@ -18,7 +18,7 @@ ol { margin: 0; padding-left: 21px; }
 li { padding-left: 4px; margin-bottom: 11px; }
 output { color: #d2e5ff; overflow-wrap: anywhere; font-weight: 650; }
 .warning { color: #e8cba0; font-size: 13px; }
-form > label:not(.check) { display: block; margin-bottom: 6px; font-size: 14px; font-weight: 650; }
+form label:not(.check) { display: block; margin-bottom: 6px; font-size: 14px; font-weight: 650; }
 input[type="text"] { display: block; width: 100%; min-height: 46px; border: 1px solid #49607d; border-radius: 9px; padding: 10px 12px; background: #0b1420; color: #edf3fc; font: inherit; font-size: 15px; }
 small { display: block; color: #a6b7cd; font-size: 12px; margin: 5px 0 16px; }
 .check { display: flex; align-items: center; gap: 9px; font-size: 14px; cursor: pointer; min-height: 44px; }

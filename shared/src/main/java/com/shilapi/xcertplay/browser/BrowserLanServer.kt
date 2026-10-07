@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * A deliberately small, single-viewer LAN WebSocket endpoint with a generic /health probe.
- * No HTTP files, discovery,
+ * Bundled HTTP files are served only by the fixed-origin TLS variant. No discovery,
  * URL credentials, TLS fallback, compression, binary input or fragmented messages.
  *
  * Each connection requires an explicit foreground Android approval and the exact trusted HTTPS
@@ -49,6 +49,8 @@ class BrowserLanServer(
     private val onAuthenticated: () -> Unit,
     private val onText: (String) -> Unit,
     private val onDisconnected: () -> Unit,
+    private val secureIdentity: BrowserTlsIdentity? = null,
+    private val viewerAssets: BrowserViewerAssets? = null,
 ) : AutoCloseable {
     private val lock = Any()
     private var listener: ServerSocket? = null
@@ -56,7 +58,7 @@ class BrowserLanServer(
     @Volatile private var owner: BrowserLanConnection? = null
     private var watchdog: java.util.concurrent.ScheduledExecutorService? = null
     private val preflights = mutableSetOf<BrowserLanConnection>()
-    private val attempts = BrowserLanRateLimit(8, 10_000)
+    private val attempts = BrowserLanRateLimit(if (secureIdentity == null) 8 else 64, 10_000)
     private val diagnostics = BrowserConnectionDiagnostics()
 
     /** Local-only snapshots; /health never exposes these records. */
@@ -64,20 +66,29 @@ class BrowserLanServer(
     fun diagnosticsReport(): String = diagnostics.report()
 
     init {
-        require(BrowserLanProtocol.isPrivateIpv4(bindAddress)) { "A private LAN IPv4 address is required" }
-        require(allowedOrigin == "https://mark4z.github.io") { "The trusted viewer origin is required" }
+        if (secureIdentity == null) {
+            require(viewerAssets == null) { "Assets require TLS" }
+            require(BrowserLanProtocol.isPrivateIpv4(bindAddress)) { "A private LAN IPv4 address is required" }
+            require(allowedOrigin == "https://mark4z.github.io") { "The trusted viewer origin is required" }
+        } else {
+            require(bindAddress.hostAddress == BrowserViewerAssets.ADDRESS) { "The exact local VPN address is required" }
+            require(allowedOrigin == BrowserViewerAssets.ORIGIN && viewerAssets != null) { "The bundled HTTPS origin is required" }
+            secureIdentity.checkValidity(BrowserViewerAssets.HOSTNAME)
+        }
     }
 
-    /** Binds only an assigned, up, non-loopback RFC1918 IPv4 interface. */
+    /** Plain LAN requires an UP RFC1918 interface. TLS pins the retained dual-TUN address. */
     fun start(): Int = synchronized(lock) {
         check(!closed) { "Server is closed" }
         listener?.let { return@synchronized it.localPort }
         val network = NetworkInterface.getByInetAddress(bindAddress)
-        require(network != null && network.isUp && !network.isLoopback) { "The selected LAN interface is unavailable" }
+        require(network != null && (secureIdentity != null || network.isUp) && !network.isLoopback) { "The selected LAN interface is unavailable" }
+        // Own the raw TCP listener/socket independently from TLS. Cancellation must
+        // interrupt a blocked TLS writer even if its provider drains close_notify.
         val server = ServerSocket()
         try {
             server.reuseAddress = false
-            server.bind(InetSocketAddress(bindAddress, 0), 2)
+            server.bind(InetSocketAddress(bindAddress, if (secureIdentity == null) 0 else BrowserViewerAssets.PORT), 16)
             listener = server
             watchdog = Executors.newSingleThreadScheduledExecutor { task ->
                 Thread(task, "CarPlay-LAN-deadlines").apply { isDaemon = true }
@@ -144,20 +155,21 @@ class BrowserLanServer(
     private fun acceptLoop(server: ServerSocket) {
         while (!server.isClosed) {
             val socket = try { server.accept() } catch (_: IOException) { return }
-            acceptConnection(socket, "${bindAddress.hostAddress}:${server.localPort}")
+            acceptConnection(socket, if (secureIdentity == null) "${bindAddress.hostAddress}:${server.localPort}" else BrowserViewerAssets.AUTHORITY)
         }
     }
 
     /** Internal socket seam for loopback JVM tests; the public listener still enforces RFC1918. */
     internal fun acceptConnection(socket: Socket, expectedHost: String, privatePeer: Boolean =
-        BrowserLanProtocol.isPrivateIpv4(socket.inetAddress)) {
+        BrowserLanProtocol.isPrivateIpv4(socket.inetAddress) ||
+            (secureIdentity != null && socket.inetAddress.hostAddress in setOf(BrowserViewerAssets.ADDRESS, BrowserViewerAssets.COMPAT_ADDRESS))) {
         synchronized(lock) {
             val attempt = diagnostics.begin()
             val rejection = when {
                 closed -> BrowserConnectionReason.SERVER_STOPPED
                 !privatePeer -> BrowserConnectionReason.NON_PRIVATE_PEER
                 !attempts.allow() -> BrowserConnectionReason.RATE_LIMIT
-                preflights.size >= 4 -> BrowserConnectionReason.PREFLIGHT_LIMIT
+                preflights.size >= (if (secureIdentity == null) 4 else 16) -> BrowserConnectionReason.PREFLIGHT_LIMIT
                 else -> null
             }
             if (rejection != null) {
@@ -175,6 +187,8 @@ class BrowserLanServer(
                     if (owner === finished) owner = null
                 } },
                 diagnostic = attempt,
+                viewerAssets = viewerAssets,
+                secureIdentity = secureIdentity,
                 claimViewer = { candidate -> synchronized(lock) {
                     if (closed || owner != null || !preflights.remove(candidate)) false
                     else { owner = candidate; true }
@@ -240,6 +254,8 @@ internal class BrowserLanConnection(
     private val onFinished: (BrowserLanConnection) -> Unit,
     private val diagnostic: BrowserConnectionDiagnostics.Attempt?,
     private val claimViewer: (BrowserLanConnection) -> Boolean,
+    private val viewerAssets: BrowserViewerAssets? = null,
+    private val secureIdentity: BrowserTlsIdentity? = null,
 ) {
     // Keep the original positional and trailing-lambda constructor used by JVM seams.
     constructor(socket: Socket, expectedHost: String, origin: String,
@@ -249,6 +265,7 @@ internal class BrowserLanConnection(
     ) : this(socket, expectedHost, origin, onApprovalRequested, onApprovalFinished,
         onAuthenticated, onText, onDisconnected, onFinished, null, { true })
 
+    @Volatile private var tlsSocket: javax.net.ssl.SSLSocket? = null
     private val stopped = AtomicBoolean(false)
     private val approvalLock = Any()
     private val outbound = BrowserLanQueue()
@@ -291,7 +308,10 @@ internal class BrowserLanConnection(
             diagnostic?.record(BrowserConnectionStage.CLOSED, reason)
         }
         outbound.close()
+        // Hard-close TCP first. TLS close_notify must never hold the raw descriptor
+        // or the single watchdog thread hostage behind an outstanding TLS write.
         runCatching { socket.close() }
+        runCatching { tlsSocket?.close() }
     }
 
     fun checkDeadline(now: Long = monotonicMillis()) {
@@ -321,18 +341,44 @@ internal class BrowserLanConnection(
             socket.tcpNoDelay = true
             socket.soTimeout = 10_000 // Watchdog also enforces absolute slowloris/write deadlines.
             socket.sendBufferSize = 64 * 1024
-            val input = BufferedInputStream(socket.getInputStream(), 8192)
-            val output = socket.getOutputStream()
+            val transportSocket = if (viewerAssets != null) {
+                val tls = secureIdentity?.wrapServerSocket(socket) ?: throw IOException("TLS required")
+                tlsSocket = tls
+                if (stopped.get()) { runCatching { tls.close() }; return }
+                tls.soTimeout = 10_000
+                val parameters = tls.sslParameters
+                parameters.sniMatchers = listOf(javax.net.ssl.SNIHostName.createSNIMatcher("(?i)tesla\\.mark4z\\.asia"))
+                tls.sslParameters = parameters
+                diagnostic?.record(BrowserConnectionStage.TLS_HANDSHAKE_STARTED)
+                tls.startHandshake()
+                val names = (tls.session as? javax.net.ssl.ExtendedSSLSession)?.requestedServerNames
+                if (names == null || names.size != 1 ||
+                    (names.single() as? javax.net.ssl.SNIHostName)?.asciiName?.lowercase(Locale.ROOT) != BrowserViewerAssets.HOSTNAME) {
+                    throw IOException("Expected TLS server name required")
+                }
+                diagnostic?.record(BrowserConnectionStage.TLS_READY)
+                tls
+            } else socket
+            val input = BufferedInputStream(transportSocket.getInputStream(), 8192)
+            val output = transportSocket.getOutputStream()
             val requestHeaders = BrowserLanProtocol.readHttpRequest(input)
             diagnostic?.record(BrowserConnectionStage.HTTP_PARSED)
             websocketRequested = requestHeaders.path == "/carplay"
-            val request = BrowserLanProtocol.classifyRequest(requestHeaders, expectedHost, origin)
+            val request = BrowserLanProtocol.classifyRequest(requestHeaders, expectedHost, origin, viewerAssets)
             if (request is BrowserLanProtocol.HttpRequestKind.Health) {
                 writingSince = monotonicMillis()
                 output.write(BrowserLanProtocol.healthResponse(request.headOnly))
                 output.flush()
                 writingSince = 0
                 diagnostic?.record(BrowserConnectionStage.HEALTH_SERVED)
+                return
+            }
+            if (request is BrowserLanProtocol.HttpRequestKind.Asset) {
+                writingSince = monotonicMillis()
+                output.write(BrowserViewerAssets.response(request.resource, request.headOnly))
+                output.flush()
+                writingSince = 0
+                diagnostic?.record(BrowserConnectionStage.ASSET_SERVED)
                 return
             }
             val accept = (request as BrowserLanProtocol.HttpRequestKind.Upgrade).accept
@@ -378,7 +424,7 @@ internal class BrowserLanConnection(
                 diagnostic?.record(BrowserConnectionStage.APPROVED)
             }
             lastRead = monotonicMillis()
-            socket.soTimeout = 30_000
+            transportSocket.soTimeout = 30_000
             approval?.let { onApprovalFinished(it.id) }
             approval = null
             if (stopped.get()) return
@@ -432,7 +478,7 @@ internal class BrowserLanConnection(
 
     /** Only the reader commits a UI decision, so auth/text/disconnect callbacks remain serial. */
     private fun awaitApproval(input: BufferedInputStream, request: BrowserApprovalRequest): Boolean {
-        socket.soTimeout = 100
+        (tlsSocket ?: socket).soTimeout = 100
         while (!stopped.get()) {
             if (monotonicMillis() - approvalStartedAt >= 30_000) {
                 diagnostic?.record(BrowserConnectionStage.DEADLINE, BrowserConnectionReason.APPROVAL_DEADLINE)
@@ -450,7 +496,7 @@ internal class BrowserLanConnection(
             // a partial frame is never reinterpreted as a new frame.
             val first = try { input.read() } catch (_: SocketTimeoutException) { continue }
             if (first < 0) return false
-            socket.soTimeout = 1_000
+            (tlsSocket ?: socket).soTimeout = 1_000
             val frame = BrowserLanProtocol.readFrame(SequenceInputStream(ByteArrayInputStream(byteArrayOf(first.toByte())), input))
             if (frame.opcode == 8) {
                 BrowserLanProtocol.validateClose(frame.payload)
@@ -525,6 +571,7 @@ internal object BrowserLanProtocol {
     data class HttpRequest(val method: String, val path: String, val headers: Map<String, String>)
     sealed class HttpRequestKind {
         data class Health(val headOnly: Boolean) : HttpRequestKind()
+        data class Asset(val resource: BrowserViewerAssets.Resource, val headOnly: Boolean) : HttpRequestKind()
         data class Upgrade(val accept: String) : HttpRequestKind()
     }
 
@@ -564,23 +611,26 @@ internal object BrowserLanProtocol {
         return HttpRequest(requestLine.groupValues[1], requestLine.groupValues[2], headers)
     }
 
-    fun classifyRequest(request: HttpRequest, expectedHost: String, origin: String): HttpRequestKind {
+    fun classifyRequest(request: HttpRequest, expectedHost: String, origin: String, assets: BrowserViewerAssets? = null): HttpRequestKind {
         val headers = request.headers
-        if (request.path != "/health" && request.path != "/carplay") invalid(BrowserConnectionReason.INVALID_PATH)
+        val asset = assets?.resource(request.path)
+        if (request.path != "/health" && request.path != "/carplay" && asset == null) invalid(BrowserConnectionReason.INVALID_PATH)
         val health = request.path == "/health"
-        if (request.method != "GET" && !(health && request.method == "HEAD")) invalid(BrowserConnectionReason.INVALID_METHOD)
+        val navigation = health || asset != null
+        if (request.method != "GET" && !(navigation && request.method == "HEAD")) invalid(BrowserConnectionReason.INVALID_METHOD)
         if (headers["host"] != expectedHost) invalid(BrowserConnectionReason.INVALID_HOST)
         // A direct health navigation need not carry Origin; when present it is still pinned.
-        if ((!health || "origin" in headers) && headers["origin"] != origin) invalid(BrowserConnectionReason.INVALID_ORIGIN)
+        if ((!navigation || "origin" in headers) && headers["origin"] != origin) invalid(BrowserConnectionReason.INVALID_ORIGIN)
         if ("transfer-encoding" in headers || (headers["content-length"] != null && headers["content-length"] != "0")) {
             invalid(BrowserConnectionReason.UNSUPPORTED_BODY)
         }
         val connectionUpgrade = headers["connection"]?.split(',')?.any { it.trim().equals("upgrade", ignoreCase = true) } == true
-        if (health) {
+        if (navigation) {
             if ("upgrade" in headers || connectionUpgrade || headers.keys.any { it.startsWith("sec-websocket-") }) {
                 invalid(BrowserConnectionReason.INVALID_UPGRADE)
             }
-            return HttpRequestKind.Health(request.method == "HEAD")
+            return if (asset != null) HttpRequestKind.Asset(asset, request.method == "HEAD")
+                else HttpRequestKind.Health(request.method == "HEAD")
         }
         if (!headers["upgrade"].equals("websocket", ignoreCase = true) || !connectionUpgrade) {
             invalid(BrowserConnectionReason.INVALID_UPGRADE)
@@ -848,3 +898,4 @@ internal class BrowserLanRateLimit(private val maximum: Int, private val interva
 }
 
 private fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
+

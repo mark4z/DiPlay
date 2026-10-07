@@ -1,0 +1,245 @@
+package com.shilapi.xcertplay
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.VpnService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.system.OsConstants
+import com.shilapi.xcertplay.browser.*
+import java.io.Closeable
+import java.net.InetAddress
+import java.net.NetworkInterface
+import java.net.Socket
+
+/** Explicit user-started HTTPS session. The OS must never restore this session or its identity. */
+class BrowserHttpsVpnService : VpnService() {
+    companion object {
+        internal const val START = "com.shilapi.xcertplay.browser.HTTPS_START"
+        internal const val STOP = "com.shilapi.xcertplay.browser.HTTPS_STOP"
+        private const val CHANNEL = "browser-https"
+        private const val NOTIFICATION = 9999
+        private val grant = BrowserSessionGrant<BrowserTlsIdentity>()
+        @Volatile var running = false; private set
+        @Volatile var ready = false; private set
+        @Volatile var recoveryRequired = false; private set
+        @Volatile var status = "Stopped / 已停止"; private set
+        @Volatile var selfCheck = "NOT_RUN"; private set
+        @Volatile var interfaceReport = "NOT_RUN"; private set
+        internal fun armStart(identity: BrowserTlsIdentity): Long = grant.arm(identity)
+        internal fun cancelStart() = grant.cancel()
+        internal fun hasPendingStart(): Boolean = grant.hasPending()
+        fun stop(context: Context) {
+            cancelStart()
+            if (running) context.startService(Intent(context, BrowserHttpsVpnService::class.java).setAction(STOP))
+        }
+        internal fun worker(name: String, action: () -> Unit) {
+            Thread(action, name).apply { isDaemon = true; start() }
+        }
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    private var session: BrowserSession? = null
+    private var destroyed = false
+    private var stopReason = "USER_STOP"
+    private val startupTimeout = Runnable { stopSession("STARTUP_TIMEOUT") }
+    private val slowStop = Runnable {
+        if (session?.isCancelled == true) status = "Cleanup is still pending. Disconnect VPN in Android Settings; force-stop this app if needed. / 清理尚未完成，请断开 VPN，必要时强行停止应用。"
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == STOP) { stopSession("USER_STOP"); return START_NOT_STICKY }
+        val identity = if (intent?.action == START) grant.consume(intent.getLongExtra("grant", 0)) else null
+        if (identity == null || running || recoveryRequired || BrowserOutput.endpoint != null) {
+            if (!running) stopSelf()
+            return START_NOT_STICKY
+        }
+        // A systemExempted foreground service is eligible only as this user-configured VPN.
+        // Do not request unrelated exact-alarm permissions to satisfy the alternate eligibility.
+        try {
+            if (prepare(this) != null) {
+                status = "Stopped / 已停止: VPN_CONSENT_REQUIRED"
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        } catch (_: RuntimeException) {
+            status = "Stopped / 已停止: VPN_CONSENT_UNAVAILABLE"
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        running = true
+        ready = false
+        status = "Starting HTTPS / 正在启动 HTTPS"
+        selfCheck = "PENDING"
+        interfaceReport = "PENDING"
+        val interfaces = BrowserInterfaces(BrowserHttpsPolicy.DUAL)
+        lateinit var current: BrowserSession
+        current = BrowserSession(
+            { action -> worker("browser-https-cleanup") { action.run() } },
+            { worker("browser-https-final-check") {
+                val afterClose = interfaces.snapshot()
+                main.post { finishStopped(current, afterClose) }
+            } })
+        session = current
+        main.postDelayed(startupTimeout, BrowserHttpsPolicy.STARTUP_TIMEOUT_MS)
+        try {
+            enterForeground()
+            worker("browser-https-start") { startSession(current, interfaces, identity) }
+        } catch (_: RuntimeException) {
+            stopSession("FOREGROUND_START_FAILED")
+            current.workerFinished()
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun enterForeground() {
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL, "Embedded HTTPS viewer", NotificationManager.IMPORTANCE_LOW))
+        val stop = PendingIntent.getService(this, 9999,
+            Intent(this, BrowserHttpsVpnService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE)
+        val open = PendingIntent.getActivity(this, 9999,
+            Intent(this, BrowserHttpsActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val notification = Notification.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle("DiPlay embedded HTTPS viewer")
+            .setContentText("Session only · Stop closes both local VPN interfaces")
+            .setContentIntent(open).setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop / 停止", stop).build()
+        if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
+        else startForeground(NOTIFICATION, notification)
+    }
+
+    private fun startSession(current: BrowserSession, interfaces: BrowserInterfaces, identity: BrowserTlsIdentity) {
+        try {
+            if (current.isCancelled) return
+            if (Build.VERSION.SDK_INT >= 37 && checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED)
+                throw StartFailure("LOCAL_NETWORK_PERMISSION_DENIED")
+            if (prepare(this) != null) throw StartFailure("VPN_CONSENT_REQUIRED")
+            identity.checkValidity(BrowserHttpsPolicy.HOSTNAME)
+            rejectConflicts()
+            if (!BrowserHandover.establish(current, BrowserHttpsPolicy.DUAL, { address -> establishInterface(address) }, { stage ->
+                val snapshot = if (stage.startsWith("AFTER_")) interfaces.snapshot().text else null
+                main.post {
+                    if (session === current && !current.isCancelled) {
+                        status = "Starting HTTPS / 正在启动: $stage"
+                        if (snapshot != null) interfaceReport = (if (interfaceReport == "PENDING") "" else "$interfaceReport\n") + "$stage\n$snapshot"
+                    }
+                }
+            })) return
+            if (current.isCancelled) return
+            BrowserOutput.startSecure(applicationContext, identity) {
+                main.post { if (session === current && !current.isCancelled) stopSession("LISTENER_STOPPED") }
+            }
+            // Late start completion after Stop still acquires and closes this exact session's server.
+            // No replacement session may start until this worker AND all closes finish.
+            if (!current.own(Closeable { BrowserOutput.stop() })) return
+            if (current.isCancelled) return
+            val socket = Socket()
+            if (!current.own(socket)) return
+            val check = BrowserHttpsSelfCheck(BrowserOutput.healthResponseForSelfCheck())
+            val timeout = Runnable { current.closeAsync(socket) }
+            main.postDelayed(timeout, BrowserHttpsSelfCheck.TOTAL_TIMEOUT_MS.toLong())
+            val result = try {
+                check.run(socket, { current.isCancelled }, { current.own(it) }, { current.closeAsync(it) })
+            } finally {
+                main.removeCallbacks(timeout)
+                current.closeOwned(socket)
+            }
+            if (current.isCancelled) return
+            if (result != "PASS") throw StartFailure("SELF_CHECK_$result")
+            main.post {
+                if (session === current && !current.isCancelled) {
+                    if (!BrowserOutput.markSecureReady(identity)) { stopSession("LISTENER_STOPPED"); return@post }
+                    main.removeCallbacks(startupTimeout)
+                    selfCheck = "PASS (system trust + SNI + HTTPS hostname verification)"
+                    ready = true
+                    status = "HTTPS ready / HTTPS 已就绪\n${BrowserHttpsPolicy.VIEWER_URL}\nLocal self-check passed; Tesla reachability still needs a browser test. / 本机自检通过，仍需车机测试。"
+                }
+            }
+        } catch (failure: BrowserTlsIdentity.Failure) {
+            fail(current, failure.code)
+        } catch (failure: StartFailure) {
+            fail(current, failure.code)
+        } catch (_: SecurityException) {
+            fail(current, "PERMISSION_DENIED")
+        } catch (_: Exception) {
+            fail(current, "START_OR_BIND_FAILED")
+        } finally { current.workerFinished() }
+    }
+
+    private fun establishInterface(address: String): ParcelFileDescriptor? = Builder()
+        .setSession("DiPlay HTTPS local $address")
+        .addAddress(address, 32).addRoute(address, 32)
+        .addAllowedApplication(packageName)
+        .allowBypass().allowFamily(OsConstants.AF_INET6).establish()
+
+    private fun rejectConflicts() {
+        val candidates = BrowserHttpsPolicy.addresses(BrowserHttpsPolicy.DUAL).map { InetAddress.getByName(it).address }
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        for (network in connectivity.allNetworks) {
+            if (connectivity.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true)
+                throw StartFailure("EXISTING_VPN_STOP_IT_FIRST")
+            connectivity.getLinkProperties(network)?.routes?.forEach { route ->
+                if (candidates.any { BrowserHttpsPolicy.overlaps(it, route.destination.address.address, route.destination.prefixLength) })
+                    throw StartFailure("ADDRESS_ROUTE_CONFLICT")
+            }
+        }
+        NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { iface ->
+            iface.interfaceAddresses.forEach { address ->
+                if (candidates.any { BrowserHttpsPolicy.overlaps(it, address.address.address, address.networkPrefixLength.toInt()) })
+                    throw StartFailure("ADDRESS_INTERFACE_CONFLICT")
+            }
+        }
+    }
+
+    private fun fail(current: BrowserSession, code: String) {
+        main.post { if (session === current && !current.isCancelled) stopSession(code) }
+    }
+
+    private fun stopSession(reason: String) {
+        cancelStart()
+        main.removeCallbacks(startupTimeout)
+        ready = false
+        val current = session
+        if (current == null) { if (!destroyed) stopSelf(); return }
+        if (current.isCancelled) return
+        stopReason = reason
+        status = "Stopping HTTPS; closing all owned resources / 正在停止并关闭全部资源: $reason"
+        if (selfCheck == "PENDING") selfCheck = if (reason.startsWith("SELF_CHECK_")) reason else "CANCELLED"
+        current.cancel()
+        main.postDelayed(slowStop, 2_000)
+    }
+
+    private fun finishStopped(current: BrowserSession, afterClose: BrowserInterfaces.Snapshot) {
+        if (session !== current) return
+        main.removeCallbacks(slowStop)
+        session = null
+        running = false
+        ready = false
+        recoveryRequired = current.didCloseFail() || afterClose.visible || afterClose.failed
+        interfaceReport += "\nAFTER_ALL_OWNED_CLOSES\n${afterClose.text}"
+        status = if (recoveryRequired) "Cleanup could not be confirmed. Disconnect VPN and force-stop this app before retrying. / 清理未确认，请断开 VPN 并强行停止本应用。"
+            else "Stopped / 已停止: $stopReason"
+        if (!destroyed) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+    }
+
+    override fun onRevoke() { main.post { stopSession("SYSTEM_REVOKED") } }
+    override fun onTaskRemoved(rootIntent: Intent?) { stopSession("TASK_REMOVED") }
+    override fun onDestroy() {
+        destroyed = true
+        stopSession("SERVICE_DESTROYED")
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        super.onDestroy()
+    }
+    private class StartFailure(val code: String) : Exception(code)
+}

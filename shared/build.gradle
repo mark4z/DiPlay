@@ -1,6 +1,19 @@
 plugins {
     id 'com.android.library'
 }
+
+// Package the canonical, dependency-free viewer, not a second maintained copy.
+// Sync drops removed assets; only runtime files are shipped, never README/tests.
+def browserViewerAssets = layout.buildDirectory.dir('generated/browserViewerAssets')
+def syncBrowserViewerAssets = tasks.register('syncBrowserViewerAssets', Sync) {
+    from(rootProject.file('site/browser-carplay')) {
+        include 'index.html', '*.css', '*.mjs'
+        exclude 'README*', 'tests/**'
+        into 'browser-carplay'
+    }
+    into browserViewerAssets
+}
+
 android {
     namespace = 'com.shilapi.xcertplay.shared'
     compileSdk = 37
@@ -33,7 +46,13 @@ android {
     }
     // The WebRTC AAR omits its notices; ship the preserved dependency licenses in every APK.
     sourceSets.main.assets.srcDir(rootProject.file('docs/licenses'))
+    sourceSets.main.assets.srcDir(browserViewerAssets)
 }
+
+tasks.named('preBuild').configure {
+    dependsOn syncBrowserViewerAssets
+}
+
 dependencies {
     implementation libs.androidx.app
     implementation libs.bouncycastle

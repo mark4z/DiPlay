@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Contacts, fitRect, mapPointer, MAX_CONTACTS, MAX_VIDEO_PACKET_BYTES, parseConfig, parseEndpoint, parseVideoPacket } from '../core.mjs';
+import { Contacts, EMBEDDED_VIEWER_ORIGIN, EMBEDDED_VIEWER_ENDPOINT, fitRect, mapPointer, MAX_CONTACTS, MAX_VIDEO_PACKET_BYTES, parseConfig, parseEndpoint, parseVideoPacket } from '../core.mjs';
 
 test('constructs only RFC1918 IPv4 destinations with a bounded port and fixed path', () => {
   for (const host of ['10.0.0.1', '172.16.0.1', '172.31.255.254', '192.168.1.20']) {
@@ -16,6 +16,29 @@ test('constructs only RFC1918 IPv4 destinations with a bounded port and fixed pa
   for (const port of ['0', '65536', '08765', '-1', '1.5', '1e3', '+8765', '8765/carplay', '8765?x=1', '8 765', '', null, 8765]) {
     assert.throws(() => parseEndpoint('192.168.1.20', port), String(port));
   }
+});
+
+test('only the exact embedded HTTPS origin selects the fixed WSS destination without input overrides', () => {
+  assert.equal(parseEndpoint(undefined, undefined, EMBEDDED_VIEWER_ORIGIN), 'wss://tesla.mark4z.asia:9999/carplay');
+  assert.equal(EMBEDDED_VIEWER_ENDPOINT, 'wss://tesla.mark4z.asia:9999/carplay');
+  for (const origin of [
+    undefined, null, {}, 'https://mark4z.github.io', 'http://tesla.mark4z.asia:9999',
+    'https://tesla.mark4z.asia', 'https://tesla.mark4z.asia:443', 'https://tesla.mark4z.asia:10000',
+    'https://tesla.mark4z.asia:9999/', 'https://tesla.mark4z.asia:9999/carplay',
+    'https://tesla.mark4z.asia:9999?endpoint=wss://untrusted.invalid', 'https://tesla.mark4z.asia:9999#secret',
+    'https://tesla.mark4z.asia.untrusted.invalid:9999', 'https://tesla.mark4z.asia.:9999',
+    'https://tesla.mark4z.asia:9999@untrusted.invalid', 'https://user@tesla.mark4z.asia:9999',
+    'https://TESLA.mark4z.asia:9999', ' https://tesla.mark4z.asia:9999', 'https://tesla.mark4z.asia:9999\n',
+  ]) assert.throws(() => parseEndpoint(undefined, undefined, origin), String(origin));
+  for (const [ip, port] of [
+    ['', ''], ['192.168.1.20', '8765'], ['tesla.mark4z.asia', '9999'],
+    ['untrusted.invalid', '9999'], [EMBEDDED_VIEWER_ENDPOINT, undefined], [undefined, '9999'],
+    [null, null], [{ endpoint: EMBEDDED_VIEWER_ENDPOINT }, undefined],
+  ]) assert.throws(() => parseEndpoint(ip, port, EMBEDDED_VIEWER_ORIGIN));
+  for (const host of ['tesla.mark4z.asia', 'untrusted.invalid', EMBEDDED_VIEWER_ENDPOINT]) {
+    assert.throws(() => parseEndpoint(host, '9999'), 'external viewer never accepts a hostname or WSS override');
+  }
+  assert.equal(parseEndpoint('192.168.1.20', '8765', 'https://mark4z.github.io'), 'ws://192.168.1.20:8765/carplay');
 });
 
 test('AVC and HEVC configs remain Annex B and dimensions are bounded', () => {

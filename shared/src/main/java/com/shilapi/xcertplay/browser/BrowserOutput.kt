@@ -11,10 +11,15 @@ object BrowserOutput {
     private val lock = Any()
     @Volatile private var server: BrowserLanServer? = null
     @Volatile var endpoint: String? = null; private set
+    private var secureStopped: (() -> Unit)? = null
+    private var activeSecureIdentity: BrowserTlsIdentity? = null
+    private var secureReady = false
+    val secure: Boolean get() = endpoint?.startsWith("wss://") == true
+    val viewerUrl: String? get() = if (secure) BrowserViewerAssets.ORIGIN + "/" else null
     /** Manual, top-level browser navigation only; never fetched from the HTTPS viewer. */
     val healthEndpoint: String? get() = endpoint?.let {
         val address = java.net.URI(it)
-        "http://${address.host}:${address.port}/health"
+        "${if (address.scheme == "wss") "https" else "http"}://${address.host}:${address.port}/health"
     }
 
     fun connectionDiagnosticReport(): String = server?.diagnosticsReport()
@@ -82,7 +87,8 @@ object BrowserOutput {
 
     private fun requestApproval(request: BrowserApprovalRequest, generation: Long) {
         val ui = synchronized(lock) {
-            if (generation != serverGeneration || approvalUi == null) null else {
+            if (generation != serverGeneration || approvalUi == null ||
+                (activeSecureIdentity != null && !secureReady)) null else {
                 pendingApproval = request
                 approvalUi
             }
@@ -105,7 +111,31 @@ object BrowserOutput {
         ui?.finished?.invoke(id)
     }
 
-    fun start(address: InetAddress, origin: String = VIEWER_ORIGIN, context: android.content.Context? = null): String = synchronized(lock) {
+    fun start(address: InetAddress, origin: String = VIEWER_ORIGIN, context: android.content.Context? = null): String =
+        startTransport(address, origin, context)
+
+    /** Caller owns explicit VPN consent and both descriptors for this single in-memory session. */
+    fun startSecure(context: android.content.Context, identity: BrowserTlsIdentity,
+                    onStopped: () -> Unit = {}): String {
+        identity.checkValidity(BrowserViewerAssets.HOSTNAME)
+        val assets = BrowserViewerAssets.load { context.assets.open(it) }
+        return startTransport(InetAddress.getByName(BrowserViewerAssets.ADDRESS), BrowserViewerAssets.ORIGIN,
+            context, identity, assets, onStopped)
+    }
+
+    /** Only the matching session may become available after its normal-trust self-check. */
+    fun markSecureReady(identity: BrowserTlsIdentity): Boolean = synchronized(lock) {
+        if (server == null || activeSecureIdentity !== identity) false else {
+            secureReady = true
+            true
+        }
+    }
+
+    fun healthResponseForSelfCheck(): ByteArray = BrowserLanProtocol.healthResponse(false)
+
+    private fun startTransport(address: InetAddress, origin: String, context: android.content.Context?,
+                               identity: BrowserTlsIdentity? = null, assets: BrowserViewerAssets? = null,
+                               onStopped: (() -> Unit)? = null): String = synchronized(lock) {
         context?.let(BrowserAudioOutput::initialize)
         check(server == null) { "Stop the current browser session first" }
         val generation = ++serverGeneration
@@ -134,18 +164,27 @@ object BrowserOutput {
                 releaseTouches()
                 BrowserAudioOutput.disconnect()
                 viewerConnected = false
-            } })
+            } }, secureIdentity = identity, viewerAssets = assets)
         server = transport
+        secureStopped = onStopped
+        activeSecureIdentity = identity
+        secureReady = false
         try {
             val port = transport.start()
-            endpoint = "ws://${address.hostAddress}:$port/carplay"
+            endpoint = if (identity == null) "ws://${address.hostAddress}:$port/carplay"
+                else "wss://${BrowserViewerAssets.AUTHORITY}/carplay"
             endpoint!!
-        } catch (e: Exception) { server = null; transport.close(); throw e }
+        } catch (e: Exception) { server = null; secureStopped = null; activeSecureIdentity = null; secureReady = false; transport.close(); throw e }
     }
 
     fun stop() {
+        val stoppedCallback: (() -> Unit)?
         val stopped = synchronized(lock) {
             val old = server
+            stoppedCallback = secureStopped
+            secureStopped = null
+            activeSecureIdentity = null
+            secureReady = false
             ++serverGeneration
             ++viewerGeneration
             server = null; endpoint = null
@@ -156,8 +195,11 @@ object BrowserOutput {
             pendingApproval = null
             Triple(old, pending, approvalUi)
         }
-        stopped.second?.let { it.reject(); stopped.third?.finished?.invoke(it.id) }
-        stopped.first?.close()
+        try {
+            stopped.second?.let { it.reject(); stopped.third?.finished?.invoke(it.id) }
+        } finally {
+            try { stopped.first?.close() } finally { stoppedCallback?.invoke() }
+        }
     }
 
     /** Native sink continues unchanged; detached native surfaces do not close this tee. */
@@ -356,3 +398,4 @@ object BrowserOutput {
         }
     }
 }
+

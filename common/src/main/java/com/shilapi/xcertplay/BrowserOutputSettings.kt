@@ -21,6 +21,26 @@ internal object BrowserOutputSettings {
             setPadding(28, 16, 28, 16)
         }
         fun label(value: String) = TextView(context).apply { text = value; body.addView(this) }
+        body.addView(Button(context).apply {
+            text = "Embedded HTTPS viewer / 内嵌 HTTPS 播放页"
+            setOnClickListener {
+                context.startActivity(android.content.Intent(context, BrowserHttpsActivity::class.java)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        })
+        if (BrowserOutput.secure || BrowserHttpsVpnService.running) {
+            label("Embedded HTTPS session / 内嵌 HTTPS 会话\n${BrowserHttpsVpnService.status}\n${com.shilapi.xcertplay.browser.BrowserHttpsPolicy.VIEWER_URL}")
+                .setTextIsSelectable(true)
+            body.addView(Button(context).apply {
+                text = "Connection diagnostics / 连接诊断"
+                setOnClickListener { showDiagnostics(context) }
+            })
+            AlertDialog.Builder(context).setTitle("HTTPS browser output")
+                .setView(ScrollView(context).apply { addView(body) })
+                .setNegativeButton("Stop / 停止") { _, _ -> BrowserHttpsVpnService.stop(context) }
+                .setPositiveButton("Close / 关闭", null).show()
+            return
+        }
         label("Video + two-finger touch only. Default OFF. Use only while parked, on a trusted private Wi-Fi network. The local video/control connection is unencrypted. No internet relay. Each browser connection needs approval on this Android screen. Viewing starts without touch ownership; the browser can enable touch separately after approval. Android settings remain available.\n仅限停车使用；请使用可信局域网。视频和控制不经互联网中转，但局域网连接未加密。")
         val current = BrowserOutput.endpoint
         if (current != null) {
@@ -148,3 +168,4 @@ internal object BrowserOutputSettings {
     }
 
 }
+

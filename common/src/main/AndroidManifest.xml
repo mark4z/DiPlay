@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
@@ -23,6 +24,23 @@
         </intent>
     </queries>
     <application>
+        <activity
+            android:name="com.shilapi.xcertplay.BrowserHttpsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Xcertplay" />
+        <!-- User-configured VPN eligibility is checked with VpnService.prepare before foreground
+             startup. This service does not use the exact-alarm eligibility alternative. -->
+        <service
+            android:name="com.shilapi.xcertplay.BrowserHttpsVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="false"
+            android:foregroundServiceType="systemExempted"
+            tools:ignore="ForegroundServicePermission">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <meta-data android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON" android:value="false" />
+        </service>
         <provider
             android:name="com.shilapi.xcertplay.DiagnosticReportProvider"
             android:authorities="${applicationId}.diagnostic-reports"
@@ -156,3 +174,4 @@
     </application>
 
 </manifest>
+

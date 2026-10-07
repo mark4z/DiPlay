@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BrowserSession } from '../session.mjs';
-import { MAX_DECODE_QUEUE } from '../core.mjs';
+import { EMBEDDED_VIEWER_ORIGIN, MAX_DECODE_QUEUE } from '../core.mjs';
 import { audioSdp, candidate } from './audio-fixtures.mjs';
 
 const CONFIG = { type: 'config', streamId: 1, codec: 'avc1.64001f', width: 1280, height: 720 };
@@ -76,6 +76,51 @@ test('approval deadline stops independently of video availability', () => {
   assert.equal(h.session.authenticated, true);
   assert.equal(h.states.at(-1).state, 'waiting');
   assert.equal(h.decoders.length, 0);
+});
+
+test('embedded WSS session retains Android approval and touch ownership gating', async () => {
+  const h = harness();
+  h.session.connect(undefined, undefined, EMBEDDED_VIEWER_ORIGIN);
+  const socket = h.sockets[0];
+  assert.equal(socket.url, 'wss://tesla.mark4z.asia:9999/carplay');
+  assert.equal(h.diagnostics.at(-1).transport, 'wss:');
+  assert.doesNotMatch(JSON.stringify(h.diagnostics), /tesla|mark4z|9999/);
+  assert.equal(h.session.authenticated, false);
+  assert.equal(h.session.setTouchOwnership(true), false);
+  assert.equal(h.session.setAudioEnabled(true, 1), false);
+  assert.deepEqual(socket.sent, []);
+  socket.open();
+  assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
+  assert.equal([...h.timers.values()][0].delay, 30000);
+  approve(socket);
+  socket.receive(CONFIG);
+  await Promise.resolve();
+  h.decoders[0].emit();
+  h.session.setTouchOwnership(true);
+  assert.equal(h.session.touchOwned, false);
+  socket.receive({ ...socket.sent.at(-1), type: 'touchOwnership' });
+  assert.equal(h.session.touchOwned, true);
+  h.session.close();
+  assert.equal(h.session.touchOwned, false);
+  h.session.connect(undefined, undefined, EMBEDDED_VIEWER_ORIGIN);
+  assert.equal(h.session.authenticated, false);
+  assert.equal(h.session.touchRequested, false);
+  h.sockets[1].open();
+  assert.deepEqual(h.sockets[1].sent, [{ type: 'requestApproval', version: 2 }]);
+  h.sockets[1].receive({ type: 'authenticated', version: 2 });
+  assert.equal(h.session.closed, true, 'TLS does not bypass the pending-approval handshake');
+});
+
+test('embedded connection failure cannot fall back to plaintext or external destinations', () => {
+  const h = harness();
+  h.session.connect(undefined, undefined, EMBEDDED_VIEWER_ORIGIN);
+  h.sockets[0].end(1006);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.session.closed, true);
+  assert.equal(h.diagnostics.at(-1).transport, 'wss:');
+  assert.throws(() => h.session.connect('192.168.1.20', '8765', EMBEDDED_VIEWER_ORIGIN));
+  assert.throws(() => h.session.connect(undefined, undefined, 'https://untrusted.invalid'));
+  assert.equal(h.sockets.length, 1, 'invalid endpoint settings never create a socket');
 });
 
 test('first config is probed, then deltas are dropped until a complete keyframe', async () => {
