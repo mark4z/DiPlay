@@ -258,7 +258,10 @@ class LocalMfiIdentityStore internal constructor(
 
     private object AndroidFileOperations : FileOperations {
         override fun syncDirectory(directory: File) {
-            val descriptor = Os.open(directory.absolutePath, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY, 0)
+            check(directory.isDirectory) { "Local authentication storage is unavailable" }
+            // O_DIRECTORY is not part of Android's public SDK. A read-only directory fd
+            // still supports fsync on the app-private filesystem.
+            val descriptor = Os.open(directory.absolutePath, OsConstants.O_RDONLY, 0)
             try {
                 Os.fsync(descriptor)
             } finally {
