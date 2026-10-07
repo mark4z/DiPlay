@@ -34,9 +34,14 @@ class LocalIdentityImportResourcesTest {
         for ((tag, title) in titles) {
             val context = base.createConfigurationContext(Configuration(base.resources.configuration).apply { setLocale(Locale.forLanguageTag(tag)) })
             assertEquals(tag, title, context.getString(R.string.identity_import_action))
-            assertTrue(context.getString(R.string.identity_import_choose_key).contains("identity.pk8"))
-            assertTrue(context.getString(R.string.identity_import_choose_certificate).contains("certificate.p7b"))
-            assertTrue(context.getString(R.string.identity_import_explanation).contains("16 KiB"))
+            val keyLabel = context.getString(R.string.identity_import_choose_key)
+            val certificateLabel = context.getString(R.string.identity_import_choose_certificate)
+            for (extension in listOf(".pk8", ".b64", ".txt")) assertTrue("$tag key / $extension", keyLabel.contains(extension))
+            for (extension in listOf(".p7b", ".b64", ".txt")) assertTrue("$tag certificate / $extension", certificateLabel.contains(extension))
+            val explanation = context.getString(R.string.identity_import_explanation)
+            for (detail in listOf("identity.pk8", "certificate.p7b", "16 KiB", "32 KiB", ".b64", ".txt")) {
+                assertTrue("$tag explanation / $detail", explanation.contains(detail))
+            }
             assertTrue(context.getString(R.string.setup_error_auth).contains(title))
             for (message in messages) assertFalse("$tag / $message", context.getString(message).isBlank())
         }

@@ -7,6 +7,8 @@ import com.shilapi.xcertplay.orchestration.*
 import com.shilapi.xcertplay.transport.Iap2IdentificationConfig
 import com.shilapi.xcertplay.transport.UsbDeviceId
 import java.io.File
+import java.security.KeyPairGenerator
+import java.security.spec.ECGenParameterSpec
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
@@ -74,8 +76,15 @@ class DiPlayAuthenticationTest {
     @Test fun cancellingProvisioningDoesNotChangeTheSelectedAuthenticationBackend() {
         AirPlayPersistence.saveMfiTarget(context, MfiTarget.USB_CH341)
         DiPlayBootstrap.beginIdentityImport(context).use { session ->
-            // Merely selecting the first (synthetic, invalid) file cannot publish a pair.
-            session.writePrivateKey(byteArrayOf(1, 2, 3).inputStream())
+            // The first file must pass format validation, but cannot publish a pair alone.
+            val key = KeyPairGenerator.getInstance("EC").apply {
+                initialize(ECGenParameterSpec("secp256r1"))
+            }.generateKeyPair().private.encoded
+            try {
+                session.writePrivateKey(key.inputStream())
+            } finally {
+                key.fill(0)
+            }
         }
         assertFalse(DiPlayBootstrap.hasImportedIdentity(context))
         assertFalse(directory.exists())
