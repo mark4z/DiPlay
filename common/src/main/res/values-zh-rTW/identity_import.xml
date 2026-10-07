@@ -4,10 +4,10 @@
     <string name="identity_import_installed">匯入的身分已儲存在此裝置上。</string>
     <string name="identity_import_none">此裝置尚未匯入使用者身分。</string>
     <string name="identity_import_compatibility">通過本機驗證不代表 iPhone 或車輛一定接受此身分。</string>
-    <string name="identity_import_explanation">從此裝置選取 identity.pk8，再選取相符的 certificate.p7b。請僅使用您獲准使用的身分。每個檔案不得為空且不得超過 16 KiB。只有兩個檔案都通過本機驗證後，才會取代現有身分。檔案會儲存在 App 私有儲存空間中，不會上傳。通過本機驗證不代表 iPhone 或車輛一定接受此身分。</string>
-    <string name="identity_import_choose_key">選取 identity.pk8</string>
-    <string name="identity_import_choose_certificate">選取 certificate.p7b</string>
-    <string name="identity_import_certificate_step">第 2 步（共 2 步）：選取相符的 certificate.p7b。私密金鑰僅暫存，現有身分尚未變更。取消將捨棄暫存檔案。</string>
+    <string name="identity_import_explanation">從此裝置選取 identity.pk8，再選取相符的 certificate.p7b。也可分別選取整個檔案的標準 Base64 編碼檔案（.b64 或 .txt），支援空格與換行。原始或解碼後的每個檔案不得為空且不得超過 16 KiB；Base64 文字含空白字元不得超過 32 KiB。請僅使用您獲准使用的身分。只有兩個檔案都通過本機驗證後，才會取代現有身分。檔案會儲存在 App 私有儲存空間中，不會上傳。通過本機驗證不代表 iPhone 或車輛一定接受此身分。</string>
+    <string name="identity_import_choose_key">選取私密金鑰（.pk8 / .b64 / .txt）</string>
+    <string name="identity_import_choose_certificate">選取憑證（.p7b / .b64 / .txt）</string>
+    <string name="identity_import_certificate_step">第 2 步（共 2 步）：選取相符的 certificate.p7b 或其整個檔案的 Base64 編碼檔案（.b64 / .txt）。私密金鑰僅暫存，現有身分尚未變更。取消將捨棄暫存檔案。</string>
     <string name="identity_import_reading_key">正在讀取所選私密金鑰…</string>
     <string name="identity_import_validating">正在檢查身分與憑證…</string>
     <string name="identity_import_busy">請先完成或取消身分匯入，再進行連線。</string>
@@ -16,7 +16,7 @@
     <string name="identity_import_disconnected">已中斷連線。點選「匯入本機身分」開始。</string>
     <string name="identity_import_cancelled">已取消匯入。先前的身分已保留。</string>
     <string name="identity_import_interrupted">匯入已中斷。請重新開始並選取兩個檔案。未安裝不完整的身分。</string>
-    <string name="identity_import_failed">無法匯入這些檔案。請選取相符的未加密 P-256 PKCS#8 私密金鑰與 PKCS#7 憑證，每個檔案不得為空且不得超過 16 KiB。先前的身分已保留。</string>
+    <string name="identity_import_failed">無法匯入這些檔案。請選取相符的未加密 P-256 PKCS#8 私密金鑰與憑證。原始或解碼後的每個檔案不得為空且不得超過 16 KiB；標準 Base64 文字須正確填補且不得超過 32 KiB。先前的身分已保留。</string>
     <string name="identity_import_picker_unavailable">無法開啟系統檔案選取器。先前的身分已保留。</string>
     <string name="identity_import_success">身分已匯入並通過本機檢查。現在可以嘗試連線，仍須在實際裝置上驗證是否接受此身分。</string>
     <string name="identity_import_saved_not_ready">身分已儲存，但無法啟動認證。請重新開啟 DiPlay 後再連線。</string>

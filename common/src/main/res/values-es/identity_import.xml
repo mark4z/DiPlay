@@ -4,10 +4,10 @@
     <string name="identity_import_installed">Identidad importada guardada en este dispositivo.</string>
     <string name="identity_import_none">No hay una identidad importada por el usuario en este dispositivo.</string>
     <string name="identity_import_compatibility">La validación local no garantiza que un iPhone o vehículo acepte la identidad.</string>
-    <string name="identity_import_explanation">Selecciona identity.pk8 y después el certificate.p7b correspondiente de este dispositivo. Usa solo una identidad que tengas autorización para usar. Cada archivo debe contener datos y ocupar como máximo 16 KiB. La identidad actual solo se sustituye cuando ambos archivos superan la validación local. Los archivos se guardan en el almacenamiento privado de la aplicación y no se suben a ningún servicio. La validación local no garantiza que un iPhone o vehículo acepte la identidad.</string>
-    <string name="identity_import_choose_key">Elegir identity.pk8</string>
-    <string name="identity_import_choose_certificate">Elegir certificate.p7b</string>
-    <string name="identity_import_certificate_step">Paso 2 de 2: elige el certificate.p7b correspondiente. La clave privada solo se ha guardado temporalmente; tu identidad actual no ha cambiado. Al cancelar se descartan los archivos temporales.</string>
+    <string name="identity_import_explanation">Selecciona identity.pk8 y después el certificate.p7b correspondiente de este dispositivo. También puedes elegir archivos .b64 o .txt que contengan la codificación Base64 estándar del archivo completo; se aceptan espacios y saltos de línea. Cada archivo original o decodificado debe contener datos y ocupar como máximo 16 KiB; el texto Base64 admite hasta 32 KiB incluidos los espacios. Usa solo una identidad que tengas autorización para usar. La identidad actual solo se sustituye cuando ambos archivos superan la validación local. Los archivos se guardan en el almacenamiento privado de la aplicación y no se suben a ningún servicio. La validación local no garantiza que un iPhone o vehículo acepte la identidad.</string>
+    <string name="identity_import_choose_key">Elegir clave (.pk8 / .b64 / .txt)</string>
+    <string name="identity_import_choose_certificate">Elegir certificado (.p7b / .b64 / .txt)</string>
+    <string name="identity_import_certificate_step">Paso 2 de 2: elige el certificate.p7b correspondiente o su archivo completo codificado en Base64 (.b64 / .txt). La clave privada solo se ha guardado temporalmente; tu identidad actual no ha cambiado. Al cancelar se descartan los archivos temporales.</string>
     <string name="identity_import_reading_key">Leyendo la clave privada seleccionada…</string>
     <string name="identity_import_validating">Comprobando la identidad y el certificado…</string>
     <string name="identity_import_busy">Termina o cancela la importación de identidad antes de conectarte.</string>
@@ -16,7 +16,7 @@
     <string name="identity_import_disconnected">Desconectado. Pulsa Importar identidad local para empezar.</string>
     <string name="identity_import_cancelled">Importación cancelada. Se ha conservado la identidad anterior.</string>
     <string name="identity_import_interrupted">Importación interrumpida. Empieza de nuevo y selecciona ambos archivos. No se ha instalado una identidad incompleta.</string>
-    <string name="identity_import_failed">No se pudieron importar los archivos. Elige una clave P-256 PKCS#8 sin cifrar y su certificado PKCS#7 correspondiente, ambos con datos y de como máximo 16 KiB cada uno. Se ha conservado la identidad anterior.</string>
+    <string name="identity_import_failed">No se pudieron importar los archivos. Elige una clave P-256 PKCS#8 sin cifrar y su certificado correspondiente. Cada archivo original o decodificado debe contener datos y ocupar como máximo 16 KiB; el texto Base64 estándar debe tener un relleno válido y ocupar como máximo 32 KiB. Se ha conservado la identidad anterior.</string>
     <string name="identity_import_picker_unavailable">No se pudo abrir el selector de archivos del sistema. Se ha conservado la identidad anterior.</string>
     <string name="identity_import_success">Identidad importada y comprobaciones locales superadas. Ya puedes intentar conectarte. Aún hay que probar su aceptación en un dispositivo real.</string>
     <string name="identity_import_saved_not_ready">Identidad guardada, pero no se pudo iniciar la autenticación. Vuelve a abrir DiPlay antes de conectarte.</string>

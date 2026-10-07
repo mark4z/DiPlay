@@ -82,32 +82,20 @@ class LocalMfiIdentityStore internal constructor(
         private fun write(name: String, input: InputStream) {
             checkOpen()
             validated = false
-            val buffer = ByteArray(1024)
+            val target = File(staging, name)
+            // A failed replacement read must not leave an earlier staged file validatable.
+            remove(target)
+            val normalized = LocalMfiImportEncoding.read(input, name == KEY, imported, ::checkOpen)
             try {
-                FileOutputStream(File(staging, name)).use { output ->
-                    var size = 0
-                    while (true) {
-                        checkOpen()
-                        var count = input.read(buffer)
-                        if (count < 0) break
-                        if (count == 0) {
-                            val next = input.read()
-                            if (next < 0) break
-                            buffer[0] = next.toByte()
-                            count = 1
-                        }
-                        checkOpen()
-                        require(size + count <= MAX_FILE_BYTES) { "Local identity file is too large" }
-                        output.write(buffer, 0, count)
-                        size += count
-                    }
-                    require(size > 0) { "Local identity file is empty" }
+                checkOpen()
+                FileOutputStream(target).use { output ->
+                    output.write(normalized)
                     checkOpen()
                     output.fd.sync()
                 }
-                makePrivate(File(staging, name), directory = false)
+                makePrivate(target, directory = false)
             } finally {
-                buffer.fill(0)
+                normalized.fill(0)
             }
         }
 
@@ -273,7 +261,6 @@ class LocalMfiIdentityStore internal constructor(
     companion object {
         private const val KEY = "identity.pk8"
         private const val CERTIFICATE = "certificate.p7b"
-        private const val MAX_FILE_BYTES = 16 * 1024
         private const val IMPORTED = ".imported"
         private const val COMMITTED = ".committed"
         private const val INSTALLING = ".installing"

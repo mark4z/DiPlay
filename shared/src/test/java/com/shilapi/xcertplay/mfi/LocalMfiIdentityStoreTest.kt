@@ -12,6 +12,8 @@ import java.security.KeyPairGenerator
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import java.util.Date
+import java.util.Base64
+import java.security.cert.CertificateFactory
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -116,6 +118,111 @@ class LocalMfiIdentityStoreTest {
         }
     }
 
+    private fun encoded(identity: Identity) = Identity(
+        Base64.getEncoder().encode(identity.key), Base64.getEncoder().encode(identity.certificate),
+    )
+
+    @Test fun rawAndBase64FilesCanBeMixedAndPersistOnlyOriginalDecodedBytes() {
+        val expected = identity()
+        for (encodeKey in listOf(false, true)) for (encodeCertificate in listOf(false, true)) {
+            val root = temporary.newFolder()
+            val input = Identity(
+                if (encodeKey) Base64.getMimeEncoder(64, "\r\n ".toByteArray()).encode(expected.key) else expected.key,
+                if (encodeCertificate) Base64.getMimeEncoder(64, " \r\n".toByteArray()).encode(expected.certificate) else expected.certificate,
+            )
+            stage(store(root), input).use { it.commit() }
+            assertIdentity(root, expected)
+            assertNoTransactions(root)
+        }
+    }
+
+    @Test fun rawAndOuterBase64CertificateContainersKeepExactWireBytesIncludingPem() {
+        val original = identity()
+        val certificateDer = CertificateFactory.getInstance("X.509")
+            .generateCertificates(original.certificate.inputStream()).single().encoded
+        fun pem(label: String, bytes: ByteArray) = ("-----BEGIN $label-----\r\n" +
+            Base64.getMimeEncoder(64, "\r\n".toByteArray()).encodeToString(bytes) +
+            "\r\n-----END $label-----\r\n").toByteArray(Charsets.US_ASCII)
+        for (certificate in listOf(original.certificate, certificateDer,
+            pem("CERTIFICATE", certificateDer), pem("PKCS7", original.certificate))) {
+            val expected = Identity(original.key, certificate)
+            for (input in listOf(expected, encoded(expected))) {
+                val root = temporary.newFolder()
+                stage(store(root), input).use { it.commit() }
+                assertIdentity(root, expected)
+                assertArrayEquals(certificate, File(live(root), "certificate.p7b").readBytes())
+                assertNoTransactions(root)
+            }
+        }
+    }
+
+    @Test fun base64WrongCurveAndMismatchedPairsCannotReplaceExistingIdentity() {
+        val root = temporary.newFolder()
+        val old = identity()
+        installLegacy(root, old)
+        for (bad in listOf(identity("secp384r1"), Identity(identity().key, old.certificate))) {
+            val input = encoded(bad)
+            store(root).beginImport().use { session ->
+                session.writePrivateKey(input.key.inputStream())
+                session.writeCertificate(input.certificate.inputStream())
+                assertThrows(Exception::class.java) { session.validate() }
+                assertThrows(IllegalStateException::class.java) { session.commit() }
+            }
+            assertIdentity(root, old)
+            assertNoTransactions(root)
+        }
+    }
+
+    @Test fun failedBase64ReplacementCannotRevalidateAnEarlierStagedFile() {
+        val root = temporary.newFolder()
+        val old = identity()
+        installLegacy(root, old)
+        val invalid = listOf("AB==".toByteArray(), "AA=A".toByteArray(), "-_8=".toByteArray(),
+            Base64.getEncoder().encode(ByteArray(16 * 1024 + 1)), ByteArray(32 * 1024 + 1) { 32 })
+        for (bytes in invalid) for (privateKey in listOf(true, false)) {
+            stage(store(root), encoded(identity())).use { session ->
+                assertThrows(IllegalArgumentException::class.java) {
+                    if (privateKey) session.writePrivateKey(bytes.inputStream())
+                    else session.writeCertificate(bytes.inputStream())
+                }
+                assertThrows(Exception::class.java) { session.validate() }
+                assertThrows(IllegalStateException::class.java) { session.commit() }
+            }
+            assertIdentity(root, old)
+            assertNoTransactions(root)
+        }
+    }
+
+    @Test fun cancellingAfterBase64KeyOrValidatedPairKeepsOldIdentity() {
+        val root = temporary.newFolder()
+        val old = identity()
+        installLegacy(root, old)
+        val input = encoded(identity())
+        store(root).beginImport().use { it.writePrivateKey(input.key.inputStream()) }
+        stage(store(root), input).close()
+        assertIdentity(root, old)
+        assertNoTransactions(root)
+    }
+
+    @Test fun base64ImportStillRollsBackAtEveryPreCommitFailure() {
+        for (point in LocalMfiIdentityStore.Checkpoint.entries.filter { it != LocalMfiIdentityStore.Checkpoint.COMMITTED }) {
+            val root = temporary.newFolder()
+            val old = identity()
+            installLegacy(root, old)
+            val failing = object : TestFiles() {
+                override fun checkpoint(checkpoint: LocalMfiIdentityStore.Checkpoint) {
+                    if (point == checkpoint) throw IOException("Synthetic Base64 transaction failure")
+                }
+            }
+            stage(store(root, failing), encoded(identity())).use { session ->
+                assertThrows(IOException::class.java) { session.commit() }
+            }
+            store(root).recover()
+            assertIdentity(root, old)
+            assertNoTransactions(root)
+        }
+    }
+
     @Test fun installedAssetsAreFallbackAndImportedPairOverridesThem() {
         val root = temporary.newFolder()
         val bundled = identity()
@@ -160,9 +267,11 @@ class LocalMfiIdentityStoreTest {
             Identity(old.key, byteArrayOf(1, 2)), Identity(identity().key, old.certificate),
             identity("secp384r1"))) {
             store.beginImport().use { session ->
-                session.writePrivateKey(bad.key.inputStream())
-                session.writeCertificate(bad.certificate.inputStream())
-                assertThrows(Exception::class.java) { session.validate() }
+                assertThrows(Exception::class.java) {
+                    session.writePrivateKey(bad.key.inputStream())
+                    session.writeCertificate(bad.certificate.inputStream())
+                    session.validate()
+                }
                 assertThrows(IllegalStateException::class.java) { session.commit() }
             }
             assertIdentity(root, old)

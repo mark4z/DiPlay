@@ -16,6 +16,8 @@ import com.shilapi.xcertplay.orchestration.MfiTarget
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
+import java.security.KeyPairGenerator
+import java.security.spec.ECGenParameterSpec
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -111,7 +113,11 @@ class LocalIdentityImportUiTest {
         beginKeyPicker()
         shadowOf(activity).nextStartedActivityForResult
         val keyUri = Uri.parse("content://local.synthetic/key")
-        shadowOf(activity.contentResolver).registerInputStream(keyUri, ByteArrayInputStream(byteArrayOf(4, 5, 6)))
+        // Imported key files are now format-checked before the certificate picker opens.
+        val key = KeyPairGenerator.getInstance("EC").apply {
+            initialize(ECGenParameterSpec("secp256r1"))
+        }.generateKeyPair().private.encoded
+        shadowOf(activity.contentResolver).registerInputStream(keyUri, ByteArrayInputStream(key))
         receive(Activity.RESULT_OK, keyUri, privateKey = true)
         await { latestDialog().getButton(AlertDialog.BUTTON_POSITIVE)?.text == activity.getString(R.string.identity_import_choose_certificate) }
         assertExistingPair(existing)
@@ -345,4 +351,3 @@ class LocalIdentityImportUiTest {
         }
     }
 }
-

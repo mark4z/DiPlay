@@ -40,6 +40,23 @@ remain on the device; no remote identity service or GitHub Secrets are needed fo
 this path. See [automatic source APKs](SOURCE-APK.md) for the download and signing
 limitations. Local format/key-pair validation does not establish iPhone trust.
 
+Either selection may instead be a `.b64` or `.txt` file containing standard Base64
+of the **entire original file**, with normal `=` padding. ASCII whitespace (including
+spaces, tabs and CRLF) is accepted; URL-safe Base64, a BOM, JSON/data-URL wrappers,
+invalid padding and double encoding are rejected. File extensions do not determine
+the format. Each raw or decoded file must be non-empty and at most **16 KiB**;
+each Base64 text file is bounded to **32 KiB including whitespace**. These limits
+apply to local picker imports only; bundled assets and runtime authentication keep
+their original raw-byte format and 16 KiB limit.
+
+Raw PKCS#8 key and supported DER/PEM certificate containers are tried first and
+preserved byte-for-byte. Base64 is decoded once, on the device, before staging;
+the decoded original certificate bytes are what authentication returns to the
+phone. No certificate re-encoding or authentication relaxation is performed.
+A matching unencrypted P-256 key and single certificate are still required.
+Cancellation, malformed input or a failed atomic replacement keeps the previous
+identity. Base64 is not encryption: protect the text files like the original key.
+
 For a deliberately pre-provisioned APK, verify both `assets/offline-mfi/identity.pk8`
 and `assets/offline-mfi/certificate.p7b` against the selected local inputs before
 delivery. Updating with the same application ID and signing key preserves the
