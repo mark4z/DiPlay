@@ -34,7 +34,7 @@
     <string name="clipboard_usage_access">DiPlay 使用狀況存取權限</string>
     <string name="report_clip_label">診斷報告</string>
     <string name="share_diagnostic_report">分享診斷報告</string>
-    <string name="setup_error_auth">無法載入 CarPlay 認證。請在此 App 上覆蓋安裝完整的 DiPlay 建置版本。無需解除安裝或變更熱點設定。</string>
+    <string name="setup_error_auth">無法載入 CarPlay 認證。請開啟 DiPlay 首頁或連線設定，選取「匯入本機身分」，再選取您獲准使用的身分檔案。</string>
     <string name="hotspot_state_stopped">已停止</string>
     <string name="hotspot_state_off">已關閉</string>
     <string name="hotspot_wireless_prefix">無線熱點：</string>

@@ -36,7 +36,7 @@
     <string name="clipboard_usage_access">Доступ DiPlay до даних використання</string>
     <string name="report_clip_label">Діагностичний звіт</string>
     <string name="share_diagnostic_report">Поділитися діагностичним звітом</string>
-    <string name="setup_error_auth">Не вдалося завантажити автентифікацію CarPlay. Установіть повну збірку DiPlay поверх цього застосунку. Видаляти його чи змінювати точку доступу не потрібно.</string>
+    <string name="setup_error_auth">Не вдалося завантажити автентифікацію CarPlay. На головному екрані DiPlay або в налаштуванні підключення виберіть «Імпорт локальної ідентичності» й укажіть файли, які вам дозволено використовувати.</string>
     <string name="hotspot_state_stopped">зупинено</string>
     <string name="hotspot_state_off">вимкнено</string>
     <string name="hotspot_wireless_prefix">Бездротова точка доступу:\u0020</string>

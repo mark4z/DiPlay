@@ -33,10 +33,18 @@ DIPLAY_AUTH_ASSETS_DIR=/absolute/path/to/runtime-assets ./gradlew :mobile:assemb
 ```
 
 This task refuses missing or empty runtime inputs. `assembleDebug` remains an identity-free
-source/CI build when the explicit asset input is absent; do not install that output as a
-standalone car-test package. Before delivery, verify both `assets/offline-mfi/identity.pk8`
-and `assets/offline-mfi/certificate.p7b` in the APK against the selected local inputs.
-Update the existing test app without uninstalling it to preserve its settings.
+source/CI build when the explicit asset input is absent. The source-only APK can now
+be provisioned on the Android device using **Home → Import local identity** (also in
+**Connection setup**), selecting `identity.pk8` and then `certificate.p7b`. The files
+remain on the device; no remote identity service or GitHub Secrets are needed for
+this path. See [automatic source APKs](SOURCE-APK.md) for the download and signing
+limitations. Local format/key-pair validation does not establish iPhone trust.
+
+For a deliberately pre-provisioned APK, verify both `assets/offline-mfi/identity.pk8`
+and `assets/offline-mfi/certificate.p7b` against the selected local inputs before
+delivery. Updating with the same application ID and signing key preserves the
+private imported identity and settings. Different CI debug keys cannot update one
+another; uninstalling removes the imported identity and settings.
 
 ## Manual GitHub Actions authenticated debug build
 

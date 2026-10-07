@@ -1,0 +1,24 @@
+<resources>
+    <string name="identity_import_title">Local authentication</string>
+    <string name="identity_import_action">Import local identity</string>
+    <string name="identity_import_installed">Imported identity saved on this device.</string>
+    <string name="identity_import_none">No user-imported identity on this device.</string>
+    <string name="identity_import_compatibility">Local validation does not guarantee acceptance by an iPhone or vehicle.</string>
+    <string name="identity_import_explanation">Select identity.pk8, then the matching certificate.p7b from this device. Use only an identity you are authorized to use. Each file must be non-empty and at most 16 KiB. The existing identity is replaced only after both files pass local validation. The files are saved in private app storage and are not uploaded. Local validation does not guarantee acceptance by an iPhone or vehicle.</string>
+    <string name="identity_import_choose_key">Choose identity.pk8</string>
+    <string name="identity_import_choose_certificate">Choose certificate.p7b</string>
+    <string name="identity_import_certificate_step">Step 2 of 2: choose the matching certificate.p7b. The private key is staged only; your existing identity has not changed. Cancelling discards the staged files.</string>
+    <string name="identity_import_reading_key">Reading the selected private key…</string>
+    <string name="identity_import_validating">Checking the identity and certificate…</string>
+    <string name="identity_import_busy">Finish or cancel the identity import before connecting.</string>
+    <string name="identity_import_disconnect_required">Disconnect CarPlay before importing an identity. This includes a connection that is starting or stopping. Your current identity will not be replaced while a session is running.</string>
+    <string name="identity_import_disconnect_first">Disconnect first</string>
+    <string name="identity_import_disconnected">Disconnected. Tap Import local identity to begin.</string>
+    <string name="identity_import_cancelled">Import cancelled. The previous identity was kept.</string>
+    <string name="identity_import_interrupted">Import interrupted. Start again and select both files. No partial identity was installed.</string>
+    <string name="identity_import_failed">Could not import these files. Choose a matching unencrypted P-256 PKCS#8 key and PKCS#7 certificate, each non-empty and at most 16 KiB. The previous identity was kept.</string>
+    <string name="identity_import_picker_unavailable">The system file picker could not be opened. The previous identity was kept.</string>
+    <string name="identity_import_success">Identity imported and local checks passed. You can now try connecting. Real-device acceptance still needs to be tested.</string>
+    <string name="identity_import_saved_not_ready">Identity saved, but authentication could not be started. Reopen DiPlay before connecting.</string>
+    <string name="identity_import_recovery_failed">Import could not finish and authentication storage could not be restored. Reopen DiPlay before connecting.</string>
+</resources>

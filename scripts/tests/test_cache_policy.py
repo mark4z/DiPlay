@@ -47,11 +47,14 @@ class CachePolicyTest(unittest.TestCase):
 
     def test_apk_downloads_are_single_unzipped_files_and_reports_stay_bundled(self):
         tv = (ROOT / '.github/workflows/build-android-tv.yml').read_text()
+        checks = (ROOT / '.github/workflows/android.yml').read_text()
         for workflow, expected_path, retention in (
             (self.auth, '${{ env.AUTH_APK_DIR }}/DiPlay-standalone-debug.apk', 1),
             (tv, 'mobile/build/outputs/apk/debug/mobile-debug.apk', 7),
+            (checks, 'mobile/build/outputs/apk/debug/mobile-debug.apk', 7),
         ):
-            upload_steps = [step for step in steps(workflow) if 'uses: actions/upload-artifact@' in step]
+            upload_steps = [step for step in steps(workflow)
+                            if 'uses: actions/upload-artifact@' in step and 'name: test-reports' not in step]
             self.assertEqual(len(upload_steps), 1)
             upload = upload_steps[0]
             self.assertIn('uses: actions/upload-artifact@' + UPLOAD_ACTION, upload)
@@ -60,10 +63,10 @@ class CachePolicyTest(unittest.TestCase):
             self.assertIn('          retention-days: ' + str(retention), upload)
             self.assertEqual(re.findall(r'^          path: (.+)$', upload, re.MULTILINE), [expected_path])
             self.assertNotIn('          name:', upload)  # Raw uploads use the actual file basename.
-        checks = (ROOT / '.github/workflows/android.yml').read_text()
-        self.assertIn('uses: actions/upload-artifact@v4', checks)
-        self.assertIn('name: test-reports', checks)
-        self.assertNotIn('archive: false', checks)
+        reports = [step for step in steps(checks) if 'name: test-reports' in step]
+        self.assertEqual(len(reports), 1)
+        self.assertIn('uses: actions/upload-artifact@v4', reports[0])
+        self.assertNotIn('archive: false', reports[0])
 
     def test_only_trusted_manual_source_job_can_produce_this_namespace(self):
         for job in (self.source, self.auth):

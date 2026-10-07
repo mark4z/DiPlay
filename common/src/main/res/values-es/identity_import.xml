@@ -1,0 +1,24 @@
+<resources>
+    <string name="identity_import_title">Autenticación local</string>
+    <string name="identity_import_action">Importar identidad local</string>
+    <string name="identity_import_installed">Identidad importada guardada en este dispositivo.</string>
+    <string name="identity_import_none">No hay una identidad importada por el usuario en este dispositivo.</string>
+    <string name="identity_import_compatibility">La validación local no garantiza que un iPhone o vehículo acepte la identidad.</string>
+    <string name="identity_import_explanation">Selecciona identity.pk8 y después el certificate.p7b correspondiente de este dispositivo. Usa solo una identidad que tengas autorización para usar. Cada archivo debe contener datos y ocupar como máximo 16 KiB. La identidad actual solo se sustituye cuando ambos archivos superan la validación local. Los archivos se guardan en el almacenamiento privado de la aplicación y no se suben a ningún servicio. La validación local no garantiza que un iPhone o vehículo acepte la identidad.</string>
+    <string name="identity_import_choose_key">Elegir identity.pk8</string>
+    <string name="identity_import_choose_certificate">Elegir certificate.p7b</string>
+    <string name="identity_import_certificate_step">Paso 2 de 2: elige el certificate.p7b correspondiente. La clave privada solo se ha guardado temporalmente; tu identidad actual no ha cambiado. Al cancelar se descartan los archivos temporales.</string>
+    <string name="identity_import_reading_key">Leyendo la clave privada seleccionada…</string>
+    <string name="identity_import_validating">Comprobando la identidad y el certificado…</string>
+    <string name="identity_import_busy">Termina o cancela la importación de identidad antes de conectarte.</string>
+    <string name="identity_import_disconnect_required">Desconecta CarPlay antes de importar una identidad, incluso si la conexión está iniciándose o deteniéndose. Tu identidad actual no se sustituirá mientras haya una sesión en curso.</string>
+    <string name="identity_import_disconnect_first">Desconectar primero</string>
+    <string name="identity_import_disconnected">Desconectado. Pulsa Importar identidad local para empezar.</string>
+    <string name="identity_import_cancelled">Importación cancelada. Se ha conservado la identidad anterior.</string>
+    <string name="identity_import_interrupted">Importación interrumpida. Empieza de nuevo y selecciona ambos archivos. No se ha instalado una identidad incompleta.</string>
+    <string name="identity_import_failed">No se pudieron importar los archivos. Elige una clave P-256 PKCS#8 sin cifrar y su certificado PKCS#7 correspondiente, ambos con datos y de como máximo 16 KiB cada uno. Se ha conservado la identidad anterior.</string>
+    <string name="identity_import_picker_unavailable">No se pudo abrir el selector de archivos del sistema. Se ha conservado la identidad anterior.</string>
+    <string name="identity_import_success">Identidad importada y comprobaciones locales superadas. Ya puedes intentar conectarte. Aún hay que probar su aceptación en un dispositivo real.</string>
+    <string name="identity_import_saved_not_ready">Identidad guardada, pero no se pudo iniciar la autenticación. Vuelve a abrir DiPlay antes de conectarte.</string>
+    <string name="identity_import_recovery_failed">No se pudo terminar la importación ni restaurar el almacenamiento de autenticación. Vuelve a abrir DiPlay antes de conectarte.</string>
+</resources>

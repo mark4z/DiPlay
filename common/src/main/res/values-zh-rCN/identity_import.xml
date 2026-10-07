@@ -1,0 +1,24 @@
+<resources>
+    <string name="identity_import_title">本地认证</string>
+    <string name="identity_import_action">导入本地身份</string>
+    <string name="identity_import_installed">导入的身份已保存在此设备上。</string>
+    <string name="identity_import_none">此设备尚未导入用户身份。</string>
+    <string name="identity_import_compatibility">通过本地验证不代表 iPhone 或车辆一定接受该身份。</string>
+    <string name="identity_import_explanation">从此设备选择 identity.pk8，再选择匹配的 certificate.p7b。仅使用您获准使用的身份。每个文件不能为空且不得超过 16 KiB。只有两个文件都通过本地验证后，才会替换现有身份。文件保存在应用私有存储中，不会上传。通过本地验证不代表 iPhone 或车辆一定接受该身份。</string>
+    <string name="identity_import_choose_key">选择 identity.pk8</string>
+    <string name="identity_import_choose_certificate">选择 certificate.p7b</string>
+    <string name="identity_import_certificate_step">第 2 步（共 2 步）：选择匹配的 certificate.p7b。私钥仅暂存，现有身份尚未更改。取消将丢弃暂存文件。</string>
+    <string name="identity_import_reading_key">正在读取所选私钥…</string>
+    <string name="identity_import_validating">正在检查身份和证书…</string>
+    <string name="identity_import_busy">请先完成或取消身份导入，再进行连接。</string>
+    <string name="identity_import_disconnect_required">导入身份前，请先断开 CarPlay，包括正在建立或停止的连接。会话运行时不会替换当前身份。</string>
+    <string name="identity_import_disconnect_first">先断开连接</string>
+    <string name="identity_import_disconnected">已断开连接。点按“导入本地身份”开始。</string>
+    <string name="identity_import_cancelled">导入已取消。之前的身份已保留。</string>
+    <string name="identity_import_interrupted">导入已中断。请重新开始并选择两个文件。未安装不完整的身份。</string>
+    <string name="identity_import_failed">无法导入这些文件。请选择匹配的未加密 P-256 PKCS#8 私钥和 PKCS#7 证书，每个文件不能为空且不得超过 16 KiB。之前的身份已保留。</string>
+    <string name="identity_import_picker_unavailable">无法打开系统文件选择器。之前的身份已保留。</string>
+    <string name="identity_import_success">身份已导入并通过本地检查。现在可以尝试连接，仍需在实际设备上验证是否接受该身份。</string>
+    <string name="identity_import_saved_not_ready">身份已保存，但无法启动认证。请重新打开 DiPlay 后再连接。</string>
+    <string name="identity_import_recovery_failed">导入未能完成，无法恢复认证存储。请重新打开 DiPlay 后再连接。</string>
+</resources>

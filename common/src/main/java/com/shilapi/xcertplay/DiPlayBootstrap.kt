@@ -2,44 +2,49 @@ package com.shilapi.xcertplay
 
 import android.content.Context
 import com.shilapi.xcertplay.airplay.AirPlayIdentity
-import com.shilapi.xcertplay.mfi.LocalMfiAuthenticationClient
+import com.shilapi.xcertplay.mfi.LocalMfiIdentityStore
 import com.shilapi.xcertplay.orchestration.MfiTarget
-import java.io.File
 import java.security.MessageDigest
 
-/** Installs the private beta's experimental identity. It has no remote fallback. */
+/** Loads an imported identity, or optional bundled assets. There is no remote fallback. */
 internal object DiPlayBootstrap {
     @Volatile private var ready = false
 
     @Synchronized fun ensure(context: Context, mfiTarget: MfiTarget) {
         if (mfiTarget != MfiTarget.LOCAL) return
         if (ready) return
-        val target = File(context.noBackupFilesDir, LocalMfiAuthenticationClient.DIRECTORY)
-        if (!target.exists()) {
-            val staging = File(context.noBackupFilesDir, "offline-mfi-staging")
-            staging.deleteRecursively()
-            check(staging.mkdirs()) { "Could not prepare local authentication" }
-            staging.setReadable(false, false); staging.setReadable(true, true)
-            staging.setExecutable(false, false); staging.setExecutable(true, true)
-            try {
-                for (name in listOf("identity.pk8", "certificate.p7b")) {
-                    val file = File(staging, name)
-                    context.assets.open("offline-mfi/$name").use { input ->
-                        file.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    file.setReadable(false, false); file.setReadable(true, true)
-                    file.setWritable(false, false); file.setWritable(true, true)
-                }
-                LocalMfiAuthenticationClient.load(staging)
-                check(staging.renameTo(target)) { "Could not install local authentication" }
-            } finally {
-                staging.deleteRecursively()
-            }
+        identityStore(context).ensureInstalled { name ->
+            context.assets.open("offline-mfi/$name")
         }
-        LocalMfiAuthenticationClient.load(target)
         AirPlayPersistence.saveDebugLogsEnabled(context, false)
         ready = true
     }
+
+    @Synchronized fun beginIdentityImport(context: Context): LocalMfiIdentityStore.ImportSession =
+        identityStore(context).beginImport()
+
+    @Synchronized fun hasImportedIdentity(context: Context): Boolean =
+        identityStore(context).hasImportedIdentity()
+
+    /**
+     * The activity rechecks that it is disconnected immediately before calling this.
+     * Throws only if committing failed; false means the pair was committed but reload failed.
+     */
+    @Synchronized fun completeIdentityImport(
+        context: Context,
+        session: LocalMfiIdentityStore.ImportSession,
+        mfiTarget: MfiTarget,
+    ): Boolean {
+        session.commit()
+        return runCatching { reinitialize(context, mfiTarget) }.isSuccess
+    }
+
+    @Synchronized fun reinitialize(context: Context, mfiTarget: MfiTarget) {
+        ready = false
+        ensure(context, mfiTarget)
+    }
+
+    private fun identityStore(context: Context) = LocalMfiIdentityStore(context.noBackupFilesDir)
 
     fun deviceId(identity: AirPlayIdentity): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(identity.publicKey).take(6).toByteArray()

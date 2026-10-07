@@ -43,6 +43,17 @@ jobs:
             wrapper/dists
       - name: Unit tests, lint and source-only debug build
         run: ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :home:testDebugUnitTest :mobile:lintDebug :home:lintDebug :maphost:lintDebug :mobile:assembleDebug :home:assembleDebug :maphost:assembleDebug --build-cache --no-configuration-cache --no-scan --stacktrace
+      - name: Verify source APK has no bundled identity
+        if: ${{ success() }}
+        run: python3 scripts/check_source_apk.py mobile/build/outputs/apk/debug/mobile-debug.apk
+      - name: Upload credential-free mobile APK directly
+        if: ${{ success() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          path: mobile/build/outputs/apk/debug/mobile-debug.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
       - name: Test reports
         if: always()
         uses: actions/upload-artifact@v4
