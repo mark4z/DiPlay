@@ -19,9 +19,10 @@
              https://developer.android.com/develop/background-work/services/fgs/service-types#system-exempted -->
         <service tools:ignore="ForegroundServicePermission" android:name=".ProbeVpnService" android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE"
-            android:foregroundServiceType="systemExempted" android:stopWithTask="true">
+            android:foregroundServiceType="systemExempted" android:stopWithTask="false">
             <intent-filter><action android:name="android.net.VpnService" /></intent-filter>
             <meta-data android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON" android:value="false" />
         </service>
     </application>
 </manifest>
+

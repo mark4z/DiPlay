@@ -6,8 +6,8 @@ android {
         applicationId = "com.diplay.networkprobe"
         minSdk = 28
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1-health-only"
+        versionCode = 2
+        versionName = "0.2-stop-safe"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -15,3 +15,4 @@ android {
     }
 }
 dependencies { testImplementation(libs.junit) }
+
