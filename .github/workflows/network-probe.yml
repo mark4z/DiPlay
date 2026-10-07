@@ -1,0 +1,51 @@
+name: Local VPN health probe
+on:
+  push:
+    branches: [experiment/local-vpn-health]
+  pull_request:
+    paths: ['network-probe/**', '.github/workflows/network-probe.yml', 'scripts/check_probe_apk.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    if: github.ref == 'refs/heads/experiment/local-vpn-health' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reject credentials in source
+        run: python3 scripts/check_public_tree.py
+      - name: Synthetic packaging guard tests
+        run: python3 -m unittest discover -s scripts/tests -v
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+      - name: Unit tests, lint, and independent credential-free APK
+        run: ./gradlew :network-probe:testDebugUnitTest :network-probe:lintDebug :network-probe:assembleDebug --no-configuration-cache --no-scan --stacktrace
+      - name: Reject unexpected APK payloads
+        run: python3 scripts/check_probe_apk.py network-probe/build/outputs/apk/debug/network-probe-debug.apk
+      - name: Upload tested experiment APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-probe-health-only
+          path: network-probe/build/outputs/apk/debug/network-probe-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-probe-reports
+          path: |
+            network-probe/build/reports/tests/
+            network-probe/build/reports/lint-results-debug.html
