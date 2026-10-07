@@ -9,9 +9,11 @@ JAVA = ROOT / "network-probe/src/main/java/com/diplay/networkprobe"
 class ProbeBoundaryTests(unittest.TestCase):
     def test_no_forwarding_route_dns_or_other_apps(self):
         source = (JAVA / "ProbeVpnService.java").read_text()
-        for forbidden in (".addRoute(", ".addDnsServer(", ".addDisallowedApplication(", "FileInputStream(", "FileOutputStream("):
+        for forbidden in (".addDnsServer(", ".addDisallowedApplication(", "FileInputStream(", "FileOutputStream("):
             self.assertNotIn(forbidden, source)
-        self.assertIn('.addAddress(ProbePolicy.ADDRESS, 32)', source)
+        self.assertIn('.addAddress(address, 32).addRoute(address, 32)', source)
+        self.assertEqual(1, source.count('.addRoute('))
+        self.assertIn('.allowBypass()', source)
         self.assertIn('.addAllowedApplication(getPackageName())', source)
         self.assertIn('.allowFamily(OsConstants.AF_INET6)', source)
         self.assertIn('ProbeListener.bind(listener, port, current::isCancelled)', source)
@@ -23,11 +25,14 @@ class ProbeBoundaryTests(unittest.TestCase):
         self.assertIn('START_NOT_STICKY', source)
         self.assertNotIn('START_STICKY;', source)
         self.assertIn('GATE.consume(', source)
-        for code in ('SYSTEM_REVOKED', 'TASK_REMOVED', 'TIME_LIMIT', 'ESTABLISH_REJECTED'):
+        for code in ('SYSTEM_REVOKED', 'TASK_REMOVED', 'TIME_LIMIT', 'STARTUP_TIMEOUT', 'BACKGROUND_OR_LOCKED'):
             self.assertIn(code, source)
-        for resource in ('current.own(tun)', 'current.own(listener)', 'current.own(incoming)', 'current.own(localClient)'):
+        for resource in ('current.own(listener)', 'current.own(incoming)', 'current.own(localClient)'):
             self.assertIn(resource, source)
         self.assertIn('session.cancel()', source)
+        handover = (JAVA / 'ProbeHandover.java').read_text()
+        self.assertIn('session.own(descriptor)', handover)
+        self.assertIn('_ESTABLISH_REJECTED', handover)
         owner = (JAVA / "ProbeSession.java").read_text()
         self.assertIn('resource.close()', owner)
         self.assertIn('cleanup.execute(() -> closeTracked(resource))', owner)
@@ -54,10 +59,10 @@ class ProbeBoundaryTests(unittest.TestCase):
         source = (JAVA / "ProbeVpnService.java").read_text()
         start = source.split('private void startAndServe')[0]
         stop = source.split('private void stopProbe')[1]
-        for blocked in ('.establish()', '.bind(', '.close()', 'rejectConflicts();'):
+        for blocked in ('.establish()', '.bind(', '.close()', 'rejectConflicts(mode);'):
             self.assertNotIn(blocked, start)
             self.assertNotIn(blocked, stop)
-        self.assertIn('startWorker(() -> startAndServe(current, port)', start)
+        self.assertIn('startWorker(() -> startAndServe(current, port, mode, interfaces)', start)
         self.assertIn('CLEANUP_PENDING_', source)
 
     def test_local_check_is_fixed_bounded_and_separate_from_peer_counts(self):
@@ -69,22 +74,39 @@ class ProbeBoundaryTests(unittest.TestCase):
         self.assertIn('current.closeAsync(localClient)', service)
         self.assertIn('boolean external = !check.isOwnConnection(incoming)', service)
 
-    def test_port_is_explicit_locked_and_preserved_through_consent(self):
+    def test_mode_is_explicit_locked_and_preserved_through_consent(self):
         ui = (JAVA / "ProbeActivity.java").read_text()
         service = (JAVA / "ProbeVpnService.java").read_text()
-        self.assertIn('pendingPort = selectedPort;', ui)
-        self.assertIn('int port = pendingPort;\n        cancelPendingStart();', ui)
-        self.assertIn('.putExtra(ProbeVpnService.PORT_EXTRA, port)', ui)
-        self.assertIn('port80.setEnabled(ready)', ui)
-        self.assertIn('port18080.setEnabled(ready)', ui)
+        self.assertIn('selectedMode = ProbePolicy.SINGLE', ui)
+        self.assertIn('pendingMode = selectedMode;', ui)
+        self.assertIn('int mode = pendingMode;\n        cancelPendingStart();', ui)
+        self.assertIn('.putExtra(ProbeVpnService.MODE_EXTRA, mode)', ui)
+        self.assertIn('single.setEnabled(ready)', ui)
+        self.assertIn('dual.setEnabled(ready)', ui)
         self.assertIn('!ProbeVpnService.GATE.hasPending()', ui)
         self.assertIn('!pending && !ProbeVpnService.running && !ProbeVpnService.recoveryRequired', ui)
-        self.assertIn('pendingPort = 0;', ui)
-        self.assertIn('final int port = intent.getIntExtra(PORT_EXTRA, 0)', service)
-        self.assertIn('if (!ProbePolicy.isTestPort(port))', service)
-        self.assertIn('sessionPort = port;', service)
+        self.assertIn('pendingMode = 0;', ui)
+        self.assertIn('final int mode = intent.getIntExtra(MODE_EXTRA, 0)', service)
+        self.assertIn('if (!ProbePolicy.isTestMode(mode))', service)
+        self.assertIn('final int port = ProbePolicy.DEFAULT_PORT', service)
+        self.assertIn('sessionMode = mode;', service)
         self.assertIn('new ProbeSelfCheck(port)', service)
-        self.assertIn('ProbePolicy.healthUrl(ProbeVpnService.sessionPort)', ui)
+        self.assertIn('ProbePolicy.modeName(ProbeVpnService.sessionMode)', ui)
+
+    def test_foreground_timeouts_and_all_descriptor_cleanup_remain_bounded(self):
+        service = (JAVA / "ProbeVpnService.java").read_text()
+        self.assertIn('main.postDelayed(startupTimeout, ProbePolicy.STARTUP_TIMEOUT_MS)', service)
+        self.assertIn('main.removeCallbacks(startupTimeout)', service)
+        self.assertIn('main.removeCallbacks(foregroundCheck)', service)
+        self.assertIn('power.isInteractive()', service)
+        self.assertIn('!keyguard.isKeyguardLocked()', service)
+        self.assertIn('ProbeActivity.isForeground', service)
+        self.assertIn('String[] candidates = ProbePolicy.addresses(mode)', service)
+        self.assertIn('AFTER_ALL_OWNED_CLOSES', service)
+        self.assertIn('afterClose.visible || afterClose.failed', service)
+        for path in JAVA.glob('*.java'):
+            for forbidden in ('.dup(', '.detachFd(', 'SharedPreferences', 'FileOutputStream('):
+                self.assertNotIn(forbidden, path.read_text())
 
     def test_bind_error_keeps_real_errno_and_no_fallback_or_privilege_change(self):
         service = (JAVA / "ProbeVpnService.java").read_text()

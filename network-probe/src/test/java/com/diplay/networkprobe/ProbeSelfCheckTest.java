@@ -26,7 +26,7 @@ public class ProbeSelfCheckTest {
     }
 
     @Test public void onlyChecksExactLocalEndpointWithFiniteTimeouts() throws Exception {
-        for (int port : new int[]{80, 18080}) {
+        for (int port : new int[]{18080}) {
             FakeSocket socket = new FakeSocket();
             ProbeSelfCheck check = new ProbeSelfCheck(port);
             assertEquals("PASS", check.run(socket, () -> false));
@@ -43,7 +43,7 @@ public class ProbeSelfCheckTest {
     }
 
     @Test public void cancelledBeforeStartNeverConnects() {
-        for (int port : new int[]{80, 18080}) {
+        for (int port : new int[]{18080}) {
             FakeSocket socket = new FakeSocket();
             assertEquals("CANCELLED", new ProbeSelfCheck(port).run(socket, () -> true));
             assertNull(socket.destination);
@@ -53,7 +53,7 @@ public class ProbeSelfCheckTest {
     }
 
     @Test public void distinguishesConnectTimeoutReadTimeoutAndBadResponse() {
-        for (int port : new int[]{80, 18080}) {
+        for (int port : new int[]{18080}) {
             FakeSocket connect = new FakeSocket();
             connect.connectTimesOut = true;
             assertEquals("CONNECT_TIMEOUT", new ProbeSelfCheck(port).run(connect, () -> false));
@@ -69,7 +69,7 @@ public class ProbeSelfCheckTest {
     }
 
     @Test public void cancellationWhileReadingCannotReportPassOrIoFailure() {
-        for (int port : new int[]{80, 18080}) {
+        for (int port : new int[]{18080}) {
             AtomicBoolean cancelled = new AtomicBoolean();
             FakeSocket socket = new FakeSocket();
             socket.input = new InputStream() {
@@ -83,7 +83,7 @@ public class ProbeSelfCheckTest {
     }
 
     @Test public void cancellationAfterSourceBindNeverConnects() {
-        for (int port : new int[]{80, 18080}) {
+        for (int port : new int[]{18080}) {
             AtomicBoolean cancelled = new AtomicBoolean();
             FakeSocket socket = new FakeSocket() {
                 @Override public void bind(SocketAddress address) {
@@ -98,7 +98,7 @@ public class ProbeSelfCheckTest {
     }
 
     @Test public void cancellationAfterConnectNeverWritesHealthRequest() {
-        for (int port : new int[]{80, 18080}) {
+        for (int port : new int[]{18080}) {
             AtomicBoolean cancelled = new AtomicBoolean();
             FakeSocket socket = new FakeSocket() {
                 @Override public void connect(SocketAddress address, int timeout) throws IOException {

@@ -1,15 +1,30 @@
 package com.diplay.networkprobe;
 
-/** Fixed address and two explicit test ports; no user-controlled routes or hosts. */
+/** Fixed experiment endpoints; no user-controlled routes or hosts. */
 public final class ProbePolicy {
     public static final String ADDRESS = "100.96.23.17";
+    public static final String COMPATIBILITY_ADDRESS = "192.168.247.2";
     public static final int DEFAULT_PORT = 18080;
-    public static final int HTTP_PORT = 80;
+    public static final int SINGLE = 1;
+    public static final int DUAL = 2;
+    public static final long STARTUP_TIMEOUT_MS = 15_000L;
     public static final long DURATION_MS = 5 * 60 * 1000L;
     private ProbePolicy() {}
 
     public static boolean isTestPort(int port) {
-        return port == DEFAULT_PORT || port == HTTP_PORT;
+        return port == DEFAULT_PORT;
+    }
+
+    public static boolean isTestMode(int mode) { return mode == SINGLE || mode == DUAL; }
+
+    public static String modeName(int mode) {
+        if (!isTestMode(mode)) throw new IllegalArgumentException("INVALID_TEST_MODE");
+        return mode == SINGLE ? "SINGLE" : "DUAL_HANDOVER";
+    }
+
+    public static String[] addresses(int mode) {
+        if (!isTestMode(mode)) throw new IllegalArgumentException("INVALID_TEST_MODE");
+        return mode == SINGLE ? new String[]{ADDRESS} : new String[]{ADDRESS, COMPATIBILITY_ADDRESS};
     }
 
     public static int requireTestPort(int port) {
@@ -19,7 +34,7 @@ public final class ProbePolicy {
 
     public static String authority(int port) {
         requireTestPort(port);
-        return ADDRESS + (port == HTTP_PORT ? "" : ":" + port);
+        return ADDRESS + ":" + port;
     }
 
     public static String healthUrl(int port) { return "http://" + authority(port) + "/health"; }

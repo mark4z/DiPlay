@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.KeyguardManager;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.content.pm.PackageManager;
@@ -17,6 +18,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.system.OsConstants;
 import android.system.ErrnoException;
@@ -31,14 +33,15 @@ import java.util.Collections;
 public final class ProbeVpnService extends VpnService {
     public static final String START = "com.diplay.networkprobe.START";
     public static final String STOP = "com.diplay.networkprobe.STOP";
-    public static final String PORT_EXTRA = "port";
+    public static final String MODE_EXTRA = "mode";
     public static final ProbePolicy.StartGate GATE = new ProbePolicy.StartGate();
     public static volatile String status = "Stopped / 已停止";
     public static volatile boolean running;
     public static volatile boolean recoveryRequired;
     public static volatile long endsAt;
     public static volatile int accepted, health;
-    public static volatile int sessionPort;
+    public static volatile int sessionPort, sessionMode;
+    public static volatile String interfaceReport = "NOT_RUN";
     public static volatile String lastError = "NONE";
     public static volatile String selfCheck = "NOT_RUN";
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -53,6 +56,14 @@ public final class ProbeVpnService extends VpnService {
         }
     };
     private final Runnable expiry = () -> stopProbe("TIME_LIMIT");
+    private final Runnable startupTimeout = () -> stopProbe("STARTUP_TIMEOUT");
+    private final Runnable foregroundCheck = new Runnable() {
+        @Override public void run() {
+            if (session == null || session.isCancelled()) return;
+            if (!foregroundUnlocked()) stopProbe("BACKGROUND_OR_LOCKED");
+            else main.postDelayed(this, 500);
+        }
+    };
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && STOP.equals(intent.getAction())) {
@@ -66,14 +77,17 @@ public final class ProbeVpnService extends VpnService {
         }
         if (recoveryRequired) { stopSelf(); return START_NOT_STICKY; }
         if (running) return START_NOT_STICKY;
-        final int port = intent.getIntExtra(PORT_EXTRA, 0);
-        if (!ProbePolicy.isTestPort(port)) {
-            lastError = "INVALID_TEST_PORT";
-            status = "Stopped / 已停止: INVALID_TEST_PORT";
+        final int mode = intent.getIntExtra(MODE_EXTRA, 0);
+        final int port = ProbePolicy.DEFAULT_PORT;
+        if (!ProbePolicy.isTestMode(mode)) {
+            lastError = "INVALID_TEST_MODE";
+            status = "Stopped / 已停止: INVALID_TEST_MODE";
             stopSelf();
             return START_NOT_STICKY;
         }
         sessionPort = port;
+        sessionMode = mode;
+        interfaceReport = "PENDING";
         accepted = health = 0;
         lastError = "NONE";
         selfCheck = "PENDING";
@@ -81,11 +95,17 @@ public final class ProbeVpnService extends VpnService {
         endsAt = SystemClock.elapsedRealtime() + ProbePolicy.DURATION_MS;
         status = "Starting / 正在启动";
         stopReason = null;
+        ProbeInterfaces interfaces = new ProbeInterfaces(mode);
         ProbeSession current = new ProbeSession(
                 action -> startWorker(action, "health-only-cleanup"),
-                () -> main.post(this::finishStopped));
+                () -> startWorker(() -> {
+                    ProbeInterfaces.Snapshot afterClose = interfaces.snapshot();
+                    main.post(() -> finishStopped(afterClose));
+                }, "health-only-final-snapshot"));
         session = current;
         main.postDelayed(expiry, ProbePolicy.DURATION_MS);
+        main.postDelayed(startupTimeout, ProbePolicy.STARTUP_TIMEOUT_MS);
+        main.post(foregroundCheck);
         try {
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(new NotificationChannel("probe", "Network experiment", NotificationManager.IMPORTANCE_LOW));
@@ -93,11 +113,11 @@ public final class ProbeVpnService extends VpnService {
             PendingIntent open = PendingIntent.getActivity(this, 2, new Intent(this, ProbeActivity.class), PendingIntent.FLAG_IMMUTABLE);
             Notification notification = new Notification.Builder(this, "probe")
                     .setSmallIcon(android.R.drawable.stat_sys_warning).setContentTitle("DiPlay health experiment: 5 minutes")
-                    .setContentText("Port " + port + "; temporary VPN address; tap Stop to remove it")
+                    .setContentText(ProbePolicy.modeName(mode) + " :18080; Stop removes all test interfaces")
                     .setContentIntent(open).setOngoing(true).addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop / 停止", stop).build();
             if (Build.VERSION.SDK_INT >= 34) startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED);
             else startForeground(1, notification);
-            startWorker(() -> startAndServe(current, port), "health-only-io");
+            startWorker(() -> startAndServe(current, port, mode, interfaces), "health-only-io");
         } catch (RuntimeException failure) {
             stopProbe("FOREGROUND_START_FAILED");
             current.workerFinished();
@@ -111,26 +131,30 @@ public final class ProbeVpnService extends VpnService {
         worker.start();
     }
 
-    private void startAndServe(ProbeSession current, int port) {
+    private void startAndServe(ProbeSession current, int port, int mode, ProbeInterfaces interfaces) {
         try {
             if (current.isCancelled()) return;
             reportStage(current, "STARTING_CHECKS");
+            if (!foregroundUnlocked()) throw new ProbeFailure("BACKGROUND_OR_LOCKED");
             if (Build.VERSION.SDK_INT >= 37 && checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED) throw new ProbeFailure("LOCAL_NETWORK_PERMISSION_DENIED");
             if (VpnService.prepare(this) != null) throw new ProbeFailure("CONSENT_REQUIRED");
-            rejectConflicts();
+            rejectConflicts(mode);
             if (current.isCancelled()) return;
-            reportStage(current, "STARTING_ESTABLISH");
-            // No routes, DNS, gateway, forwarding, TUN reader/writer, or other applications.
-            ParcelFileDescriptor tun = new Builder().setSession("DiPlay health-only experiment")
-                    .addAddress(ProbePolicy.ADDRESS, 32)
-                    .addAllowedApplication(getPackageName())
-                    .allowFamily(OsConstants.AF_INET6).establish();
-            if (tun == null) throw new ProbeFailure("ESTABLISH_REJECTED");
-            if (!current.own(tun)) return;
-            if (current.isCancelled()) return;
+            if (!ProbeHandover.establish(current, mode, this::establishInterface, stage -> {
+                reportStage(current, stage);
+                if (stage.startsWith("AFTER_")) {
+                    String snapshot = interfaces.snapshot().text;
+                    main.post(() -> {
+                        if (session == current && !current.isCancelled()) {
+                            String entry = stage + "\n" + snapshot;
+                            interfaceReport = "PENDING".equals(interfaceReport) ? entry : interfaceReport + "\n" + entry;
+                        }
+                    });
+                }
+            })) return;
             reportStage(current, "STARTING_BIND");
-            InetAddress address = InetAddress.getByName(ProbePolicy.ADDRESS);
-            if (NetworkInterface.getByInetAddress(address) == null) throw new ProbeFailure("ADDRESS_NOT_VISIBLE");
+            // Do not assume the old interface is UP. Attempt the same exact primary bind;
+            // after-handover diagnostics were captured before a possible bind failure.
             ServerSocket listener = new ServerSocket();
             if (!current.own(listener)) return;
             try {
@@ -144,7 +168,8 @@ public final class ProbeVpnService extends VpnService {
             }
             main.post(() -> {
                 if (session == current && !current.isCancelled()) {
-                    status = "VPN interface established; socket listening on port " + port + " / 已建接口并监听（不代表外部可达）";
+                    main.removeCallbacks(startupTimeout);
+                    status = ProbePolicy.modeName(mode) + "; socket listening on port " + port + " / 已监听（不代表外部可达）";
                     lastError = "NONE";
                 }
             });
@@ -180,9 +205,27 @@ public final class ProbeVpnService extends VpnService {
             }
             serve(listener, current, check);
         } catch (ProbeFailure failure) { failSession(current, failure.getMessage()); }
+        catch (IOException failure) { failSession(current, failure.getMessage() != null && failure.getMessage().endsWith("_ESTABLISH_REJECTED") ? failure.getMessage() : "START_OR_LISTENER_IO_FAILED"); }
         catch (SecurityException failure) { failSession(current, "PERMISSION_DENIED"); }
         catch (Exception failure) { failSession(current, "START_OR_LISTENER_FAILED"); }
         finally { current.workerFinished(); }
+    }
+
+    private ParcelFileDescriptor establishInterface(String address) throws Exception {
+        if (!foregroundUnlocked()) throw new ProbeFailure("BACKGROUND_OR_LOCKED");
+        // Identical bounded configuration for both comparison modes and each interface.
+        // Only the app is allowed, with only its own /32 host route. Never route Internet traffic.
+        return new Builder().setSession("DiPlay health-only " + address)
+                .addAddress(address, 32).addRoute(address, 32)
+                .addAllowedApplication(getPackageName())
+                .allowBypass().allowFamily(OsConstants.AF_INET6).establish();
+    }
+
+    private boolean foregroundUnlocked() {
+        PowerManager power = getSystemService(PowerManager.class);
+        KeyguardManager keyguard = getSystemService(KeyguardManager.class);
+        return ProbeActivity.isForeground && power != null && power.isInteractive()
+                && keyguard != null && !keyguard.isKeyguardLocked();
     }
 
     private void reportStage(ProbeSession current, String stage) {
@@ -194,23 +237,25 @@ public final class ProbeVpnService extends VpnService {
         });
     }
 
-    private void rejectConflicts() throws Exception {
+    private void rejectConflicts(int mode) throws Exception {
         ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
-        byte[] candidate = InetAddress.getByName(ProbePolicy.ADDRESS).getAddress();
+        String[] candidates = ProbePolicy.addresses(mode);
         for (Network network : connectivity.getAllNetworks()) {
             NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
             if (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
                 throw new ProbeFailure("EXISTING_VPN_STOP_IT_FIRST");
             LinkProperties properties = connectivity.getLinkProperties(network);
             if (properties != null) for (RouteInfo route : properties.getRoutes()) {
-                if (ProbePolicy.overlaps(candidate, route.getDestination().getAddress().getAddress(), route.getDestination().getPrefixLength()))
-                    throw new ProbeFailure("ADDRESS_ROUTE_CONFLICT");
+                for (String candidate : candidates)
+                    if (ProbePolicy.overlaps(InetAddress.getByName(candidate).getAddress(), route.getDestination().getAddress().getAddress(), route.getDestination().getPrefixLength()))
+                        throw new ProbeFailure("ADDRESS_ROUTE_CONFLICT " + candidate);
             }
         }
         for (NetworkInterface iface : Collections.list(NetworkInterface.getNetworkInterfaces()))
             for (InterfaceAddress address : iface.getInterfaceAddresses())
-                if (ProbePolicy.overlaps(candidate, address.getAddress().getAddress(), address.getNetworkPrefixLength()))
-                    throw new ProbeFailure("ADDRESS_INTERFACE_CONFLICT");
+                for (String candidate : candidates)
+                    if (ProbePolicy.overlaps(InetAddress.getByName(candidate).getAddress(), address.getAddress().getAddress(), address.getNetworkPrefixLength()))
+                        throw new ProbeFailure("ADDRESS_INTERFACE_CONFLICT " + candidate);
     }
 
     private void serve(ServerSocket listener, ProbeSession current, ProbeSelfCheck check) throws IOException {
@@ -246,6 +291,8 @@ public final class ProbeVpnService extends VpnService {
     private void stopProbe(String reason) {
         GATE.cancel();
         main.removeCallbacks(expiry);
+        main.removeCallbacks(startupTimeout);
+        main.removeCallbacks(foregroundCheck);
         if (session == null) {
             if (!destroyed) stopSelf();
             return;
@@ -255,24 +302,27 @@ public final class ProbeVpnService extends VpnService {
         endsAt = 0;
         lastError = "STOPPING_" + reason;
         if ("PENDING".equals(selfCheck)) selfCheck = "CANCELLED";
-        status = "Stopping; removing VPN address / 正在停止并移除地址";
+        status = "Stopping; closing all test descriptors / 正在停止并关闭全部测试接口与描述符";
         // Signal first, then close on independent background workers. Never block the main looper.
         session.cancel();
         main.postDelayed(slowStop, 2000);
     }
 
-    private void finishStopped() {
+    private void finishStopped(ProbeInterfaces.Snapshot afterClose) {
         // A new start is prohibited until worker completion AND every owned resource close.
         ProbeSession finished = session;
         if (finished == null) return;
         main.removeCallbacks(slowStop);
         session = null;
         running = false;
-        recoveryRequired = finished.didCloseFail();
+        recoveryRequired = finished.didCloseFail() || afterClose.visible || afterClose.failed;
+        interfaceReport += "\nAFTER_ALL_OWNED_CLOSES\n" + afterClose.text;
         endsAt = 0;
-        lastError = finished.didCloseFail() ? "CLEANUP_FAILED_" + stopReason : stopReason;
-        status = finished.didCloseFail()
-                ? "Cleanup error; disconnect VPN and force-stop this app before retrying / 清理出错：请断开 VPN 并强行停止本应用后重试"
+        lastError = finished.didCloseFail() ? "CLEANUP_FAILED_" + stopReason
+                : afterClose.failed ? "CLEANUP_OBSERVATION_FAILED_" + stopReason
+                : afterClose.visible ? "CLEANUP_INTERFACE_STILL_VISIBLE_" + stopReason : stopReason;
+        status = recoveryRequired
+                ? "Cleanup needs verification; disconnect VPN and force-stop this app before retrying / 清理需确认：请断开 VPN 并强行停止本应用后重试"
                 : "Stopped / 已停止: " + stopReason;
         if (!destroyed) {
             stopForeground(STOP_FOREGROUND_REMOVE);

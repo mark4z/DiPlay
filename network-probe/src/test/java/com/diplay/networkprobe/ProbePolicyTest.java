@@ -2,16 +2,23 @@ package com.diplay.networkprobe;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class ProbePolicyTest {
-    @Test public void permitsOnlyTheTwoExplicitPortsAndFormatsExactUrls() {
+    @Test public void permitsOnlyHighPortAndFormatsExactUrl() {
         assertEquals(18080, ProbePolicy.DEFAULT_PORT);
-        assertEquals("http://100.96.23.17/health", ProbePolicy.healthUrl(80));
         assertEquals("http://100.96.23.17:18080/health", ProbePolicy.healthUrl(18080));
         assertEquals(5 * 60 * 1000L, ProbePolicy.DURATION_MS);
-        for (int port : new int[]{-1, 0, 81, 443, 8080, 65535}) {
+        for (int port : new int[]{-1, 0, 80, 81, 443, 8080, 65535}) {
             assertFalse(ProbePolicy.isTestPort(port));
             assertThrows(IllegalArgumentException.class, () -> ProbePolicy.healthUrl(port));
             assertThrows(IllegalArgumentException.class, () -> new ProbeSelfCheck(port));
         }
+    }
+    @Test public void modesHaveFixedIndependentAddressPlans() {
+        assertArrayEquals(new String[]{"100.96.23.17"}, ProbePolicy.addresses(ProbePolicy.SINGLE));
+        assertArrayEquals(new String[]{"100.96.23.17", "192.168.247.2"}, ProbePolicy.addresses(ProbePolicy.DUAL));
+        assertFalse(ProbePolicy.isTestMode(0));
+        assertFalse(ProbePolicy.isTestMode(3));
+        assertThrows(IllegalArgumentException.class, () -> ProbePolicy.addresses(0));
+        assertEquals(15_000L, ProbePolicy.STARTUP_TIMEOUT_MS);
     }
     @Test public void startGrantIsManualSingleUseAndNotPersisted() {
         ProbePolicy.StartGate gate = new ProbePolicy.StartGate();
@@ -38,5 +45,10 @@ public class ProbePolicyTest {
         assertFalse(ProbePolicy.overlaps(host, new byte[]{0, 0, 0, 0}, 0));
         assertFalse(ProbePolicy.overlaps(host, new byte[16], 64));
         assertFalse(ProbePolicy.overlaps(host, host, 33));
+        byte[] compatibility = {(byte) 192, (byte) 168, (byte) 247, 2};
+        assertTrue(ProbePolicy.overlaps(compatibility, compatibility, 32));
+        assertTrue(ProbePolicy.overlaps(compatibility, new byte[]{(byte) 192, (byte) 168, (byte) 247, 0}, 24));
+        assertTrue(ProbePolicy.overlaps(compatibility, new byte[]{(byte) 192, (byte) 168, 0, 0}, 16));
+        assertFalse(ProbePolicy.overlaps(compatibility, host, 32));
     }
 }
