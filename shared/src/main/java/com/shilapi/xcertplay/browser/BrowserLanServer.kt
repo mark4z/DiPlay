@@ -27,7 +27,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * A deliberately small, single-viewer LAN WebSocket endpoint. No HTTP files, discovery,
+ * A deliberately small, single-viewer LAN WebSocket endpoint with a generic /health probe.
+ * No HTTP files, discovery,
  * URL credentials, TLS fallback, compression, binary input or fragmented messages.
  *
  * Each connection requires an explicit foreground Android approval and the exact trusted HTTPS
@@ -54,6 +55,13 @@ class BrowserLanServer(
     private var closed = false
     @Volatile private var owner: BrowserLanConnection? = null
     private var watchdog: java.util.concurrent.ScheduledExecutorService? = null
+    private val preflights = mutableSetOf<BrowserLanConnection>()
+    private val attempts = BrowserLanRateLimit(8, 10_000)
+    private val diagnostics = BrowserConnectionDiagnostics()
+
+    /** Local-only snapshots; /health never exposes these records. */
+    fun diagnosticsSnapshot(): List<BrowserConnectionEvent> = diagnostics.snapshot()
+    fun diagnosticsReport(): String = diagnostics.report()
 
     init {
         require(BrowserLanProtocol.isPrivateIpv4(bindAddress)) { "A private LAN IPv4 address is required" }
@@ -73,7 +81,7 @@ class BrowserLanServer(
             listener = server
             watchdog = Executors.newSingleThreadScheduledExecutor { task ->
                 Thread(task, "CarPlay-LAN-deadlines").apply { isDaemon = true }
-            }.also { it.scheduleAtFixedRate({ owner?.checkDeadline() }, 250, 250, TimeUnit.MILLISECONDS) }
+            }.also { it.scheduleAtFixedRate({ checkDeadlines() }, 250, 250, TimeUnit.MILLISECONDS) }
             Thread({ acceptLoop(server) }, "CarPlay-LAN-accept").apply { isDaemon = true; start() }
             server.localPort
         } catch (failure: Exception) {
@@ -115,7 +123,7 @@ class BrowserLanServer(
     }
 
     override fun close() {
-        val session: BrowserLanConnection?
+        val sessions: List<BrowserLanConnection>
         synchronized(lock) {
             if (closed) return
             closed = true
@@ -123,32 +131,60 @@ class BrowserLanServer(
             listener = null
             watchdog?.shutdownNow()
             watchdog = null
-            session = owner
+            sessions = preflights.toList() + listOfNotNull(owner)
         }
-        session?.stop()
+        sessions.forEach { it.stop() }
+    }
+
+    internal fun checkDeadlines(now: Long = monotonicMillis()) {
+        val sessions = synchronized(lock) { preflights.toList() + listOfNotNull(owner) }
+        sessions.forEach { it.checkDeadline(now) }
     }
 
     private fun acceptLoop(server: ServerSocket) {
-        // Bounds thread creation/auth attempts even if malformed handshakes disconnect quickly.
-        val attempts = BrowserLanRateLimit(8, 10_000)
         while (!server.isClosed) {
             val socket = try { server.accept() } catch (_: IOException) { return }
-            synchronized(lock) {
-                if (closed || owner != null || !attempts.allow() ||
-                    !BrowserLanProtocol.isPrivateIpv4(socket.inetAddress)
-                ) {
-                    runCatching { socket.close() }
-                } else {
-                    val session = BrowserLanConnection(
-                        socket, "${bindAddress.hostAddress}:${server.localPort}", allowedOrigin,
-                        onApprovalRequested, onApprovalFinished, onAuthenticated, onText, onDisconnected,
-                    ) { finished -> synchronized(lock) { if (owner === finished) owner = null } }
-                    owner = session
-                    session.start()
-                }
-            }
+            acceptConnection(socket, "${bindAddress.hostAddress}:${server.localPort}")
         }
     }
+
+    /** Internal socket seam for loopback JVM tests; the public listener still enforces RFC1918. */
+    internal fun acceptConnection(socket: Socket, expectedHost: String, privatePeer: Boolean =
+        BrowserLanProtocol.isPrivateIpv4(socket.inetAddress)) {
+        synchronized(lock) {
+            val attempt = diagnostics.begin()
+            val rejection = when {
+                closed -> BrowserConnectionReason.SERVER_STOPPED
+                !privatePeer -> BrowserConnectionReason.NON_PRIVATE_PEER
+                !attempts.allow() -> BrowserConnectionReason.RATE_LIMIT
+                preflights.size >= 4 -> BrowserConnectionReason.PREFLIGHT_LIMIT
+                else -> null
+            }
+            if (rejection != null) {
+                attempt.record(BrowserConnectionStage.CLOSED, rejection)
+                runCatching { socket.close() }
+                return
+            }
+            // Health probes have their own bounded short-lived slots. Only a fully
+            // validated upgrade may claim the single viewer slot, under the same lock.
+            val session = BrowserLanConnection(
+                socket, expectedHost, allowedOrigin,
+                onApprovalRequested, onApprovalFinished, onAuthenticated, onText, onDisconnected,
+                onFinished = { finished -> synchronized(lock) {
+                    preflights.remove(finished)
+                    if (owner === finished) owner = null
+                } },
+                diagnostic = attempt,
+                claimViewer = { candidate -> synchronized(lock) {
+                    if (closed || owner != null || !preflights.remove(candidate)) false
+                    else { owner = candidate; true }
+                } },
+            )
+            preflights.add(session)
+            session.start()
+        }
+    }
+
 }
 
 internal data class BrowserLanAudioTransport(
@@ -165,6 +201,17 @@ class BrowserApprovalRequest internal constructor(
     private val isActive: () -> Boolean = { true },
 ) {
     private var decision = 0 // pending, approved, rejected, consumed/closed
+    private var promptReported = false
+    private var promptObserver: ((Boolean) -> Unit)? = null
+    @Synchronized internal fun observePrompt(observer: (Boolean) -> Unit) { promptObserver = observer }
+    fun markPromptShown() { reportPrompt(true) }
+    fun markPromptUnavailable() { reportPrompt(false) }
+    @Synchronized private fun reportPrompt(shown: Boolean) {
+        if (promptReported || decision != 0) return
+        promptReported = true
+        // Diagnostics must never change or interrupt the approval decision.
+        runCatching { promptObserver?.invoke(shown) }
+    }
     @Synchronized fun approve(): Boolean {
         if (decision != 0 || !isActive() || monotonicMillis() >= expiresAt) return false
         decision = 1
@@ -191,7 +238,17 @@ internal class BrowserLanConnection(
     private val onText: (String) -> Unit,
     private val onDisconnected: () -> Unit,
     private val onFinished: (BrowserLanConnection) -> Unit,
+    private val diagnostic: BrowserConnectionDiagnostics.Attempt?,
+    private val claimViewer: (BrowserLanConnection) -> Boolean,
 ) {
+    // Keep the original positional and trailing-lambda constructor used by JVM seams.
+    constructor(socket: Socket, expectedHost: String, origin: String,
+        onApprovalRequested: (BrowserApprovalRequest) -> Unit, onApprovalFinished: (Long) -> Unit,
+        onAuthenticated: () -> Unit, onText: (String) -> Unit, onDisconnected: () -> Unit,
+        onFinished: (BrowserLanConnection) -> Unit,
+    ) : this(socket, expectedHost, origin, onApprovalRequested, onApprovalFinished,
+        onAuthenticated, onText, onDisconnected, onFinished, null, { true })
+
     private val stopped = AtomicBoolean(false)
     private val approvalLock = Any()
     private val outbound = BrowserLanQueue()
@@ -224,10 +281,14 @@ internal class BrowserLanConnection(
 
     fun resetAudio() { outbound.resetAudio() }
 
-    fun stop() {
+    fun stop() { stopWithReason(BrowserConnectionReason.NONE) }
+
+    private fun stopWithReason(reason: BrowserConnectionReason, deadline: Boolean = false) {
         synchronized(approvalLock) {
             if (!stopped.compareAndSet(false, true)) return
             approval?.invalidate()
+            if (deadline) diagnostic?.record(BrowserConnectionStage.DEADLINE, reason)
+            diagnostic?.record(BrowserConnectionStage.CLOSED, reason)
         }
         outbound.close()
         runCatching { socket.close() }
@@ -236,13 +297,18 @@ internal class BrowserLanConnection(
     fun checkDeadline(now: Long = monotonicMillis()) {
         if (stopped.get()) return
         val writeStart = writingSince
-        if ((!upgraded && now - acceptedAt >= 5_000) ||
-            (!authenticated && approvalStartedAt == 0L && now - acceptedAt >= 10_000) ||
-            (!authenticated && approvalStartedAt != 0L && now - approvalStartedAt >= 30_000) ||
-            (authenticated && now - lastRead >= 30_000) ||
-            (writeStart != 0L && now - writeStart >= 5_000)
-        ) {
-            stop()
+        val reason = when {
+            !upgraded && now - acceptedAt >= 5_000 -> BrowserConnectionReason.HEADER_DEADLINE
+            !authenticated && approvalStartedAt == 0L && now - acceptedAt >= 10_000 ->
+                BrowserConnectionReason.APPROVAL_REQUEST_DEADLINE
+            !authenticated && approvalStartedAt != 0L && now - approvalStartedAt >= 30_000 ->
+                BrowserConnectionReason.APPROVAL_DEADLINE
+            authenticated && now - lastRead >= 30_000 -> BrowserConnectionReason.IDLE_DEADLINE
+            writeStart != 0L && now - writeStart >= 5_000 -> BrowserConnectionReason.WRITE_DEADLINE
+            else -> null
+        }
+        if (reason != null) {
+            stopWithReason(reason, deadline = true)
         } else if (authenticated && now - lastPing >= 10_000) {
             lastPing = now
             if (!outbound.offer(9, byteArrayOf())) stop()
@@ -250,13 +316,31 @@ internal class BrowserLanConnection(
     }
 
     private fun readLoop() {
+        var websocketRequested = false
         try {
             socket.tcpNoDelay = true
             socket.soTimeout = 10_000 // Watchdog also enforces absolute slowloris/write deadlines.
             socket.sendBufferSize = 64 * 1024
             val input = BufferedInputStream(socket.getInputStream(), 8192)
             val output = socket.getOutputStream()
-            val accept = BrowserLanProtocol.handshake(input, expectedHost, origin)
+            val requestHeaders = BrowserLanProtocol.readHttpRequest(input)
+            diagnostic?.record(BrowserConnectionStage.HTTP_PARSED)
+            websocketRequested = requestHeaders.path == "/carplay"
+            val request = BrowserLanProtocol.classifyRequest(requestHeaders, expectedHost, origin)
+            if (request is BrowserLanProtocol.HttpRequestKind.Health) {
+                writingSince = monotonicMillis()
+                output.write(BrowserLanProtocol.healthResponse(request.headOnly))
+                output.flush()
+                writingSince = 0
+                diagnostic?.record(BrowserConnectionStage.HEALTH_SERVED)
+                return
+            }
+            val accept = (request as BrowserLanProtocol.HttpRequestKind.Upgrade).accept
+            if (stopped.get()) return
+            if (!claimViewer(this)) {
+                diagnostic?.record(BrowserConnectionStage.WEBSOCKET_REJECTED, BrowserConnectionReason.BUSY)
+                return
+            }
             writingSince = monotonicMillis()
             output.write(("HTTP/1.1 101 Switching Protocols\r\n" +
                 "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
@@ -264,25 +348,34 @@ internal class BrowserLanConnection(
             output.flush()
             writingSince = 0
             upgraded = true
+            diagnostic?.record(BrowserConnectionStage.WEBSOCKET_ACCEPTED)
             writer = Thread({ writeLoop(output) }, "CarPlay-LAN-writer").apply { isDaemon = true; start() }
             val auth = BrowserLanProtocol.readFrame(input)
             if (auth.opcode != 1 || !BrowserLanProtocol.requestsApproval(auth.payload)) {
+                diagnostic?.record(BrowserConnectionStage.WEBSOCKET_REJECTED, BrowserConnectionReason.INVALID_APPROVAL_REQUEST)
                 failApproval("upgradeRequired")
                 return
             }
-            val request = synchronized(approvalLock) {
+            diagnostic?.record(BrowserConnectionStage.APPROVAL_REQUEST_RECEIVED)
+            val approvalRequest = synchronized(approvalLock) {
                 if (stopped.get()) return
                 approvalStartedAt = monotonicMillis()
                 BrowserApprovalRequest(nextRequestId.incrementAndGet(),
                     socket.inetAddress?.hostAddress ?: "unknown", approvalStartedAt + 30_000,
-                    { !stopped.get() }).also { approval = it }
+                    { !stopped.get() }).also { request ->
+                    request.observePrompt { shown -> diagnostic?.record(
+                        if (shown) BrowserConnectionStage.PROMPT_SHOWN else BrowserConnectionStage.PROMPT_UNAVAILABLE) }
+                    approval = request
+                }
             }
             outbound.offer(1, "{\"type\":\"approvalPending\",\"version\":2}".toByteArray())
-            onApprovalRequested(request)
-            if (!awaitApproval(input, request)) return
+            diagnostic?.record(BrowserConnectionStage.PROMPT_PENDING)
+            onApprovalRequested(approvalRequest)
+            if (!awaitApproval(input, approvalRequest)) return
             synchronized(approvalLock) {
                 if (stopped.get()) return
                 authenticated = true
+                diagnostic?.record(BrowserConnectionStage.APPROVED)
             }
             lastRead = monotonicMillis()
             socket.soTimeout = 30_000
@@ -294,7 +387,7 @@ internal class BrowserLanConnection(
             while (!stopped.get()) {
                 val frame = BrowserLanProtocol.readFrame(input)
                 lastRead = monotonicMillis()
-                if (!messages.allow()) throw BrowserLanProtocol.Failure(1008)
+                if (!messages.allow()) throw BrowserLanProtocol.Failure(1008, BrowserConnectionReason.RATE_LIMIT)
                 when (frame.opcode) {
                     1 -> onText(BrowserLanProtocol.utf8(frame.payload))
                     8 -> {
@@ -308,9 +401,24 @@ internal class BrowserLanConnection(
                 }
             }
         } catch (failure: BrowserLanProtocol.Failure) {
+            if (!stopped.get()) diagnostic?.record(
+                if (upgraded || websocketRequested) BrowserConnectionStage.WEBSOCKET_REJECTED else BrowserConnectionStage.HTTP_REJECTED,
+                failure.reason)
             if (upgraded) gracefulClose(byteArrayOf((failure.closeCode ushr 8).toByte(), failure.closeCode.toByte()))
+        } catch (_: SocketTimeoutException) {
+            val reason = when {
+                !upgraded -> BrowserConnectionReason.HEADER_DEADLINE
+                authenticated -> BrowserConnectionReason.IDLE_DEADLINE
+                approvalStartedAt != 0L -> BrowserConnectionReason.FRAME_READ_DEADLINE
+                else -> BrowserConnectionReason.APPROVAL_REQUEST_DEADLINE
+            }
+            stopWithReason(reason, deadline = true)
+        } catch (_: EOFException) {
+            if (!stopped.get() && !upgraded) diagnostic?.record(
+                BrowserConnectionStage.HTTP_REJECTED, BrowserConnectionReason.INCOMPLETE_HTTP)
         } catch (_: Exception) {
-            // Never log authentication tokens, request contents, touch input or video.
+            // Only a fixed classification is retained; never exception text or input.
+            if (!stopped.get()) stopWithReason(BrowserConnectionReason.IO_FAILURE)
         } finally {
             stop()
             val request = approval
@@ -327,11 +435,15 @@ internal class BrowserLanConnection(
         socket.soTimeout = 100
         while (!stopped.get()) {
             if (monotonicMillis() - approvalStartedAt >= 30_000) {
+                diagnostic?.record(BrowserConnectionStage.DEADLINE, BrowserConnectionReason.APPROVAL_DEADLINE)
                 failApproval("approvalTimeout"); return false
             }
             when (request.takeDecision()) {
                 1 -> return true
-                2, 3 -> { failApproval("approvalRejected"); return false }
+                2, 3 -> {
+                    diagnostic?.record(BrowserConnectionStage.WEBSOCKET_REJECTED, BrowserConnectionReason.APPROVAL_REJECTED)
+                    failApproval("approvalRejected"); return false
+                }
             }
             // Timeout applies only to the first byte. Once a frame begins it must finish
             // with a one-second read inactivity limit plus the absolute approval watchdog;
@@ -344,6 +456,7 @@ internal class BrowserLanConnection(
                 BrowserLanProtocol.validateClose(frame.payload)
                 gracefulClose(frame.payload)
             } else {
+                diagnostic?.record(BrowserConnectionStage.WEBSOCKET_REJECTED, BrowserConnectionReason.APPROVAL_REJECTED)
                 failApproval("approvalRejected") // no commands or media before consent
             }
             return false
@@ -387,7 +500,9 @@ internal object BrowserLanProtocol {
     const val MAX_TEXT_BYTES = 8192
     const val MAX_BINARY_BYTES = 4 * 1024 * 1024
     private const val MAX_HEADERS = 8192
-    class Failure(val closeCode: Int = 1002) : IOException("Invalid browser bridge protocol")
+    class Failure(val closeCode: Int = 1002,
+        val reason: BrowserConnectionReason = BrowserConnectionReason.INVALID_FRAME) :
+        IOException("Invalid browser bridge protocol")
     data class Frame(val opcode: Int, val payload: ByteArray, val audio: Boolean = false)
 
     fun isPrivateIpv4(address: InetAddress): Boolean {
@@ -407,13 +522,23 @@ internal object BrowserLanProtocol {
             '*' !in origin
     } catch (_: Exception) { false }
 
-    fun handshake(input: InputStream, expectedHost: String, origin: String): String {
+    data class HttpRequest(val method: String, val path: String, val headers: Map<String, String>)
+    sealed class HttpRequestKind {
+        data class Health(val headOnly: Boolean) : HttpRequestKind()
+        data class Upgrade(val accept: String) : HttpRequestKind()
+    }
+
+    private fun invalid(reason: BrowserConnectionReason): Nothing = throw Failure(reason = reason)
+
+    fun readHttpRequest(input: InputStream): HttpRequest {
         val bytes = ByteArray(MAX_HEADERS)
         var size = 0
         while (size < bytes.size) {
             val value = input.read()
             if (value < 0) throw EOFException()
-            if (value != 9 && value != 10 && value != 13 && value !in 32..126) throw Failure()
+            if (value != 9 && value != 10 && value != 13 && value !in 32..126) {
+                invalid(BrowserConnectionReason.MALFORMED_HTTP)
+            }
             bytes[size++] = value.toByte()
             if (size >= 4 && bytes[size - 4] == 13.toByte() && bytes[size - 3] == 10.toByte() &&
                 bytes[size - 2] == 13.toByte() && bytes[size - 1] == 10.toByte()
@@ -421,30 +546,69 @@ internal object BrowserLanProtocol {
         }
         if (size < 4 || bytes[size - 4] != 13.toByte() || bytes[size - 3] != 10.toByte() ||
             bytes[size - 2] != 13.toByte() || bytes[size - 1] != 10.toByte()
-        ) throw Failure()
+        ) invalid(BrowserConnectionReason.HEADERS_TOO_LARGE)
         val lines = String(bytes, 0, size - 4, Charsets.US_ASCII).split("\r\n")
-        if (lines.firstOrNull() != "GET /carplay HTTP/1.1" || lines.size > 65) throw Failure()
+        if (lines.size > 65) invalid(BrowserConnectionReason.HEADERS_TOO_LARGE)
+        val requestLine = Regex("([A-Z]+) ([^ \t\r\n]+) HTTP/1\\.1").matchEntire(lines.first())
+            ?: invalid(BrowserConnectionReason.MALFORMED_HTTP)
         val headers = mutableMapOf<String, String>()
         for (line in lines.drop(1)) {
             val colon = line.indexOf(':')
-            if (colon <= 0) throw Failure()
+            if (colon <= 0) invalid(BrowserConnectionReason.MALFORMED_HTTP)
             val name = line.substring(0, colon)
-            if (!name.matches(Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+"))) throw Failure()
+            if (!name.matches(Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+"))) invalid(BrowserConnectionReason.MALFORMED_HTTP)
             val value = line.substring(colon + 1).trim(' ', '\t')
-            if (value.any { it == '\r' || it == '\n' }) throw Failure()
-            if (headers.put(name.lowercase(Locale.ROOT), value) != null) throw Failure()
+            if (value.any { it == '\r' || it == '\n' }) invalid(BrowserConnectionReason.MALFORMED_HTTP)
+            if (headers.put(name.lowercase(Locale.ROOT), value) != null) invalid(BrowserConnectionReason.MALFORMED_HTTP)
         }
-        if (headers["host"] != expectedHost || headers["origin"] != origin ||
-            !headers["upgrade"].equals("websocket", ignoreCase = true) ||
-            headers["connection"]?.split(',')?.none { it.trim().equals("upgrade", ignoreCase = true) } != false ||
-            headers["sec-websocket-version"] != "13" || "transfer-encoding" in headers ||
-            (headers["content-length"] != null && headers["content-length"] != "0")
-        ) throw Failure()
-        val key = headers["sec-websocket-key"] ?: throw Failure()
-        val decoded = try { Base64.getDecoder().decode(key) } catch (_: IllegalArgumentException) { throw Failure() }
-        if (decoded.size != 16 || Base64.getEncoder().encodeToString(decoded) != key) throw Failure()
-        return Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1")
-            .digest((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray(Charsets.US_ASCII)))
+        return HttpRequest(requestLine.groupValues[1], requestLine.groupValues[2], headers)
+    }
+
+    fun classifyRequest(request: HttpRequest, expectedHost: String, origin: String): HttpRequestKind {
+        val headers = request.headers
+        if (request.path != "/health" && request.path != "/carplay") invalid(BrowserConnectionReason.INVALID_PATH)
+        val health = request.path == "/health"
+        if (request.method != "GET" && !(health && request.method == "HEAD")) invalid(BrowserConnectionReason.INVALID_METHOD)
+        if (headers["host"] != expectedHost) invalid(BrowserConnectionReason.INVALID_HOST)
+        // A direct health navigation need not carry Origin; when present it is still pinned.
+        if ((!health || "origin" in headers) && headers["origin"] != origin) invalid(BrowserConnectionReason.INVALID_ORIGIN)
+        if ("transfer-encoding" in headers || (headers["content-length"] != null && headers["content-length"] != "0")) {
+            invalid(BrowserConnectionReason.UNSUPPORTED_BODY)
+        }
+        val connectionUpgrade = headers["connection"]?.split(',')?.any { it.trim().equals("upgrade", ignoreCase = true) } == true
+        if (health) {
+            if ("upgrade" in headers || connectionUpgrade || headers.keys.any { it.startsWith("sec-websocket-") }) {
+                invalid(BrowserConnectionReason.INVALID_UPGRADE)
+            }
+            return HttpRequestKind.Health(request.method == "HEAD")
+        }
+        if (!headers["upgrade"].equals("websocket", ignoreCase = true) || !connectionUpgrade) {
+            invalid(BrowserConnectionReason.INVALID_UPGRADE)
+        }
+        if (headers["sec-websocket-version"] != "13") invalid(BrowserConnectionReason.INVALID_WEBSOCKET_VERSION)
+        val key = headers["sec-websocket-key"] ?: invalid(BrowserConnectionReason.INVALID_WEBSOCKET_KEY)
+        val decoded = try { Base64.getDecoder().decode(key) } catch (_: IllegalArgumentException) {
+            invalid(BrowserConnectionReason.INVALID_WEBSOCKET_KEY)
+        }
+        if (decoded.size != 16 || Base64.getEncoder().encodeToString(decoded) != key) {
+            invalid(BrowserConnectionReason.INVALID_WEBSOCKET_KEY)
+        }
+        return HttpRequestKind.Upgrade(Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1")
+            .digest((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray(Charsets.US_ASCII))))
+    }
+
+    fun handshake(input: InputStream, expectedHost: String, origin: String): String {
+        val request = classifyRequest(readHttpRequest(input), expectedHost, origin)
+        return (request as? HttpRequestKind.Upgrade)?.accept ?: invalid(BrowserConnectionReason.INVALID_PATH)
+    }
+
+    /** Fixed public marker only. Never add identity, network/session state or diagnostic history. */
+    fun healthResponse(headOnly: Boolean): ByteArray {
+        val body = "{\"service\":\"diplay-browser\",\"protocol\":2,\"build\":\"connection-diag-v1\"}\n"
+        val headers = "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n" +
+            "Content-Length: ${body.toByteArray(Charsets.UTF_8).size}\r\nConnection: close\r\n" +
+            "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n"
+        return (headers + if (headOnly) "" else body).toByteArray(Charsets.UTF_8)
     }
 
     fun readFrame(input: InputStream): Frame {

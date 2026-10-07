@@ -11,6 +11,15 @@ object BrowserOutput {
     private val lock = Any()
     @Volatile private var server: BrowserLanServer? = null
     @Volatile var endpoint: String? = null; private set
+    /** Manual, top-level browser navigation only; never fetched from the HTTPS viewer. */
+    val healthEndpoint: String? get() = endpoint?.let {
+        val address = java.net.URI(it)
+        "http://${address.host}:${address.port}/health"
+    }
+
+    fun connectionDiagnosticReport(): String = server?.diagnosticsReport()
+        ?: "Browser connection diagnostics: listener OFF. Start browser output to record a new session."
+
     const val VIEWER_ORIGIN = "https://mark4z.github.io"
     @Volatile var viewerConnected = false; private set
     @Volatile var browserTouchOwned = false; private set
@@ -78,7 +87,13 @@ object BrowserOutput {
                 approvalUi
             }
         }
-        if (ui == null) request.reject() else try { ui.requested(request) } catch (_: Exception) { request.reject() }
+        if (ui == null) {
+            request.markPromptUnavailable()
+            request.reject()
+        } else try { ui.requested(request) } catch (_: Exception) {
+            request.markPromptUnavailable()
+            request.reject()
+        }
     }
 
     private fun finishApproval(id: Long, generation: Long) {

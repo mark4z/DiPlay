@@ -154,3 +154,33 @@ approve v2 requests, and an old token-based viewer cannot connect to the new APK
 The page gives upgrade guidance rather than silently weakening authorization.
 The protocol grants only the current connection and never stores a token, device
 identity, network address, or grant in browser storage or URL history.
+
+## Connection diagnostics (requires the updated APK)
+
+While Browser output is ON, Android settings provide **Copy health URL**, **Open
+health on Android**, and **Connection diagnostics**. Type the displayed
+`http://<selected-ip>:<port>/health` into the car browser's address bar as a manual,
+top-level navigation. The endpoint returns only a fixed service/protocol/build
+marker, without identity, approval state, history or media. It works independently
+of a currently connected viewer and does not trigger an approval prompt. It closes
+with the listener when Browser output is stopped.
+
+A health response establishes that this browser can reach this Android address and
+port over HTTP. It does **not** establish that the browser permits a WebSocket from
+the HTTPS viewer, that its upgrade handshake passed, or that Android approved it.
+Do not fetch this HTTP address from the HTTPS viewer or bypass browser warnings.
+Opening it on Android tests Android's own route, not the car's route.
+
+The Android report records bounded, process-local timestamps, elapsed milliseconds,
+connection numbers, stage counters and fixed failure categories. It never records
+remote addresses, request headers, URLs, pairing data or audio/video payloads. The
+report window refreshes from memory and has an explicit copy button; the same safe
+snapshot is included in the existing diagnostic export. Stopping and restarting
+the listener starts a fresh report. Keep the Android app in front during approval.
+
+The viewer's current-attempt timeline distinguishes Connect, WebSocket open,
+approval pending, approval granted, first decoded video and closure, with elapsed
+times. The page also distinguishes its HTTPS/secure-context status from the
+unencrypted local `ws://` transport. A 1006 close is an abnormal closure indication,
+not proof of a certificate, local-network permission or routing failure. Compare
+its last reached stage with Android's report to find where the attempt stopped.

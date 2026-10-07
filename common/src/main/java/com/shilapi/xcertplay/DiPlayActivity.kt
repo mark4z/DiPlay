@@ -2966,6 +2966,9 @@ class DiPlayActivity : ComponentActivity() {
                     appendLine("Session: ${if (CarPlayBackgroundSession.active) "active" else if (CarPlayBackgroundSession.hasSession()) "connecting" else "stopped"}")
                     appendLine("Head-unit board: ${Build.BOARD}; hardware: ${Build.HARDWARE}; build: ${Build.DISPLAY}")
                     appendLine()
+                    appendLine("--- Browser connection diagnostics (local, bounded, no media or addresses) ---")
+                    appendLine(com.shilapi.xcertplay.browser.BrowserOutput.connectionDiagnosticReport())
+                    appendLine()
                     appendLine("--- Performance diagnostics ---")
                     PerformanceDiagnostics.snapshot().lineSequence().forEach { line ->
                         DiagnosticRedactor.redact(line)?.let { appendLine(it) }

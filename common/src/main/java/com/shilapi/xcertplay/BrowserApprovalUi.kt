@@ -29,6 +29,7 @@ internal class BrowserApprovalUi(private val activity: Activity) {
 
     private fun show(pending: BrowserApprovalRequest) {
         if (!resumed || activity.isFinishing || activity.isDestroyed || !BrowserOutput.isApprovalPending(pending)) {
+            pending.markPromptUnavailable()
             pending.reject()
             return
         }
@@ -58,7 +59,13 @@ internal class BrowserApprovalUi(private val activity: Activity) {
             if (!approved) pending.reject()
             if (request === pending) { request = null; dialog = null }
         }
-        try { alert.show() } catch (_: RuntimeException) { dismiss() }
+        try {
+            alert.show()
+            pending.markPromptShown()
+        } catch (_: RuntimeException) {
+            pending.markPromptUnavailable()
+            dismiss()
+        }
     }
 
     private fun dismiss() {
