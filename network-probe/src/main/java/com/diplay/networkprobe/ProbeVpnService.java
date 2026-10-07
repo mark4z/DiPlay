@@ -29,11 +29,20 @@ import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Collections;
+import javax.net.ssl.SSLSocket;
 
 public final class ProbeVpnService extends VpnService {
     public static final String START = "com.diplay.networkprobe.START";
     public static final String STOP = "com.diplay.networkprobe.STOP";
     public static final String MODE_EXTRA = "mode";
+    public static final String PORT_EXTRA = "port";
+    // One-use, in-process handoff only. No secret in Intent, Bundle, disk or saved state.
+    private static ProbeTlsIdentity launchIdentity;
+    static long armStart(ProbeTlsIdentity identity) {
+        launchIdentity = identity;
+        return GATE.arm();
+    }
+    static void cancelStart() { GATE.cancel(); launchIdentity = null; }
     public static final ProbePolicy.StartGate GATE = new ProbePolicy.StartGate();
     public static volatile String status = "Stopped / 已停止";
     public static volatile boolean running;
@@ -76,10 +85,13 @@ public final class ProbeVpnService extends VpnService {
             return START_NOT_STICKY;
         }
         if (recoveryRequired) { stopSelf(); return START_NOT_STICKY; }
-        if (running) return START_NOT_STICKY;
+        if (running || PlainHotspotProbe.running || PlainHotspotProbe.recoveryRequired) { launchIdentity = null; return START_NOT_STICKY; }
         final int mode = intent.getIntExtra(MODE_EXTRA, 0);
-        final int port = ProbePolicy.DEFAULT_PORT;
-        if (!ProbePolicy.isTestMode(mode)) {
+        final int port = intent.getIntExtra(PORT_EXTRA, 0);
+        final ProbeTlsIdentity identity = launchIdentity;
+        launchIdentity = null;
+        if (!ProbePolicy.isTestMode(mode) || !ProbePolicy.isTestPort(port)
+                || (port == ProbePolicy.HTTPS_PORT && identity == null)) {
             lastError = "INVALID_TEST_MODE";
             status = "Stopped / 已停止: INVALID_TEST_MODE";
             stopSelf();
@@ -113,11 +125,11 @@ public final class ProbeVpnService extends VpnService {
             PendingIntent open = PendingIntent.getActivity(this, 2, new Intent(this, ProbeActivity.class), PendingIntent.FLAG_IMMUTABLE);
             Notification notification = new Notification.Builder(this, "probe")
                     .setSmallIcon(android.R.drawable.stat_sys_warning).setContentTitle("DiPlay health experiment: 5 minutes")
-                    .setContentText(ProbePolicy.modeName(mode) + " :18080; Stop removes all test interfaces")
+                    .setContentText(ProbePolicy.modeName(mode) + " :" + port + "; Stop removes all test interfaces")
                     .setContentIntent(open).setOngoing(true).addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop / 停止", stop).build();
             if (Build.VERSION.SDK_INT >= 34) startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED);
             else startForeground(1, notification);
-            startWorker(() -> startAndServe(current, port, mode, interfaces), "health-only-io");
+            startWorker(() -> startAndServe(current, port, mode, interfaces, identity), "health-only-io");
         } catch (RuntimeException failure) {
             stopProbe("FOREGROUND_START_FAILED");
             current.workerFinished();
@@ -131,13 +143,14 @@ public final class ProbeVpnService extends VpnService {
         worker.start();
     }
 
-    private void startAndServe(ProbeSession current, int port, int mode, ProbeInterfaces interfaces) {
+    private void startAndServe(ProbeSession current, int port, int mode, ProbeInterfaces interfaces, ProbeTlsIdentity identity) {
         try {
             if (current.isCancelled()) return;
             reportStage(current, "STARTING_CHECKS");
             if (!foregroundUnlocked()) throw new ProbeFailure("BACKGROUND_OR_LOCKED");
             if (Build.VERSION.SDK_INT >= 37 && checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED) throw new ProbeFailure("LOCAL_NETWORK_PERMISSION_DENIED");
             if (VpnService.prepare(this) != null) throw new ProbeFailure("CONSENT_REQUIRED");
+            if (port == ProbePolicy.HTTPS_PORT) identity.checkValidity(ProbePolicy.HOSTNAME);
             rejectConflicts(mode);
             if (current.isCancelled()) return;
             if (!ProbeHandover.establish(current, mode, this::establishInterface, stage -> {
@@ -155,7 +168,7 @@ public final class ProbeVpnService extends VpnService {
             reportStage(current, "STARTING_BIND");
             // Do not assume the old interface is UP. Attempt the same exact primary bind;
             // after-handover diagnostics were captured before a possible bind failure.
-            ServerSocket listener = new ServerSocket();
+            ServerSocket listener = port == ProbePolicy.HTTPS_PORT ? identity.newServerSocket() : new ServerSocket();
             if (!current.own(listener)) return;
             try {
                 if (!ProbeListener.bind(listener, port, current::isCancelled)) return;
@@ -187,7 +200,7 @@ public final class ProbeVpnService extends VpnService {
                 try {
                     startWorker(() -> {
                         try {
-                            String result = check.run(localClient, current::isCancelled);
+                            String result = check.run(localClient, current::isCancelled, current::own, current::closeAsync);
                             main.post(() -> {
                                 if (session == current && !current.isCancelled() && "PENDING".equals(selfCheck)) selfCheck = result;
                             });
@@ -204,7 +217,8 @@ public final class ProbeVpnService extends VpnService {
                 }
             }
             serve(listener, current, check);
-        } catch (ProbeFailure failure) { failSession(current, failure.getMessage()); }
+        } catch (ProbeTlsIdentity.Failure failure) { failSession(current, failure.code); }
+        catch (ProbeFailure failure) { failSession(current, failure.getMessage()); }
         catch (IOException failure) { failSession(current, failure.getMessage() != null && failure.getMessage().endsWith("_ESTABLISH_REJECTED") ? failure.getMessage() : "START_OR_LISTENER_IO_FAILED"); }
         catch (SecurityException failure) { failSession(current, "PERMISSION_DENIED"); }
         catch (Exception failure) { failSession(current, "START_OR_LISTENER_FAILED"); }
@@ -268,6 +282,7 @@ public final class ProbeVpnService extends VpnService {
                 boolean external = !check.isOwnConnection(incoming);
                 main.post(() -> { if (session == current && !current.isCancelled() && external) accepted++; });
                 incoming.setSoTimeout(2000);
+                if (incoming instanceof SSLSocket) ((SSLSocket) incoming).startHandshake();
                 String request = HealthProtocol.readRequest(incoming.getInputStream());
                 if (current.isCancelled()) return;
                 if (SystemClock.elapsedRealtime() >= endsAt) { failSession(current, "TIME_LIMIT"); return; }
@@ -289,7 +304,7 @@ public final class ProbeVpnService extends VpnService {
     }
 
     private void stopProbe(String reason) {
-        GATE.cancel();
+        cancelStart();
         main.removeCallbacks(expiry);
         main.removeCallbacks(startupTimeout);
         main.removeCallbacks(foregroundCheck);

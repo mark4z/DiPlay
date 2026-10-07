@@ -62,7 +62,7 @@ class ProbeBoundaryTests(unittest.TestCase):
         for blocked in ('.establish()', '.bind(', '.close()', 'rejectConflicts(mode);'):
             self.assertNotIn(blocked, start)
             self.assertNotIn(blocked, stop)
-        self.assertIn('startWorker(() -> startAndServe(current, port, mode, interfaces)', start)
+        self.assertIn('startWorker(() -> startAndServe(current, port, mode, interfaces, identity)', start)
         self.assertIn('CLEANUP_PENDING_', source)
 
     def test_local_check_is_fixed_bounded_and_separate_from_peer_counts(self):
@@ -77,9 +77,9 @@ class ProbeBoundaryTests(unittest.TestCase):
     def test_mode_is_explicit_locked_and_preserved_through_consent(self):
         ui = (JAVA / "ProbeActivity.java").read_text()
         service = (JAVA / "ProbeVpnService.java").read_text()
-        self.assertIn('selectedMode = ProbePolicy.SINGLE', ui)
+        self.assertIn('selectedMode = ProbePolicy.HOTSPOT', ui)
         self.assertIn('pendingMode = selectedMode;', ui)
-        self.assertIn('int mode = pendingMode;\n        cancelPendingStart();', ui)
+        self.assertIn('int mode = pendingMode;\n        int port = pendingPort;\n        HotspotAddress hotspot = pendingHotspot;\n        cancelPendingStart();', ui)
         self.assertIn('.putExtra(ProbeVpnService.MODE_EXTRA, mode)', ui)
         self.assertIn('single.setEnabled(ready)', ui)
         self.assertIn('dual.setEnabled(ready)', ui)
@@ -87,8 +87,8 @@ class ProbeBoundaryTests(unittest.TestCase):
         self.assertIn('!pending && !ProbeVpnService.running && !ProbeVpnService.recoveryRequired', ui)
         self.assertIn('pendingMode = 0;', ui)
         self.assertIn('final int mode = intent.getIntExtra(MODE_EXTRA, 0)', service)
-        self.assertIn('if (!ProbePolicy.isTestMode(mode))', service)
-        self.assertIn('final int port = ProbePolicy.DEFAULT_PORT', service)
+        self.assertIn('if (!ProbePolicy.isTestMode(mode) || !ProbePolicy.isTestPort(port)', service)
+        self.assertIn('final int port = intent.getIntExtra(PORT_EXTRA, 0)', service)
         self.assertIn('sessionMode = mode;', service)
         self.assertIn('new ProbeSelfCheck(port)', service)
         self.assertIn('ProbePolicy.modeName(ProbeVpnService.sessionMode)', ui)
@@ -122,3 +122,62 @@ class ProbeBoundaryTests(unittest.TestCase):
             source = path.read_text()
             for forbidden in ('Runtime.getRuntime()', 'ProcessBuilder(', 'ip_unprivileged_port_start', 'setcap', 'setenforce'):
                 self.assertNotIn(forbidden, source)
+
+    def test_tls_import_remains_local_bounded_and_user_selected(self):
+        ui = (JAVA / 'ProbeActivity.java').read_text()
+        io = (JAVA / 'ProbeImportIO.java').read_text()
+        self.assertIn('Intent.ACTION_OPEN_DOCUMENT', ui)
+        self.assertIn('Intent.EXTRA_LOCAL_ONLY, true', ui)
+        self.assertIn('64 * 1024, task', ui)
+        self.assertIn('16 * 1024, task', ui)
+        self.assertIn('main.postDelayed(importTimeout, 15_000)', ui)
+        self.assertIn('identity = importCandidate;', ui)
+        self.assertIn('!finished.didCloseFail()', ui)
+        self.assertIn('importCandidate = null;', ui)
+        self.assertIn('Arrays.fill(keyBytes, (byte) 0)', ui)
+        self.assertIn('resolver.openFileDescriptor(uri, "r", signal)', ui)
+        self.assertIn('task.own(cancelOpen)', ui)
+        self.assertIn('ParcelFileDescriptor.AutoCloseInputStream(descriptor)', ui)
+        self.assertIn('task.own(input)', io)
+        self.assertIn('task.closeOwned(input)', io)
+        self.assertIn('Arrays.fill(buffer, (byte) 0)', io)
+        for path in JAVA.glob('*.java'):
+            for forbidden in ('takePersistableUriPermission', 'FileOutputStream(', 'openFileOutput(',
+                              'Log.', 'printStackTrace(', 'ACTION_SEND', 'ACTION_CREATE_DOCUMENT'):
+                self.assertNotIn(forbidden, path.read_text())
+
+    def test_tls_selfcheck_keeps_numeric_routing_and_domain_verification(self):
+        check = (JAVA / 'ProbeSelfCheck.java').read_text()
+        self.assertIn('InetAddress.getByName(targetAddress)', check)
+        self.assertIn('.createSocket(socket, hostname, port, true)', check)
+        self.assertIn('setEndpointIdentificationAlgorithm("HTTPS")', check)
+        self.assertIn('new SNIHostName(hostname)', check)
+        self.assertIn('ProbeTlsIdentity.defaultClientFactory()', check)
+        self.assertIn('if (!own.apply(tls)) return "CANCELLED"', check)
+        self.assertIn('close.accept(tls)', check)
+        service = (JAVA / 'ProbeVpnService.java').read_text()
+        self.assertIn('identity.checkValidity(ProbePolicy.HOSTNAME)', service)
+        self.assertIn('identity.newServerSocket()', service)
+        self.assertIn('((SSLSocket) incoming).startHandshake()', service)
+        self.assertIn('launchIdentity = null', service)
+
+    def test_ordinary_hotspot_does_not_prepare_or_start_vpn(self):
+        ui = (JAVA / 'ProbeActivity.java').read_text()
+        prepare = ui.split('private void prepareVpn()')[1].split('@Override public void onRequestPermissionsResult')[0]
+        self.assertLess(prepare.index('if (pendingMode == ProbePolicy.HOTSPOT)'), prepare.index('VpnService.prepare(this)'))
+        begin = ui.split('private void begin()')[1].split('private void cancelPendingStart()')[0]
+        self.assertLess(begin.index('if (mode == ProbePolicy.HOTSPOT)'), begin.index('ProbeVpnService.armStart'))
+        plain = (JAVA / 'PlainHotspotProbe.java').read_text()
+        for forbidden in ('.establish(', 'VpnService.prepare(', 'startService(', 'startForegroundService(', '.addRoute(', '.addDnsServer('):
+            self.assertNotIn(forbidden, plain)
+        for required in ('ProbeSession', 'foregroundUnlocked(', 'ProbePolicy.DURATION_MS', 'ProbePolicy.STARTUP_TIMEOUT_MS',
+                         'HotspotListener.bind(', 'identity.checkValidity(ProbePolicy.HOTSPOT_HOSTNAME)',
+                         'new ProbeSelfCheck(selected.address, port, ProbePolicy.HOTSPOT_HOSTNAME)',
+                         'current.own(listener)', 'current.own(localClient)', 'current.own(incoming)'):
+            self.assertIn(required, plain)
+        listener = (JAVA / 'HotspotListener.java').read_text()
+        self.assertIn('new InetSocketAddress(address, port)', listener)
+        self.assertIn('verification.verify()', listener)
+        policy = (JAVA / 'HotspotPolicy.java').read_text()
+        for required in ('androidManaged', 'pointToPoint', 'virtual', 'isPrivateIpv4', 'isWifiApName'):
+            self.assertIn(required, policy)

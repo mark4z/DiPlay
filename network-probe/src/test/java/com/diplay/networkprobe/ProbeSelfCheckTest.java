@@ -110,4 +110,17 @@ public class ProbeSelfCheckTest {
             assertEquals(0, socket.output.size());
         }
     }
+    @Test public void hotspotHttpCheckUsesSelectedPrivateAddressOnly() throws Exception {
+        InetAddress address = InetAddress.getByAddress(new byte[]{10, 18, 0, 8});
+        FakeSocket socket = new FakeSocket();
+        ProbeSelfCheck check = new ProbeSelfCheck(address, 18080, ProbePolicy.HOTSPOT_HOSTNAME);
+        assertEquals("PASS", check.run(socket, () -> false));
+        assertEquals(new InetSocketAddress(address, 18080), socket.destination);
+        assertTrue(socket.output.toString("US-ASCII").contains("Host: 10.18.0.8:18080"));
+        assertThrows(IllegalArgumentException.class, () -> new ProbeSelfCheck(
+                InetAddress.getLoopbackAddress(), 9999, ProbePolicy.HOTSPOT_HOSTNAME));
+        assertThrows(IllegalArgumentException.class, () -> new ProbeSelfCheck(address, 9999, "other.example"));
+        assertEquals("TLS_OWNER_REQUIRED", new ProbeSelfCheck(address, 9999,
+                ProbePolicy.HOTSPOT_HOSTNAME).run(new FakeSocket(), () -> false));
+    }
 }

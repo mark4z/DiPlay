@@ -26,7 +26,7 @@ public class ProbeListenerTest {
     }
 
     @Test public void bindsOnlyTheSelectedFixedEndpointOnce() throws Exception {
-        for (int port : new int[]{18080}) {
+        for (int port : new int[]{18080, 9999}) {
             FakeListener listener = new FakeListener();
             assertTrue(ProbeListener.bind(listener, port, () -> false));
             assertEquals(new InetSocketAddress(ProbePolicy.ADDRESS, port), listener.bound);
@@ -39,7 +39,7 @@ public class ProbeListenerTest {
         FakeListener invalid = new FakeListener();
         assertThrows(IllegalArgumentException.class, () -> ProbeListener.bind(invalid, 8080, () -> false));
         assertEquals(0, invalid.calls);
-        for (int port : new int[]{18080}) {
+        for (int port : new int[]{18080, 9999}) {
             FakeListener listener = new FakeListener();
             assertFalse(ProbeListener.bind(listener, port, () -> true));
             assertEquals(0, listener.calls);
@@ -47,7 +47,7 @@ public class ProbeListenerTest {
     }
 
     @Test public void bindFailuresKeepOriginalExceptionAndNeverFallback() throws Exception {
-        for (int port : new int[]{18080}) {
+        for (int port : new int[]{18080, 9999}) {
             for (String message : new String[]{"EACCES", "EPERM", "EADDRINUSE", "EADDRNOTAVAIL"}) {
                 FakeListener listener = new FakeListener();
                 listener.failure = new BindException(message);
@@ -60,7 +60,7 @@ public class ProbeListenerTest {
     }
 
     @Test public void platformSecurityDenialNeverFallsBack() throws Exception {
-        for (int port : new int[]{18080}) {
+        for (int port : new int[]{18080, 9999}) {
             FakeListener listener = new FakeListener();
             SecurityException denial = new SecurityException("platform denied bind");
             listener.onBind = () -> { throw denial; };
@@ -72,7 +72,7 @@ public class ProbeListenerTest {
     }
 
     @Test public void cancellationDuringBindClosesListenerAndDescriptorBeforeFinish() throws Exception {
-        for (int port : new int[]{18080}) {
+        for (int port : new int[]{18080, 9999}) {
             Queue<Runnable> cleanup = new ArrayDeque<>();
             AtomicInteger descriptorCloses = new AtomicInteger(), finished = new AtomicInteger();
             ProbeSession session = new ProbeSession(cleanup::add, finished::incrementAndGet);
@@ -91,7 +91,7 @@ public class ProbeListenerTest {
     }
 
     @Test public void failedBindStillAllowsAllOwnedResourcesToClose() throws Exception {
-        for (int port : new int[]{18080}) {
+        for (int port : new int[]{18080, 9999}) {
             Queue<Runnable> cleanup = new ArrayDeque<>();
             AtomicInteger descriptorCloses = new AtomicInteger(), finished = new AtomicInteger();
             ProbeSession session = new ProbeSession(cleanup::add, finished::incrementAndGet);

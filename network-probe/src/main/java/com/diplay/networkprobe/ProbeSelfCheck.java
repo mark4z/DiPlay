@@ -8,6 +8,13 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
+import java.util.function.Consumer;
+import java.util.Collections;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SNIHostName;
 
 /** A bounded request to this session's exact local endpoint, never an Internet destination. */
 final class ProbeSelfCheck {
@@ -15,30 +22,71 @@ final class ProbeSelfCheck {
     static final int CONNECT_TIMEOUT_MS = 1500;
     static final int READ_TIMEOUT_MS = 2000;
     private final int port;
+    private final String targetAddress;
+    private final String hostname;
     private final String request;
     private volatile int sourcePort;
 
-    ProbeSelfCheck(int port) {
+    ProbeSelfCheck(int port) { this(ProbePolicy.ADDRESS, port, ProbePolicy.HOSTNAME); }
+
+    ProbeSelfCheck(InetAddress address, int port, String hostname) {
+        this(requirePrivateAddress(address), port, hostname);
+    }
+
+    private static String requirePrivateAddress(InetAddress address) {
+        if (address == null || !HotspotPolicy.isPrivateIpv4(address.getAddress()))
+            throw new IllegalArgumentException("NOT_PRIVATE_IPV4");
+        return address.getHostAddress();
+    }
+
+    private ProbeSelfCheck(String address, int port, String hostname) {
+        if (!ProbePolicy.isAllowedHostname(hostname)) throw new IllegalArgumentException("INVALID_TLS_HOSTNAME");
+        this.hostname = hostname;
+        this.targetAddress = address;
         this.port = ProbePolicy.requireTestPort(port);
-        request = "GET /health HTTP/1.1\r\nHost: " + ProbePolicy.authority(port)
+        String authority = (port == ProbePolicy.HTTPS_PORT ? hostname : targetAddress) + ":" + port;
+        request = "GET /health HTTP/1.1\r\nHost: " + authority
                 + "\r\nConnection: close\r\n\r\n";
     }
 
     boolean isOwnConnection(Socket incoming) {
         return sourcePort != 0 && incoming.getPort() == sourcePort
-                && ProbePolicy.ADDRESS.equals(incoming.getInetAddress().getHostAddress());
+                && targetAddress.equals(incoming.getInetAddress().getHostAddress());
     }
 
     String run(Socket socket, BooleanSupplier cancelled) {
+        if (port == ProbePolicy.HTTPS_PORT) return "TLS_OWNER_REQUIRED";
+        return run(socket, cancelled, resource -> false, resource -> {});
+    }
+
+    String run(Socket socket, BooleanSupplier cancelled, Function<Socket, Boolean> own,
+               Consumer<Socket> close) {
         boolean connected = false;
+        SSLSocket tls = null;
         try {
             if (cancelled.getAsBoolean()) return "CANCELLED";
-            InetAddress address = InetAddress.getByName(ProbePolicy.ADDRESS);
+            InetAddress address = InetAddress.getByName(targetAddress);
             socket.bind(new InetSocketAddress(address, 0));
             sourcePort = socket.getLocalPort();
             if (cancelled.getAsBoolean()) return "CANCELLED";
             socket.connect(new InetSocketAddress(address, port), CONNECT_TIMEOUT_MS);
             connected = true;
+            if (cancelled.getAsBoolean()) return "CANCELLED";
+            if (port == ProbePolicy.HTTPS_PORT) {
+                // The raw socket is already connected to the numeric local address. This host
+                // argument supplies TLS SNI/verification identity; it performs no DNS routing.
+                tls = (SSLSocket) ProbeTlsIdentity.defaultClientFactory()
+                        .createSocket(socket, hostname, port, true);
+                if (!own.apply(tls)) return "CANCELLED";
+                SSLParameters parameters = tls.getSSLParameters();
+                parameters.setEndpointIdentificationAlgorithm("HTTPS");
+                parameters.setServerNames(Collections.singletonList(new SNIHostName(hostname)));
+                tls.setSSLParameters(parameters);
+                tls.setSoTimeout(READ_TIMEOUT_MS);
+                if (cancelled.getAsBoolean()) return "CANCELLED";
+                tls.startHandshake();
+                socket = tls;
+            }
             if (cancelled.getAsBoolean()) return "CANCELLED";
             socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
             socket.getOutputStream().flush();
@@ -55,8 +103,14 @@ final class ProbeSelfCheck {
             return cancelled.getAsBoolean() ? "CANCELLED" : "PASS";
         } catch (SocketTimeoutException failure) {
             return cancelled.getAsBoolean() ? "CANCELLED" : connected ? "READ_TIMEOUT" : "CONNECT_TIMEOUT";
+        } catch (ProbeTlsIdentity.Failure failure) {
+            return cancelled.getAsBoolean() ? "CANCELLED" : failure.code;
+        } catch (SSLException failure) {
+            return cancelled.getAsBoolean() ? "CANCELLED" : "TLS_TRUST_HOSTNAME_OR_HANDSHAKE_FAILED";
         } catch (IOException | RuntimeException failure) {
             return cancelled.getAsBoolean() ? "CANCELLED" : "IO_FAILED";
+        } finally {
+            if (tls != null) close.accept(tls);
         }
     }
 }

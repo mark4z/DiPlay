@@ -4,7 +4,10 @@ import static org.junit.Assert.*;
 public class ProbePolicyTest {
     @Test public void permitsOnlyHighPortAndFormatsExactUrl() {
         assertEquals(18080, ProbePolicy.DEFAULT_PORT);
-        assertEquals("http://100.96.23.17:18080/health", ProbePolicy.healthUrl(18080));
+        assertEquals(9999, ProbePolicy.HTTPS_PORT);
+        assertEquals("https://tesla.mark4z.asia:9999/health", ProbePolicy.healthUrl(9999));
+        assertTrue(ProbePolicy.isTestPort(9999));
+        assertEquals("http://100.99.9.9:18080/health", ProbePolicy.healthUrl(18080));
         assertEquals(5 * 60 * 1000L, ProbePolicy.DURATION_MS);
         for (int port : new int[]{-1, 0, 80, 81, 443, 8080, 65535}) {
             assertFalse(ProbePolicy.isTestPort(port));
@@ -13,8 +16,8 @@ public class ProbePolicyTest {
         }
     }
     @Test public void modesHaveFixedIndependentAddressPlans() {
-        assertArrayEquals(new String[]{"100.96.23.17"}, ProbePolicy.addresses(ProbePolicy.SINGLE));
-        assertArrayEquals(new String[]{"100.96.23.17", "192.168.247.2"}, ProbePolicy.addresses(ProbePolicy.DUAL));
+        assertArrayEquals(new String[]{"100.99.9.9"}, ProbePolicy.addresses(ProbePolicy.SINGLE));
+        assertArrayEquals(new String[]{"100.99.9.9", "192.168.247.2"}, ProbePolicy.addresses(ProbePolicy.DUAL));
         assertFalse(ProbePolicy.isTestMode(0));
         assertFalse(ProbePolicy.isTestMode(3));
         assertThrows(IllegalArgumentException.class, () -> ProbePolicy.addresses(0));
@@ -37,11 +40,11 @@ public class ProbePolicyTest {
         assertFalse(new ProbePolicy.StartGate().consume(second));
     }
     @Test public void conflictsDetectHostAndCarrierRoutesButNotDefaultOrIpv6() {
-        byte[] host = {100, 96, 23, 17};
+        byte[] host = {100, 99, 9, 9};
         assertTrue(ProbePolicy.overlaps(host, host, 32));
         assertTrue(ProbePolicy.overlaps(host, new byte[]{100, 64, 0, 0}, 10));
-        assertTrue(ProbePolicy.overlaps(host, new byte[]{100, 96, 23, 0}, 24));
-        assertFalse(ProbePolicy.overlaps(host, new byte[]{100, 96, 24, 0}, 24));
+        assertTrue(ProbePolicy.overlaps(host, new byte[]{100, 99, 9, 0}, 24));
+        assertFalse(ProbePolicy.overlaps(host, new byte[]{100, 99, 10, 0}, 24));
         assertFalse(ProbePolicy.overlaps(host, new byte[]{0, 0, 0, 0}, 0));
         assertFalse(ProbePolicy.overlaps(host, new byte[16], 64));
         assertFalse(ProbePolicy.overlaps(host, host, 33));

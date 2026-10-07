@@ -2,9 +2,13 @@ package com.diplay.networkprobe;
 
 /** Fixed experiment endpoints; no user-controlled routes or hosts. */
 public final class ProbePolicy {
-    public static final String ADDRESS = "100.96.23.17";
+    public static final String ADDRESS = "100.99.9.9";
     public static final String COMPATIBILITY_ADDRESS = "192.168.247.2";
+    public static final String HOSTNAME = "tesla.mark4z.asia";
+    public static final String HOTSPOT_HOSTNAME = "test.mark4z.asia";
+    public static final int HOTSPOT = 3;
     public static final int DEFAULT_PORT = 18080;
+    public static final int HTTPS_PORT = 9999;
     public static final int SINGLE = 1;
     public static final int DUAL = 2;
     public static final long STARTUP_TIMEOUT_MS = 15_000L;
@@ -12,12 +16,17 @@ public final class ProbePolicy {
     private ProbePolicy() {}
 
     public static boolean isTestPort(int port) {
-        return port == DEFAULT_PORT;
+        return port == DEFAULT_PORT || port == HTTPS_PORT;
     }
 
     public static boolean isTestMode(int mode) { return mode == SINGLE || mode == DUAL; }
 
+    public static boolean isAllowedHostname(String hostname) {
+        return HOSTNAME.equals(hostname) || HOTSPOT_HOSTNAME.equals(hostname);
+    }
+
     public static String modeName(int mode) {
+        if (mode == HOTSPOT) return "HOTSPOT_NO_VPN";
         if (!isTestMode(mode)) throw new IllegalArgumentException("INVALID_TEST_MODE");
         return mode == SINGLE ? "SINGLE" : "DUAL_HANDOVER";
     }
@@ -34,10 +43,10 @@ public final class ProbePolicy {
 
     public static String authority(int port) {
         requireTestPort(port);
-        return ADDRESS + ":" + port;
+        return (port == HTTPS_PORT ? HOSTNAME : ADDRESS) + ":" + port;
     }
 
-    public static String healthUrl(int port) { return "http://" + authority(port) + "/health"; }
+    public static String healthUrl(int port) { return (port == HTTPS_PORT ? "https://" : "http://") + authority(port) + "/health"; }
 
     public static boolean overlaps(byte[] candidate, byte[] network, int prefix) {
         if (candidate.length != 4 || network.length != 4 || prefix < 1 || prefix > 32) return false;
