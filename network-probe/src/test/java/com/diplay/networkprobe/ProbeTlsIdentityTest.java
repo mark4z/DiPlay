@@ -79,6 +79,117 @@ public class ProbeTlsIdentityTest {
         assertNotNull(ProbeTlsIdentity.defaultClientFactory());
     }
 
+    @Test public void nginxStyleFullchainAndRsaPkcs1AcceptLfCrLfAndNoFinalNewline() throws Exception {
+        for (boolean crlf : new boolean[] { false, true }) {
+            for (boolean finalNewline : new boolean[] { false, true }) {
+                byte[] certificates = lineEndings(chain(rsaLeaf), crlf, finalNewline);
+                byte[] key = lineEndings(pkcs1(rsaKey), crlf, finalNewline);
+                assertTrue(read(certificates, key).description().startsWith("RSA 2048 bits; expires "));
+            }
+        }
+    }
+
+    @Test public void acceptsOneUtf8BomOnlyAtBeginningOfEachInput() throws Exception {
+        byte[] bom = { (byte) 0xef, (byte) 0xbb, (byte) 0xbf };
+        byte[] certificates = chain(rsaLeaf), key = pkcs1(rsaKey);
+        read(concat(bom, certificates), key);
+        read(certificates, concat(bom, key));
+        byte[] bomCertificates = concat(bom, new byte[] { '\r', '\n', ' ' }, certificates);
+        byte[] bomKey = concat(bom, new byte[] { '\r', '\n', '\t' }, key);
+        byte[] originalCertificates = bomCertificates.clone(), originalKey = bomKey.clone();
+        read(bomCertificates, bomKey);
+        assertArrayEquals(originalCertificates, bomCertificates);
+        assertArrayEquals(originalKey, bomKey);
+        failure("CERT_PEM_MALFORMED", concat(bom, bom, certificates), key);
+        failure("CERT_PEM_MALFORMED", concat(new byte[] { ' ' }, bom, certificates), key);
+        failure("CERT_PEM_MALFORMED", concat(pemChain(rsaLeaf), bom, pemChain(intermediate)), key);
+        failure("CERT_PEM_MALFORMED", concat(new byte[] { (byte) 0xef, (byte) 0xbb }, certificates), key);
+        failure("KEY_FORMAT_UNSUPPORTED", certificates, concat(bom, bom, key));
+        failure("KEY_FORMAT_UNSUPPORTED", certificates, concat(new byte[] { '\n' }, bom, key));
+        failure("KEY_PEM_MALFORMED", certificates,
+                concat("-----BEGIN RSA PRIVATE KEY-----\n".getBytes(StandardCharsets.US_ASCII), bom,
+                        "AA==\n-----END RSA PRIVATE KEY-----".getBytes(StandardCharsets.US_ASCII)));
+    }
+
+    @Test public void omittedTerminalPaddingPreservesExactDerAndIdentityValidation() throws Exception {
+        int certificatePaddingKinds = 0;
+        for (String name : new String[] { "P", "PP", "PPP" }) {
+            X509Certificate leaf = cert(rsaKey, name, intermediate, intermediateKey.getPrivate(),
+                    -1, -HOUR, HOUR, HOST, 128, SERVER, false);
+            byte[] der = leaf.getEncoded();
+            certificatePaddingKinds |= 1 << (der.length % 3);
+            assertArrayEquals(der, Base64.getDecoder().decode(Base64.getEncoder().withoutPadding().encode(der)));
+            read(withoutPadding(pemChain(leaf, intermediate)), withoutPadding(pkcs1(rsaKey)));
+        }
+        assertEquals(7, certificatePaddingKinds); // zero, one and two omitted '=' characters
+        boolean removedKeyPadding = false;
+        for (byte[] key : new byte[][] { pkcs1(rsaKey), pkcs8(rsaKey) }) {
+            byte[] unpadded = withoutPadding(key);
+            removedKeyPadding |= unpadded.length < key.length;
+            read(chain(rsaLeaf), unpadded);
+            failure("KEY_MISMATCH", chain(leaf(secondRsaKey, HOST)), unpadded);
+        }
+        // PKCS1 and its standard PKCS8 wrapper have different lengths modulo three.
+        assertTrue(removedKeyPadding);
+        read(withoutPadding(chain(ecLeaf)), withoutPadding(pkcs8(ecKey)));
+        failure("CERT_DER_MALFORMED", withoutPadding(pem("CERTIFICATE",
+                concat(rsaLeaf.getEncoded(), der(0x05)))), pkcs1(rsaKey));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), withoutPadding(pem("RSA PRIVATE KEY",
+                concat(rsaDer(rsaKey), der(0x05)))));
+    }
+
+    @Test public void malformedPaddingAndTruncatedPemHaveSafeStageCodes() throws Exception {
+        for (String body : new String[] { "", "A", "A===", "AA=", "AAA==", "AAAA=", "AA==AA==",
+                "=AAA", "AA=A", "AA===", "AB==", "AAB=", "AB", "AAB" }) {
+            failure("CERT_PEM_MALFORMED", rawPem("CERTIFICATE", body), pkcs1(rsaKey));
+            failure("KEY_PEM_MALFORMED", chain(rsaLeaf), rawPem("RSA PRIVATE KEY", body));
+        }
+        // Correctly shaped omitted padding reaches, and does not bypass, strict DER validation.
+        for (String body : new String[] { "AA", "AAA", "AAAA" }) {
+            failure("CERT_DER_MALFORMED", rawPem("CERTIFICATE", body), pkcs1(rsaKey));
+            failure("KEY_DER_MALFORMED", chain(rsaLeaf), rawPem("RSA PRIVATE KEY", body));
+        }
+        byte[] certificates = chain(rsaLeaf), key = pkcs1(rsaKey);
+        failure("CERT_PEM_MALFORMED", Arrays.copyOf(certificates, certificates.length - 10), key);
+        failure("KEY_PEM_MALFORMED", certificates, Arrays.copyOf(key, key.length - 10));
+        failure("KEY_PEM_MALFORMED", certificates,
+                "-----BEGIN RSA PRIVATE KEY-----".getBytes(StandardCharsets.US_ASCII));
+        failure("CERT_PEM_MALFORMED", rawPem("CERTIFICATE", "Proc-Type: 4,ENCRYPTED\nAA=="), key);
+    }
+
+    @Test public void reversedPickerInputsAndArbitraryPreludeRemainRejected() throws Exception {
+        byte[] certificates = chain(rsaLeaf), key = pkcs1(rsaKey);
+        failure("CERT_PEM_MALFORMED", key, certificates);
+        failure("KEY_FORMAT_UNSUPPORTED", certificates, certificates);
+        failure("CERT_PEM_MALFORMED", concat(new byte[] { 'P', 'K', 3, 4 }, certificates), key);
+        failure("KEY_FORMAT_UNSUPPORTED", certificates, concat("preamble\n".getBytes(StandardCharsets.US_ASCII), key));
+        failure("CERT_PEM_MALFORMED", concat(certificates, "garbage".getBytes(StandardCharsets.US_ASCII)), key);
+        failure("KEY_MULTIPLE_BLOCKS", certificates, concat(key, "garbage".getBytes(StandardCharsets.US_ASCII)));
+    }
+
+    @Test public void payloadClassificationUsesOnlyBoundedRecognizedByteHeaders() throws Exception {
+        byte[] bom = { (byte) 0xef, (byte) 0xbb, (byte) 0xbf };
+        assertEquals(ProbeTlsIdentity.PemKind.CERTIFICATE, ProbeTlsIdentity.classifyPem(chain(rsaLeaf)));
+        for (byte[] key : new byte[][] { pkcs1(rsaKey), pkcs8(rsaKey), pkcs8(ecKey),
+                rawPem("ENCRYPTED PRIVATE KEY", "AA=="), rawPem("EC PRIVATE KEY", "AA==") }) {
+            byte[] input = concat(bom, new byte[] { '\r', '\n', '\t' }, key);
+            byte[] original = input.clone();
+            assertEquals(ProbeTlsIdentity.PemKind.PRIVATE_KEY, ProbeTlsIdentity.classifyPem(input));
+            assertArrayEquals(original, input);
+        }
+        assertEquals(ProbeTlsIdentity.PemKind.CERTIFICATE,
+                ProbeTlsIdentity.classifyPem(concat(bom, new byte[] { ' ' }, chain(rsaLeaf))));
+        for (byte[] input : new byte[][] { null, new byte[0], new byte[ProbeTlsIdentity.MAX_CHAIN_BYTES + 1],
+                rawPem("UNKNOWN", "AA=="), concat(new byte[] { 'P', 'K', 3, 4 }, pkcs1(rsaKey)),
+                concat(new byte[] { ' ' }, bom, pkcs1(rsaKey)), concat(bom, bom, pkcs1(rsaKey)) }) {
+            assertEquals(ProbeTlsIdentity.PemKind.UNKNOWN, ProbeTlsIdentity.classifyPem(input));
+        }
+        // Classification is only a routing hint, never an assertion that a payload is valid.
+        byte[] malformed = rawPem("RSA PRIVATE KEY", "***");
+        assertEquals(ProbeTlsIdentity.PemKind.PRIVATE_KEY, ProbeTlsIdentity.classifyPem(malformed));
+        failure("KEY_PEM_MALFORMED", chain(rsaLeaf), malformed);
+    }
+
     @Test public void hostnameSelectionIsLimitedAndRecheckedForEachMode() throws Exception {
         String hotspot = ProbePolicy.HOTSPOT_HOSTNAME;
         X509Certificate hotspotLeaf = leaf(rsaKey, hotspot);
@@ -188,10 +299,10 @@ public class ProbeTlsIdentityTest {
         Arrays.fill(excessive, rsaLeaf);
         failure("CHAIN_TOO_LONG", pemChain(excessive), pkcs8(rsaKey));
         failure("KEY_MULTIPLE_BLOCKS", chain(rsaLeaf), concat(pkcs8(rsaKey), pkcs8(rsaKey)));
-        failure("PEM_MALFORMED", concat("preamble".getBytes(StandardCharsets.US_ASCII), chain(rsaLeaf)), pkcs8(rsaKey));
+        failure("CERT_PEM_MALFORMED", concat("preamble".getBytes(StandardCharsets.US_ASCII), chain(rsaLeaf)), pkcs8(rsaKey));
         failure("KEY_FORMAT_UNSUPPORTED", chain(rsaLeaf), "not a key".getBytes(StandardCharsets.US_ASCII));
         byte[] extraCertDer = concat(rsaLeaf.getEncoded(), der(0x05));
-        failure("DER_MALFORMED", pem("CERTIFICATE", extraCertDer), pkcs8(rsaKey));
+        failure("CERT_DER_MALFORMED", pem("CERTIFICATE", extraCertDer), pkcs8(rsaKey));
     }
 
     @Test public void rejectsEncryptedAndUnsupportedKeyContainersWithFixedCodes() throws Exception {
@@ -205,14 +316,14 @@ public class ProbeTlsIdentityTest {
 
     @Test public void strictPkcs1RejectsTruncatedTrailingNegativeAndNonCanonicalDer() throws Exception {
         byte[] key = rsaDer(rsaKey);
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", Arrays.copyOf(key, key.length - 1)));
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", concat(key, new byte[] { 0 })));
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", new byte[] { 0x30, (byte) 0x80, 0, 0 }));
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", new byte[] { 0x30, (byte) 0x84, 127, -1, -1, -1 }));
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", new byte[] { 0x30, (byte) 0x81, 3, 2, 1, 0 }));
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", sequence(integer(BigInteger.ZERO), der(0x02, new byte[] { (byte) 0x80 }))));
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", sequence(integer(BigInteger.ZERO), der(0x02, new byte[] { 0, 1 }))));
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", sequence(integer(BigInteger.ZERO), der(0x02, new byte[0]))));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", Arrays.copyOf(key, key.length - 1)));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", concat(key, new byte[] { 0 })));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", new byte[] { 0x30, (byte) 0x80, 0, 0 }));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", new byte[] { 0x30, (byte) 0x84, 127, -1, -1, -1 }));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", new byte[] { 0x30, (byte) 0x81, 3, 2, 1, 0 }));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", sequence(integer(BigInteger.ZERO), der(0x02, new byte[] { (byte) 0x80 }))));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", sequence(integer(BigInteger.ZERO), der(0x02, new byte[] { 0, 1 }))));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("RSA PRIVATE KEY", sequence(integer(BigInteger.ZERO), der(0x02, new byte[0]))));
         failure("KEY_VERSION_UNSUPPORTED", chain(rsaLeaf), pem("RSA PRIVATE KEY", sequence(integer(BigInteger.ONE), integer(BigInteger.ONE))));
         byte[] oversized = new byte[ProbeTlsIdentity.MAX_KEY_BYTES + 1];
         byte[] header = "-----BEGIN RSA PRIVATE KEY-----\n".getBytes(StandardCharsets.US_ASCII);
@@ -225,9 +336,9 @@ public class ProbeTlsIdentityTest {
         failure("KEY_TOO_SMALL", chain(rsaLeaf), pkcs1(small));
         failure("KEY_TOO_SMALL", chain(rsaLeaf), pkcs8(small));
         byte[] key = rsaKey.getPrivate().getEncoded();
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("PRIVATE KEY", Arrays.copyOf(key, key.length - 1)));
-        failure("DER_MALFORMED", chain(rsaLeaf), pem("PRIVATE KEY", concat(key, der(0x05))));
-        failure("PEM_MALFORMED", chain(rsaLeaf), "-----BEGIN PRIVATE KEY-----\n***\n-----END PRIVATE KEY-----\n".getBytes(StandardCharsets.US_ASCII));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("PRIVATE KEY", Arrays.copyOf(key, key.length - 1)));
+        failure("KEY_DER_MALFORMED", chain(rsaLeaf), pem("PRIVATE KEY", concat(key, der(0x05))));
+        failure("KEY_PEM_MALFORMED", chain(rsaLeaf), "-----BEGIN PRIVATE KEY-----\n***\n-----END PRIVATE KEY-----\n".getBytes(StandardCharsets.US_ASCII));
     }
 
     @Test public void strictEcPkcs8RejectsMalformedInnerSec1() throws Exception {
@@ -235,14 +346,14 @@ public class ProbeTlsIdentityTest {
         Arrays.fill(scalar, (byte) 1);
         byte[] version = integer(BigInteger.ONE), privateValue = der(0x04, scalar);
         failure("KEY_VERSION_UNSUPPORTED", chain(ecLeaf), ecContainer(sequence(integer(BigInteger.ZERO), privateValue)));
-        failure("DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, der(0x04))));
-        failure("DER_MALFORMED", chain(ecLeaf), ecContainer(concat(sequence(version, privateValue), der(0x05))));
-        failure("DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, privateValue, der(0x05))));
+        failure("KEY_DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, der(0x04))));
+        failure("KEY_DER_MALFORMED", chain(ecLeaf), ecContainer(concat(sequence(version, privateValue), der(0x05))));
+        failure("KEY_DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, privateValue, der(0x05))));
         failure("KEY_CURVE_MISMATCH", chain(ecLeaf), ecContainer(sequence(version, privateValue, der(0xa0, oid("1.3.132.0.34")))));
         byte[] parameters = der(0xa0, oid("1.2.840.10045.3.1.7"));
-        failure("DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, privateValue, parameters, parameters)));
-        failure("DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, privateValue, der(0xa1, der(0x03, new byte[] { 1, 4, 0 })))));
-        failure("DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, privateValue, der(0xa1, der(0x03, new byte[] { 0, 7, 0 })))));
+        failure("KEY_DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, privateValue, parameters, parameters)));
+        failure("KEY_DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, privateValue, der(0xa1, der(0x03, new byte[] { 1, 4, 0 })))));
+        failure("KEY_DER_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, privateValue, der(0xa1, der(0x03, new byte[] { 0, 7, 0 })))));
         failure("KEY_MALFORMED", chain(ecLeaf), ecContainer(sequence(version, der(0x04, new byte[32]))));
     }
 
@@ -275,6 +386,12 @@ public class ProbeTlsIdentityTest {
         assertNull(failure.getCause());
         assertEquals(0, failure.getSuppressed().length);
     }
+
+    static byte[] bundleChain() throws Exception { return chain(rsaLeaf); }
+    static byte[] bundlePkcs8() { return pkcs8(rsaKey); }
+    static byte[] bundlePkcs1() { return pkcs1(rsaKey); }
+    static X509TrustManager bundleTrust() { return trust; }
+    static byte[] bundleMismatchedPkcs8() { return pkcs8(secondRsaKey); }
 
     private static ProbeTlsIdentity read(byte[] chain, byte[] key) throws Exception {
         return ProbeTlsIdentity.readWithTrust(chain, key, trust);
@@ -311,6 +428,24 @@ public class ProbeTlsIdentityTest {
         return concat(("-----BEGIN " + label + "-----\n").getBytes(StandardCharsets.US_ASCII),
                 Base64.getMimeEncoder(64, new byte[] { '\n' }).encode(der),
                 ("\n-----END " + label + "-----\n").getBytes(StandardCharsets.US_ASCII));
+    }
+    private static byte[] rawPem(String label, String body) {
+        return ("-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----\n")
+                .getBytes(StandardCharsets.US_ASCII);
+    }
+    private static byte[] lineEndings(byte[] input, boolean crlf, boolean finalNewline) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        int length = input.length - (finalNewline ? 0 : 1);
+        for (int i = 0; i < length; i++) {
+            if (crlf && input[i] == '\n') output.write('\r');
+            output.write(input[i]);
+        }
+        return output.toByteArray();
+    }
+    private static byte[] withoutPadding(byte[] input) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        for (byte value : input) if (value != '=') output.write(value);
+        return output.toByteArray();
     }
     private static X509TrustManager trust(X509Certificate... certificates) throws Exception {
         KeyStore store = KeyStore.getInstance(KeyStore.getDefaultType());

@@ -181,6 +181,20 @@ public final class ProbeTlsIdentity {
         if (bytes.length > maximum) throw fail(kind + "_TOO_LARGE");
     }
 
+    enum PemKind { CERTIFICATE, PRIVATE_KEY, UNKNOWN }
+
+    /** Bounded routing hint only; import must still perform all PEM/DER and identity checks. */
+    static PemKind classifyPem(byte[] bytes) {
+        if (bytes == null || bytes.length == 0 || bytes.length > MAX_CHAIN_BYTES) return PemKind.UNKNOWN;
+        PemReader reader = new PemReader(bytes);
+        if (reader.starts("-----BEGIN CERTIFICATE-----")) return PemKind.CERTIFICATE;
+        if (reader.starts("-----BEGIN PRIVATE KEY-----")
+                || reader.starts("-----BEGIN RSA PRIVATE KEY-----")
+                || reader.starts("-----BEGIN ENCRYPTED PRIVATE KEY-----")
+                || reader.starts("-----BEGIN EC PRIVATE KEY-----")) return PemKind.PRIVATE_KEY;
+        return PemKind.UNKNOWN;
+    }
+
     private static X509Certificate[] parseCertificates(byte[] pem) throws Failure {
         PemReader reader = new PemReader(pem);
         List<X509Certificate> certificates = new ArrayList<>();
@@ -198,6 +212,8 @@ public final class ProbeTlsIdentity {
                     certificates.add(certificate);
                 } finally { wipe(der); }
             }
+        } catch (Failure failure) {
+            throw parseFailure("CERT", failure);
         } catch (CertificateException | RuntimeException failure) {
             throw fail("CERTIFICATE_MALFORMED");
         }
@@ -225,6 +241,8 @@ public final class ProbeTlsIdentity {
             PrivateKey key = KeyFactory.getInstance(algorithm).generatePrivate(new PKCS8EncodedKeySpec(encoded));
             validateKey(key);
             return key;
+        } catch (Failure failure) {
+            throw parseFailure("KEY", failure);
         } catch (GeneralSecurityException | RuntimeException failure) {
             throw fail("KEY_MALFORMED");
         } finally {
@@ -471,13 +489,25 @@ public final class ProbeTlsIdentity {
     }
 
     private static Failure fail(String code) { return new Failure(code); }
+    private static Failure parseFailure(String stage, Failure failure) {
+        if ("PEM_MALFORMED".equals(failure.code) || "DER_MALFORMED".equals(failure.code)) {
+            return fail(stage + "_" + failure.code);
+        }
+        return failure;
+    }
     private static void wipe(byte[] bytes) { if (bytes != null) Arrays.fill(bytes, (byte) 0); }
 
     /** No immutable String of PEM contents, no permissive MIME decoding, no arbitrary preamble. */
     private static final class PemReader {
         private final byte[] input;
         private int offset;
-        PemReader(byte[] input) { this.input = input; }
+        PemReader(byte[] input) {
+            this.input = input;
+            // Some phone text editors prepend one UTF-8 BOM. Only byte zero is allowed;
+            // a BOM between certificates, after whitespace or inside a block is still invalid.
+            if (input.length >= 3 && (input[0] & 255) == 0xef
+                    && (input[1] & 255) == 0xbb && (input[2] & 255) == 0xbf) offset = 3;
+        }
         boolean hasMore() { skipWhitespace(); return offset < input.length; }
         boolean starts(String text) { skipWhitespace(); return matches(offset, text); }
         private void skipWhitespace() { while (offset < input.length && whitespace(input[offset])) offset++; }
@@ -498,7 +528,9 @@ public final class ProbeTlsIdentity {
             int count = 0;
             try {
                 while (offset < input.length && !matches(offset, end)) {
-                    if (matches(offset, "Proc-Type:") || matches(offset, "DEK-Info:")) throw fail("KEY_ENCRYPTED");
+                    if (matches(offset, "Proc-Type:") || matches(offset, "DEK-Info:")) {
+                        throw fail(label.endsWith("PRIVATE KEY") ? "KEY_ENCRYPTED" : "PEM_MALFORMED");
+                    }
                     byte value = input[offset++];
                     if (whitespace(value)) continue;
                     boolean alphabet = value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
@@ -506,13 +538,41 @@ public final class ProbeTlsIdentity {
                     if (!alphabet) throw fail("PEM_MALFORMED");
                     base64[count++] = value;
                 }
-                if (offset >= input.length || count == 0 || count % 4 != 0) throw fail("PEM_MALFORMED");
+                if (offset >= input.length || count == 0) throw fail("PEM_MALFORMED");
+                validateBase64(base64, count);
                 offset += end.length();
                 if (offset < input.length && !whitespace(input[offset])) throw fail("PEM_MALFORMED");
                 compact = Arrays.copyOf(base64, count);
                 try { return Base64.getDecoder().decode(compact); }
                 catch (IllegalArgumentException failure) { throw fail("PEM_MALFORMED"); }
             } finally { wipe(base64); wipe(compact); }
+        }
+
+        private static void validateBase64(byte[] bytes, int count) throws Failure {
+            int body = count;
+            while (body > 0 && bytes[body - 1] == '=') body--;
+            int padding = count - body;
+            int remainder = body % 4;
+            // Java's basic decoder also accepts omitted terminal padding. Require exactly the
+            // padded shape when any '=' is present, and reject padding within the body.
+            if (body == 0 || remainder == 1 || padding > 2
+                    || padding != 0 && (count % 4 != 0 || padding != 4 - remainder)) {
+                throw fail("PEM_MALFORMED");
+            }
+            for (int i = 0; i < body; i++) if (bytes[i] == '=') throw fail("PEM_MALFORMED");
+            // Unused terminal bits must be zero, so omitted padding represents the exact same
+            // canonical bytes. The decoded result still passes all existing strict DER checks.
+            int last = base64Value(bytes[body - 1]);
+            if (remainder == 2 && (last & 15) != 0 || remainder == 3 && (last & 3) != 0) {
+                throw fail("PEM_MALFORMED");
+            }
+        }
+
+        private static int base64Value(byte value) {
+            if (value >= 'A' && value <= 'Z') return value - 'A';
+            if (value >= 'a' && value <= 'z') return value - 'a' + 26;
+            if (value >= '0' && value <= '9') return value - '0' + 52;
+            return value == '+' ? 62 : 63;
         }
     }
 

@@ -181,3 +181,18 @@ class ProbeBoundaryTests(unittest.TestCase):
         policy = (JAVA / 'HotspotPolicy.java').read_text()
         for required in ('androidManaged', 'pointToPoint', 'virtual', 'isPrivateIpv4', 'isWifiApName'):
             self.assertIn(required, policy)
+
+    def test_local_zip_selection_and_nonsecret_result_survive_key_clear(self):
+        ui = (JAVA / 'ProbeActivity.java').read_text()
+        self.assertIn('request == 22', ui)
+        self.assertIn('beginImport(null, null, selected)', ui)
+        self.assertIn('ProbeTlsBundle.MAX_ARCHIVE_BYTES', ui)
+        self.assertIn('ProbeTlsBundle.read(archiveBytes, expectedHostname)', ui)
+        self.assertIn('Arrays.fill(archiveBytes, (byte) 0)', ui)
+        self.assertIn('ProbeTlsIdentity.classifyPem(chainBytes).name()', ui)
+        self.assertIn('lastImportResult = code', ui)
+        self.assertIn('cancelledOperation && !importHasResult', ui)
+        forget = ui.split('private void forgetIdentity()')[1].split('private static void background')[0]
+        self.assertIn('identity = null', forget)
+        self.assertNotIn('lastImportResult =', forget)
+        self.assertNotIn('importInputs =', forget)

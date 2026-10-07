@@ -37,7 +37,7 @@ public final class ProbeActivity extends Activity {
     private TextView state;
     private Button start;
     private RadioButton plain, single, dual, http, https;
-    private Button importButton, forgetButton, cancelImportButton, scanButton;
+    private Button importButton, zipImportButton, forgetButton, cancelImportButton, scanButton;
     private HotspotAddress selectedHotspot, pendingHotspot;
     private boolean scanning, scanCancelled;
     private String hotspotStatus = "请打开手机热点，读取并确认实际热点网关";
@@ -46,6 +46,9 @@ public final class ProbeActivity extends Activity {
     private ProbeSession importTask;
     private ProbeTlsIdentity importCandidate;
     private String importStatus = "未导入 / NOT_IMPORTED";
+    private String lastImportResult = "NOT_RUN";
+    private String importInputs = "NOT_SELECTED";
+    private boolean importHasResult;
     private Uri chainUri;
     private boolean selectingFile, openKeyWhenResumed, activityDestroyed;
     private int importPickerRequest;
@@ -62,6 +65,8 @@ public final class ProbeActivity extends Activity {
                     + "\nURL: " + selectedUrl()
                     + "\nHotspot / 热点: " + hotspotStatus
                     + "\nTLS import / 证书: " + importStatus
+                    + "\nImport input types / 读取格式: " + importInputs
+                    + "\nLast import result / 上次导入结果: " + lastImportResult
                     + (identity != null && !identity.supportsHostname(selectedHostname()) ? "\n当前证书不覆盖所选域名，请重新导入" : "")
                     + "\nSession / 最近一次测试: " + (ordinary ? PlainHotspotProbe.sessionUrl :
                         ProbeVpnService.sessionMode == 0 ? "NOT_RUN" : ProbePolicy.modeName(ProbeVpnService.sessionMode))
@@ -84,7 +89,7 @@ public final class ProbeActivity extends Activity {
         column.setPadding(28, 28, 28, 28);
         scroll.addView(column);
         TextView title = new TextView(this);
-        title.setText("DiPlay Network Probe · local HTTPS v5\n\n独立 HTTPS/HTTP 实验，打开不启动。每次最多 5 分钟，启动最多 15 秒。保持本页前台并亮屏；离开、锁屏、旋转均停止。\n\n默认普通热点模式，不创建 VPN。读取并确认本机实际热点网关后，HTTPS 使用 https://test.mark4z.asia:9999/health，HTTP 对照为该网关的 :18080/health。VPN 单/双 TUN 模式另用 tesla.mark4z.asia:9999，绑定 100.99.9.9。每次只运行所选协议，不自动回退。所选域名 DNS 必须由外部浏览器正常解析到当前所选模式的监听 IP，本应用不改 DNS。普通模式用 test.mark4z.asia，VPN 模式用 tesla.mark4z.asia；证书必须覆盖对应域名。\n\n先在手机文件选择器依次选 PEM fullchain（叶证书在前）和私钥。支持 RSA PRIVATE KEY / PRIVATE KEY；不导入 ZIP，不支持加密私钥。仅内存使用，不备份、导出、写盘或持久保存文件权限。取消或失败保留当前证书；离开本页或进程结束即清除，需要重新导入。文件选择与系统 VPN 授权期间暂时保留。\n\n证书域名、有效期、用途、证书链与私钥匹配均在手机检查。HTTPS 自检使用正常系统信任与域名校验，拒绝绕过证书警告。此前公开过的私钥应先撤销并换新后再用于本实验。\n\n先自行停止其他 VPN，包括 TeslaMirror 可能保留的接口。单模式建立 100.99.9.9/32；双模式随后建立 192.168.247.2/32。地址冲突则拒绝启动；不会清除其他应用接口。仅各自 /32 主机路由、allowBypass 和本应用白名单，无默认路由、无 DNS 设置、无转发。旧接口可能被 Android 停用。\n\n所有描述符只保留到本次测试结束；Stop 全部关闭。清理未确认时禁止重启。勿开启始终开启 VPN；勿在驾驶或不可信网络中测试。先用另一台手机连接热点测试，再在停车时使用车机。\n");
+        title.setText("DiPlay Network Probe · local HTTPS v6\n\n独立 HTTPS/HTTP 实验，打开不启动。每次最多 5 分钟，启动最多 15 秒。保持本页前台并亮屏；离开、锁屏、旋转均停止。\n\n默认普通热点模式，不创建 VPN。读取并确认本机实际热点网关后，HTTPS 使用 https://test.mark4z.asia:9999/health，HTTP 对照为该网关的 :18080/health。VPN 单/双 TUN 模式另用 tesla.mark4z.asia:9999，绑定 100.99.9.9。每次只运行所选协议，不自动回退。所选域名 DNS 必须由外部浏览器正常解析到当前所选模式的监听 IP，本应用不改 DNS。普通模式用 test.mark4z.asia，VPN 模式用 tesla.mark4z.asia；证书必须覆盖对应域名。\n\n可直接在手机选择本地 nginx 证书 ZIP，应用仅在本机内存识别唯一证书链和私钥；也可分别选择 PEM fullchain（叶证书在前）与私钥。支持 RSA PRIVATE KEY / PRIVATE KEY，不支持加密私钥。ZIP/文件不会上传，不写入应用文件目录。仅内存使用，不备份、导出、写盘或持久保存文件权限。取消或失败保留当前证书；离开本页或进程结束即清除，需要重新导入。文件选择与系统 VPN 授权期间暂时保留。\n\n证书域名、有效期、用途、证书链与私钥匹配均在手机检查。HTTPS 自检使用正常系统信任与域名校验，拒绝绕过证书警告。此前公开过的私钥应先撤销并换新后再用于本实验。\n\n先自行停止其他 VPN，包括 TeslaMirror 可能保留的接口。单模式建立 100.99.9.9/32；双模式随后建立 192.168.247.2/32。地址冲突则拒绝启动；不会清除其他应用接口。仅各自 /32 主机路由、allowBypass 和本应用白名单，无默认路由、无 DNS 设置、无转发。旧接口可能被 Android 停用。\n\n所有描述符只保留到本次测试结束；Stop 全部关闭。清理未确认时禁止重启。勿开启始终开启 VPN；勿在驾驶或不可信网络中测试。先用另一台手机连接热点测试，再在停车时使用车机。\n");
         column.addView(title);
         RadioGroup modes = new RadioGroup(this);
         plain = new RadioButton(this); plain.setId(View.generateViewId());
@@ -109,7 +114,9 @@ public final class ProbeActivity extends Activity {
         transports.setOnCheckedChangeListener((group, id) -> selectedPort = id == http.getId()
                 ? ProbePolicy.DEFAULT_PORT : ProbePolicy.HTTPS_PORT);
         column.addView(transports);
-        importButton = new Button(this); importButton.setText("Import fullchain + key / 导入证书链和私钥");
+        zipImportButton = new Button(this); zipImportButton.setText("Import local nginx ZIP / 本机导入 nginx 证书 ZIP");
+        zipImportButton.setOnClickListener(view -> chooseZip()); column.addView(zipImportButton);
+        importButton = new Button(this); importButton.setText("Import PEM files separately / 分别导入证书链和私钥");
         importButton.setOnClickListener(view -> chooseChain()); column.addView(importButton);
         cancelImportButton = new Button(this); cancelImportButton.setText("Cancel import / 取消导入并保留原证书");
         cancelImportButton.setOnClickListener(view -> cancelImport("IMPORT_CANCELLED")); column.addView(cancelImportButton);
@@ -134,7 +141,7 @@ public final class ProbeActivity extends Activity {
         plain.setEnabled(ready);
         scanButton.setEnabled(ready && selectedMode == ProbePolicy.HOTSPOT);
         http.setEnabled(ready); https.setEnabled(ready);
-        importButton.setEnabled(ready); forgetButton.setEnabled(ready && identity != null);
+        importButton.setEnabled(ready); zipImportButton.setEnabled(ready); forgetButton.setEnabled(ready && identity != null);
         cancelImportButton.setEnabled(importTask != null || selectingFile);
         single.setEnabled(ready);
         dual.setEnabled(ready);
@@ -213,7 +220,7 @@ public final class ProbeActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request == 20 || request == 21) {
+        if (request == 20 || request == 21 || request == 22) {
             if (!selectingFile || request != importPickerRequest) return;
             if (result != RESULT_OK || data == null || data.getData() == null) {
                 cancelImport("IMPORT_CANCELLED"); return;
@@ -227,7 +234,8 @@ public final class ProbeActivity extends Activity {
             } else {
                 selectingFile = false;
                 importPickerRequest = 0;
-                beginImport(chainUri, selected);
+                if (request == 22) beginImport(null, null, selected);
+                else beginImport(chainUri, selected, null);
                 chainUri = null;
             }
             return;
@@ -311,9 +319,21 @@ public final class ProbeActivity extends Activity {
             }
         }, "hotspot-address-read");
     }
+    private void chooseZip() {
+        if (!resumed || scanning || pending || importTask != null || selectingFile || PlainHotspotProbe.running || ProbeVpnService.running) return;
+        selectingFile = true;
+        importHasResult = false;
+        importInputs = "NOT_READ / 本次文件待读取";
+        chainUri = null;
+        importStatus = "请选择手机本地 nginx 证书 ZIP；仅本机内存解析，不上传";
+        launchPicker(22);
+        updateControls();
+    }
     private void chooseChain() {
         if (!resumed || scanning || pending || importTask != null || selectingFile || PlainHotspotProbe.running || ProbeVpnService.running) return;
         selectingFile = true;
+        importHasResult = false;
+        importInputs = "NOT_READ / 本次文件待读取";
         importStatus = "请选择 PEM fullchain（随后选择私钥）；取消保留原证书";
         launchPicker(20);
         updateControls();
@@ -333,11 +353,12 @@ public final class ProbeActivity extends Activity {
             startActivityForResult(picker, request);
         } catch (RuntimeException failure) { cancelImport("FILE_PICKER_UNAVAILABLE"); }
     }
-    private void beginImport(Uri chain, Uri key) {
-        if (chain == null || importTask != null || activityDestroyed) { cancelImport("IMPORT_CANCELLED"); return; }
+    private void beginImport(Uri chain, Uri key, Uri archive) {
+        if ((archive == null && (chain == null || key == null)) || importTask != null || activityDestroyed) { cancelImport("IMPORT_CANCELLED"); return; }
         ContentResolver resolver = getApplicationContext().getContentResolver();
         final String expectedHostname = selectedHostname();
         importStatus = "IMPORT_VALIDATING / 正在本机校验";
+        importHasResult = false;
         importCandidate = null;
         // Completion waits for the worker and all stream closes; repeated clicks cannot stack tasks.
         ProbeSession task = new ProbeSession(action -> background(action, "tls-import-close"),
@@ -345,25 +366,40 @@ public final class ProbeActivity extends Activity {
         importTask = task;
         main.postDelayed(importTimeout, 15_000);
         background(() -> {
-            byte[] chainBytes = null, keyBytes = null;
+            byte[] chainBytes = null, keyBytes = null, archiveBytes = null;
+            String stage = archive == null ? "CERT" : "ZIP";
             try {
                 if (task.isCancelled()) return;
-                chainBytes = readDocument(resolver, chain, 64 * 1024, task);
-                if (task.isCancelled()) return;
-                keyBytes = readDocument(resolver, key, 16 * 1024, task);
-                if (task.isCancelled()) return;
-                ProbeTlsIdentity candidate = ProbeTlsIdentity.read(chainBytes, keyBytes, expectedHostname);
+                ProbeTlsIdentity candidate;
+                if (archive != null) {
+                    archiveBytes = readDocument(resolver, archive, ProbeTlsBundle.MAX_ARCHIVE_BYTES, task);
+                    if (task.isCancelled()) return;
+                    postInputSummary(task, "ZIP: " + archiveBytes.length + " bytes");
+                    candidate = ProbeTlsBundle.read(archiveBytes, expectedHostname);
+                } else {
+                    chainBytes = readDocument(resolver, chain, 64 * 1024, task);
+                    if (task.isCancelled()) return;
+                    stage = "KEY";
+                    keyBytes = readDocument(resolver, key, 16 * 1024, task);
+                    if (task.isCancelled()) return;
+                    postInputSummary(task, "CERT slot: " + ProbeTlsIdentity.classifyPem(chainBytes).name() + " / " + chainBytes.length + " bytes; "
+                            + "KEY slot: " + ProbeTlsIdentity.classifyPem(keyBytes).name() + " / " + keyBytes.length + " bytes");
+                    candidate = ProbeTlsIdentity.read(chainBytes, keyBytes, expectedHostname);
+                }
                 main.post(() -> {
                     if (importTask == task && !task.isCancelled() && !activityDestroyed) {
                         importCandidate = candidate;
                         importStatus = "IMPORT_VALIDATED";
                     }
                 });
+            } catch (ProbeTlsBundle.Failure failure) {
+                postImportFailure(task, failure.code);
             } catch (ProbeTlsIdentity.Failure failure) {
                 postImportFailure(task, failure.code);
             } catch (IOException | RuntimeException failure) {
-                postImportFailure(task, "IMPORT_READ_FAILED_OR_TOO_LARGE");
+                postImportFailure(task, stage + "_READ_FAILED_OR_TOO_LARGE");
             } finally {
+                if (archiveBytes != null) Arrays.fill(archiveBytes, (byte) 0);
                 if (chainBytes != null) Arrays.fill(chainBytes, (byte) 0);
                 if (keyBytes != null) Arrays.fill(keyBytes, (byte) 0);
                 // Publish/cancel on the main queue after the validation result, in queue order.
@@ -393,8 +429,12 @@ public final class ProbeActivity extends Activity {
             task.closeAsync(cancelOpen);
         }
     }
+    private void postInputSummary(ProbeSession task, String summary) {
+        // Known format labels and byte counts only; never filenames, URI tokens, PEM or key bytes.
+        main.post(() -> { if (importTask == task && !task.isCancelled()) importInputs = summary; });
+    }
     private void postImportFailure(ProbeSession task, String code) {
-        main.post(() -> { if (importTask == task && !task.isCancelled()) importStatus = code; });
+        main.post(() -> { if (importTask == task && !task.isCancelled()) { importStatus = code; lastImportResult = code; importHasResult = true; } });
     }
     private void finishImport() {
         main.removeCallbacks(importTimeout);
@@ -403,12 +443,19 @@ public final class ProbeActivity extends Activity {
         if (!activityDestroyed && finished != null && !finished.didCloseFail() && importCandidate != null) {
             identity = importCandidate; // Atomic replacement only after all validation and closes succeeded.
             importStatus = "READY / 已导入: " + identity.description();
-        } else if (finished != null && finished.didCloseFail()) importStatus = "IMPORT_CLOSE_FAILED";
+            lastImportResult = importStatus;
+            importHasResult = true;
+        } else if (finished != null && finished.didCloseFail()) {
+            importStatus = "IMPORT_CLOSE_FAILED";
+            lastImportResult = importStatus;
+            importHasResult = true;
+        }
         if (importCandidate == null && identity != null) importStatus += "; PREVIOUS_CERTIFICATE_PRESERVED";
         importCandidate = null;
         if (!activityDestroyed) updateControls();
     }
     private void cancelImport(String code) {
+        boolean cancelledOperation = selectingFile || importTask != null;
         selectingFile = false;
         openKeyWhenResumed = false;
         importPickerRequest = 0;
@@ -416,6 +463,7 @@ public final class ProbeActivity extends Activity {
         importCandidate = null;
         if (importTask != null) importTask.cancel();
         importStatus = code + (identity == null ? "; NO_CERTIFICATE" : "; PREVIOUS_CERTIFICATE_PRESERVED");
+        if (cancelledOperation && !importHasResult) { lastImportResult = importStatus; importHasResult = true; }
     }
     private void forgetIdentity() {
         identity = null;

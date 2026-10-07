@@ -1,6 +1,6 @@
-# Local HTTPS / ordinary-hotspot and VPN comparison (v5)
+# Local HTTPS / ordinary-hotspot and VPN comparison (v6)
 
-Independent APK: `com.diplay.networkprobe`, **DiPlay Network Probe**, version 0.5-local-https. It does not replace DiPlay or use its identity, media or CarPlay code. There are no bundled credentials, assets, native libraries or vendor implementations.
+Independent APK: `com.diplay.networkprobe`, **DiPlay Network Probe**, version 0.6-local-import. It does not replace DiPlay or use its identity, media or CarPlay code. There are no bundled credentials, assets, native libraries or vendor implementations.
 
 ## Fixed endpoints
 
@@ -23,11 +23,14 @@ Android normally deactivates the original interface after successful handover. R
 
 ## Phone-only credential import
 
-1. On the phone, use **Import fullchain + key**. Personally choose two local files using Android's Storage Access Framework: PEM fullchain first (leaf certificate first, followed by intermediates), then its private key. ZIP is not accepted.
+1. On the phone, use **Import local nginx ZIP** to personally select one local archive through Android’s Storage Access Framework. It is parsed only in memory on that phone. The archive must contain exactly one certificate/fullchain PEM and one private-key PEM, recognized by their content headers regardless of names or entry order. Directories are allowed; other/duplicate/ambiguous entries are rejected. Nothing is extracted to the filesystem or uploaded. The alternative **Import PEM files separately** selects fullchain first (leaf certificate then intermediates), then its matching private key.
+   - ZIP bounds: 512 KiB compressed input, 16 entries, 128 KiB aggregate decompressed data, 64 KiB certificate file and 16 KiB key file. Absolute/traversal/backslash paths, encryption, unsupported compression, malformed/CRC-failing/truncated archives and inconsistent directory metadata are rejected.
+   - A single UTF-8 BOM at the beginning, LF/CRLF and EOF after END are supported. Base64 padding compatibility is validated strictly; arbitrary preambles, nested archives and malformed DER are not ignored.
 2. Supported keys are unencrypted PKCS#1 RSA (`RSA PRIVATE KEY`) or PKCS#8 RSA/EC (`PRIVATE KEY`); RSA must be at least 2048 bits, EC at least 256 bits. No user conversion is needed for supported PKCS#1 RSA. Encrypted keys, SEC1 `EC PRIVATE KEY`, multi-prime RSA and other algorithms fail with a fixed error code.
 3. Validation checks bounded PEM/DER, key structure, local signing/verifying proof of certificate-key match, dates, DNS SAN for the selected mode’s fixed hostname (`test.mark4z.asia` for ordinary hotspot; `tesla.mark4z.asia` for VPN modes; no CN fallback), leaf purpose and supplied chain order/signatures/CA constraints. It also requires the chain to reach a system trust anchor. It never installs a CA or accepts a self-signed/untrusted certificate. A valid single-label wildcard SAN can match the hostname. KU/EKU are enforced when present.
 4. Only after validation and all provider-stream closes succeed does the new identity replace the current one. Cancel, malformed files, mismatches and read failures preserve the previous identity. Start/mode/protocol/import controls cannot stack operations. Import has a 15-second cancellation watchdog; a stalled provider close/open can delay final cleanup, with further imports/start blocked until it completes.
-5. The identity remains in this Activity/process memory only. **Forget certificate**, ordinary backgrounding, lock/rotation or process termination drops it; import again when returning. System file-picker/VPN-permission pauses are the explicit exception. Stop removes the service's references after owned cleanup; the foreground Activity can retain its identity for the next comparison.
+5. The status displays certificate/key stage-specific errors, recognized format labels and byte counts only, never PEM/key bodies or URI tokens. The most recent non-secret import result remains visible when backgrounding clears the current identity; it does not mean credentials are still loaded. Separate-file parsing distinguishes `CERT_PEM_MALFORMED` from `KEY_PEM_MALFORMED`.
+6. The identity remains in this Activity/process memory only. **Forget certificate**, ordinary backgrounding, lock/rotation or process termination drops it; import again when returning. System file-picker/VPN-permission pauses are the explicit exception. Stop removes the service's references after owned cleanup; the foreground Activity can retain its identity for the next comparison.
 
 The app writes no credential file, preferences, saved instance state, key-bearing Intent or logs; it requests no persistent document URI grant. Backup is disabled. File-provider streams close on success, errors and cancellation, including late opens. Temporary byte arrays are zeroed where controllable; Java/provider/crypto objects may keep memory copies until garbage collection, so this is not a secure-memory erasure claim. Selected source files remain the user's responsibility. Use replacement credentials if a private key was ever publicly exposed.
 
@@ -66,7 +69,7 @@ Stop never performs cleanup on Android's main thread. The app remains Stopping w
 
 No local Gradle build. Authorized GitHub Actions runs the existing credential guard, Python guard tests, JVM tests, Android lint, source-only APK build and APK payload guard; it must reject credential containers and bundled assets/native payloads before upload. The fixture code generates synthetic certificates/private keys at runtime rather than embedding PEM or identity files. Tests never activate a real Android VPN or use the user's actual credentials.
 
-For the prepared, unpublished v5 changes, local source/packaging checks and pure-Java compiler/harness results are reported separately from unrun Android lint/build/device checks. The user authorized publishing the credential-free changes to the existing experiment branch and using Actions. The exact remote commit and terminal CI outcome must be checked before calling the APK verified.
+For prepared v6 follow-on changes, local source/packaging checks and pure-Java compiler/harness results are reported separately from unrun Android lint/build/device checks. v5 publication was authorized and verified separately. The user authorized this v6 follow-on on the existing experiment branch and Actions; its exact commit and terminal result must be checked before calling the new APK verified.
 
 References:
 - https://developer.android.com/training/data-storage/shared/documents-files
@@ -76,3 +79,7 @@ References:
 - https://developer.android.com/develop/connectivity/vpn
 
 - https://developer.android.com/privacy-and-security/security-config#CertificateTransparency
+
+## Diagnostic scope of v6 preparation
+
+The reported phone `PEM_MALFORMED` has not been reproduced from the separately supplied original archive: unchanged v5 accepted that original certificate/key pair for its matching hostname. That sample uses ASCII, LF and PKCS#1 RSA. BOM/padding tolerance and ZIP auto-selection are compatibility/diagnostic improvements, not proof that a known failure in that original pair was fixed. The ordinary endpoint remains `test.mark4z.asia`; a certificate covering only another hostname still fails normal hostname validation.
