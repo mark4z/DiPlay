@@ -1,4 +1,4 @@
-import { AUDIO_TRANSPORT, MAX_AUDIO_CANDIDATES, positiveId, validAudioSdp, validAudioCandidate, preferOpusStereo, localIceAddress } from './audio-protocol.mjs?v=webrtc-audio-v1';
+import { AUDIO_TRANSPORT, MAX_AUDIO_CANDIDATES, positiveId, validAudioSdp, validAudioCandidate, preferOpusStereo, localIceAddress, iceAddressClass } from './audio-protocol.mjs?v=webrtc-audio-v1';
 
 const UPGRADE = 'Browser audio needs the WebRTC/Opus APK and viewer. Update both, or keep audio on Android.';
 const FAILED = 'Browser audio stopped; Android audio restored.';
@@ -265,7 +265,8 @@ export class BrowserAudioPlayer {
           local.candidateType !== 'host' || remote.candidateType !== 'host' ? 'candidate type is not host' :
           !['udp', 'tcp'].includes(local.protocol) || local.protocol !== remote.protocol ? 'candidate protocol is missing or mismatched' :
           typeof local.address !== 'string' || typeof remote.address !== 'string' ? 'candidate address unavailable' :
-          !localIceAddress(local.address) || !localIceAddress(remote.address) ? 'candidate address is outside local policy' :
+          !localIceAddress(local.address) || !localIceAddress(remote.address) ?
+            `candidate address is outside local policy; browser=${iceAddressClass(local.address)}, Android=${iceAddressClass(remote.address)}` :
           'selected pair has not succeeded';
         this.disable(`Could not verify a local-only WebRTC audio connection (${reason}). Audio stays on Android.`, true); return;
       }

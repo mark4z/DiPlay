@@ -50,6 +50,26 @@ export function localIceAddress(address) {
   return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
 }
 
+// Fixed diagnostic labels only. Classification never grants permission, resolves
+// DNS, or returns an address. In particular, shared/CGNAT space stays rejected.
+export function iceAddressClass(address) {
+  if (typeof address !== 'string' || address.length === 0) return 'unavailable';
+  if (localIceAddress(address)) return 'allowed-local';
+  if (address.includes(':')) {
+    if (!/^[0-9a-f:.]+$/i.test(address)) return 'invalid-or-unsupported';
+    let canonical;
+    try { canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1).toLowerCase(); } catch { return 'invalid-or-unsupported'; }
+    const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+    if (mapped) return iceAddressClass([parseInt(mapped[1], 16) >> 8, parseInt(mapped[1], 16) & 255,
+      parseInt(mapped[2], 16) >> 8, parseInt(mapped[2], 16) & 255].join('.'));
+    return canonical === '::' ? 'unspecified' : 'nonlocal-ipv6';
+  }
+  const fields = address.split('.'), octets = fields.map(Number);
+  if (fields.length !== 4 || octets.some((value, index) => !Number.isInteger(value) || value < 0 || value > 255 || String(value) !== fields[index])) return 'invalid-or-unsupported';
+  if (octets.every(value => value === 0)) return 'unspecified';
+  return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127 ? 'shared-ipv4' : 'nonlocal-ipv4';
+}
+
 // RFC 7587 stereo is a receiver preference. WebRTC answers commonly omit it,
 // so preserve all existing parameters and explicitly request stereo decoding.
 export function preferOpusStereo(sdp) {
