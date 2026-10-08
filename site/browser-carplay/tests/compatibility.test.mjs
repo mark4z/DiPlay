@@ -26,6 +26,7 @@ for (const [index, scenario] of scenarios.entries()) {
       dispatch(name) { this.listeners.get(name)?.({ preventDefault() {} }); }
       getContext() { return scenario.canvas === false ? null : {}; }
       replaceChildren() {}
+      append() {}
     }
     const elements = new Map();
     const element = id => {

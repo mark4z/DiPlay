@@ -14,6 +14,7 @@ class BootReceiver : BroadcastReceiver() {
         if (!launchEnabled) return
 
         val launch = Intent(context, DiPlayActivity::class.java).apply {
+            putExtra("skip_https_autostart", true)
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -33,3 +34,4 @@ class BootReceiver : BroadcastReceiver() {
         const val TAG = "xcertplay-boot"
     }
 }
+

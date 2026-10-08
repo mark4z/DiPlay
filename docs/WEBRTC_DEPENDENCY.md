@@ -80,6 +80,57 @@ The Java API does not pin ICE to one physical interface: this is a restriction
 on signaled endpoints, not a claim of interface binding. mDNS is resolved by the
 WebRTC stack, never by this candidate validator.
 
+### Embedded HTTPS / application-owned VPN
+
+The embedded HTTPS listener uses this app's synthetic, non-forwarding TUN. Audio
+must still use the physical hotspot/LAN. The default Android WebRTC monitor is
+unsuitable for that combination: it considers an interface unavailable when it
+cannot find a ConnectivityManager network handle, and binds ICE sockets on
+known interfaces to that network. A hotspot downstream interface may not have
+such a handle, while a socket bound to the synthetic TUN cannot carry the audio
+datagrams to the browser.
+
+For an active embedded HTTPS session only, `WebRtcAudioNetworkPolicy` supplies
+factory-local `disableNetworkMonitor = true` and ignores VPN, cellular and
+loopback adapters. The pinned WebRTC implementation then enumerates running
+native interfaces (including hotspot interfaces without Android network
+handles) and binds candidate sockets to their local addresses using normal OS
+routing. This neither binds the process nor changes Android network/VPN
+settings. Ordinary LAN-viewer audio retains the default Android network policy.
+DTLS encryption, private-host-only signaling, receive-only browser media,
+selected-pair verification, RTP progression and browser playback proof remain
+required. No public STUN/TURN service or alternate audio transport is added.
+
+Pinned implementation evidence:
+
+- [Factory option to native network-monitor selection](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/sdk/android/src/jni/pc/peer_connection_factory.cc#L316-L320)
+- [Missing Android interface handles are unavailable](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/sdk/android/src/jni/android_network_monitor.cc#L618-L648)
+- [Native fallback interface enumeration and availability](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/rtc_base/network.cc#L635-L758)
+- [Monitor-provided socket network binding](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/rtc_base/network.cc#L1049-L1071)
+
+This corrects a source-level incompatibility with the embedded-HTTPS topology;
+it is not proof that the user's timeout had this sole cause. Hardware validation
+must verify the selected direct path and audible playback with the actual
+Android hotspot, synthetic TUN and Tesla browser.
+
+### Bounded handoff diagnostics
+
+Setup still has a 15-second deadline, followed by at most five seconds awaiting
+the Android handoff acknowledgment. Native audio remains enabled until the
+browser's existing playback/RTP/local-ICE proof has arrived and the acknowledgment
+has been queued successfully. Failure, disconnect, teardown or missing playback
+heartbeats restores native output.
+
+Android timeout codes now distinguish offer, answer, ICE, application-PCM capture
+and browser-readiness stalls. ICE gathering with no eligible local candidates
+fails explicitly. The browser reports the failed stage and bounded counts of
+signaled browser/Android candidates rather than suggesting a generic APK update.
+Its in-memory diagnostic snapshot also distinguishes DTLS, missing track, RTP,
+local-pair verification, playback and acknowledgment. The last setup snapshot
+survives teardown for inspection and resets on the next audio request. It contains
+only fixed state names, booleans and counts, never addresses, SDP, credentials,
+raw error text or media. Diagnostics do not weaken any handoff prerequisite.
+
 Signaling remains in the existing paired LAN connection and is capped at a
 6,000-character SDP, 1,024-character candidates, and 32 candidates per side.
 Only a single receive-only audio answer is accepted. Native peer operations and
@@ -113,3 +164,4 @@ The user-requested full compilation, Android tests, lint and APK validation run
 in GitHub Actions. Physical Android-to-browser sound, permission behavior,
 stereo fidelity, native route restoration, and long-session timing still require
 device testing; source/bytecode inspection is not a hardware test.
+

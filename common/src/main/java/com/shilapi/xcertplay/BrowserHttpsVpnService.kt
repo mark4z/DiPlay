@@ -27,21 +27,41 @@ class BrowserHttpsVpnService : VpnService() {
     companion object {
         internal const val START = "com.shilapi.xcertplay.browser.HTTPS_START"
         internal const val STOP = "com.shilapi.xcertplay.browser.HTTPS_STOP"
+        private const val BACKGROUND_STOP = "com.shilapi.xcertplay.browser.HTTPS_BACKGROUND_STOP"
         private const val CHANNEL = "browser-https"
         private const val NOTIFICATION = 9999
-        private val grant = BrowserSessionGrant<BrowserTlsIdentity>()
+        private data class SavedIdentity(val identity: BrowserTlsIdentity, val revision: Long)
+        private val grant = BrowserSessionGrant<SavedIdentity>()
         @Volatile var running = false; private set
         @Volatile var ready = false; private set
         @Volatile var recoveryRequired = false; private set
         @Volatile var status = "Stopped / 已停止"; private set
         @Volatile var selfCheck = "NOT_RUN"; private set
         @Volatile var interfaceReport = "NOT_RUN"; private set
-        internal fun armStart(identity: BrowserTlsIdentity): Long = grant.arm(identity)
+        internal fun armStart(identity: BrowserTlsIdentity, revision: Long): Long = grant.arm(SavedIdentity(identity, revision))
         internal fun cancelStart() = grant.cancel()
         internal fun hasPendingStart(): Boolean = grant.hasPending()
-        fun stop(context: Context) {
+        fun stop(context: Context, userStop: Boolean = true) {
             cancelStart()
-            if (running) context.startService(Intent(context, BrowserHttpsVpnService::class.java).setAction(STOP))
+            if (userStop) BrowserHttpsForeground.suppressAutoStart()
+            if (running) context.startService(Intent(context, BrowserHttpsVpnService::class.java)
+                .setAction(if (userStop) STOP else BACKGROUND_STOP))
+        }
+        internal fun notifyAutomaticConnection(context: Context) {
+            if (!ready || !running || !BrowserHttpsForeground.visible) return
+            val stop = PendingIntent.getService(context, 9999,
+                Intent(context, BrowserHttpsVpnService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE)
+            val open = PendingIntent.getActivity(context, 9999,
+                Intent(context, BrowserHttpsActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val notice = Notification.Builder(context, CHANNEL)
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setContentTitle("Browser connection allowed / 已允许浏览器连接")
+                .setContentText("Automatically allowed by your HTTPS setting / 按你的 HTTPS 设置自动允许")
+                .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(false)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop / 停止", stop).build()
+            // POST_NOTIFICATIONS denial must not crash or fabricate an approval prompt.
+            try { context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notice) }
+            catch (_: SecurityException) { }
         }
         internal fun worker(name: String, action: () -> Unit) {
             Thread(action, name).apply { isDaemon = true; start() }
@@ -58,9 +78,14 @@ class BrowserHttpsVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == STOP) { stopSession("USER_STOP"); return START_NOT_STICKY }
-        val identity = if (intent?.action == START) grant.consume(intent.getLongExtra("grant", 0)) else null
-        if (identity == null || running || recoveryRequired || BrowserOutput.endpoint != null) {
+        if (intent?.action == BACKGROUND_STOP) {
+            if (!BrowserHttpsForeground.visible) stopSession("APP_BACKGROUNDED")
+            return START_NOT_STICKY
+        }
+        if (intent?.action == STOP) { BrowserHttpsForeground.suppressAutoStart(); stopSession("USER_STOP"); return START_NOT_STICKY }
+        val granted = if (intent?.action == START) grant.consume(intent.getLongExtra("grant", 0)) else null
+        val identity = granted?.identity
+        if (granted == null || identity == null || granted.revision != BrowserTlsStore(this).revision() || running || recoveryRequired || !BrowserHttpsForeground.visible || BrowserOutput.endpoint != null) {
             if (!running) stopSelf()
             return START_NOT_STICKY
         }
@@ -94,7 +119,7 @@ class BrowserHttpsVpnService : VpnService() {
         main.postDelayed(startupTimeout, BrowserHttpsPolicy.STARTUP_TIMEOUT_MS)
         try {
             enterForeground()
-            worker("browser-https-start") { startSession(current, interfaces, identity) }
+            worker("browser-https-start") { startSession(current, interfaces, identity, granted.revision) }
         } catch (_: RuntimeException) {
             stopSession("FOREGROUND_START_FAILED")
             current.workerFinished()
@@ -112,19 +137,21 @@ class BrowserHttpsVpnService : VpnService() {
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle("DiPlay embedded HTTPS viewer")
-            .setContentText("Session only · Stop closes both local VPN interfaces")
+            .setContentText("Foreground only · Stop closes both local VPN interfaces")
             .setContentIntent(open).setOngoing(true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop / 停止", stop).build()
         if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
         else startForeground(NOTIFICATION, notification)
     }
 
-    private fun startSession(current: BrowserSession, interfaces: BrowserInterfaces, identity: BrowserTlsIdentity) {
+    private fun startSession(current: BrowserSession, interfaces: BrowserInterfaces, identity: BrowserTlsIdentity, revision: Long) {
         try {
             if (current.isCancelled) return
             if (Build.VERSION.SDK_INT >= 37 && checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED)
                 throw StartFailure("LOCAL_NETWORK_PERMISSION_DENIED")
             if (prepare(this) != null) throw StartFailure("VPN_CONSENT_REQUIRED")
+            if (!BrowserHttpsForeground.visible) throw StartFailure("APP_NOT_VISIBLE")
+            if (revision != BrowserTlsStore(this).revision()) throw StartFailure("SAVED_IDENTITY_CHANGED")
             identity.checkValidity(BrowserHttpsPolicy.HOSTNAME)
             rejectConflicts()
             if (!BrowserHandover.establish(current, BrowserHttpsPolicy.DUAL, { address -> establishInterface(address) }, { stage ->

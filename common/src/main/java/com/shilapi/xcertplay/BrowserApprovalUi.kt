@@ -7,7 +7,7 @@ import android.os.Looper
 import com.shilapi.xcertplay.browser.BrowserApprovalRequest
 import com.shilapi.xcertplay.browser.BrowserOutput
 
-/** A connection can be approved only by a foreground Android host, never by the viewer. */
+/** Foreground-only permission: per-connection prompt by default, or explicit saved HTTPS opt-in. */
 internal class BrowserApprovalUi(private val activity: Activity) {
     private val main = Handler(Looper.getMainLooper())
     private var resumed = false
@@ -31,6 +31,18 @@ internal class BrowserApprovalUi(private val activity: Activity) {
         if (!resumed || activity.isFinishing || activity.isDestroyed || !BrowserOutput.isApprovalPending(pending)) {
             pending.markPromptUnavailable()
             pending.reject()
+            return
+        }
+        // A saved option grants only this bounded connection. It never pretends a browser
+        // playback gesture occurred, enables touch ownership, or relaxes the server's gates.
+        val automatic = BrowserHttpsPreferences(activity).load().autoAllowConnections &&
+            BrowserOutput.secure && BrowserHttpsVpnService.running && BrowserHttpsVpnService.ready && BrowserHttpsForeground.visible
+        if (automatic) {
+            if (pending.approveAutomatically()) {
+                BrowserHttpsVpnService.notifyAutomaticConnection(activity)
+                android.widget.Toast.makeText(activity,
+                    "Browser connection allowed / 已自动允许浏览器连接", android.widget.Toast.LENGTH_LONG).show()
+            }
             return
         }
         dismiss()

@@ -1,8 +1,10 @@
 # Experimental browser CarPlay viewer
 
-Static HTML/CSS/ES modules; no dependencies, telemetry, storage, or automatic
-connection. This is a video, touch, and optional audio companion to the Android bridge, not a
-standalone CarPlay receiver. Browser microphone uplink is not included.
+Static HTML/CSS/ES modules; no dependencies, telemetry, or browser storage.
+The built-in HTTPS origin makes one automatic connection attempt on a fresh,
+visible page open; external origins always require an explicit Connect. This is a
+video, touch, and optional audio companion to the Android bridge, not a standalone
+CarPlay receiver. Browser microphone uplink is not included.
 
 ## Deployment and connection
 
@@ -29,15 +31,39 @@ Local Network Access mixed-content exemption. WebCodecs video support and actual
 H.264/H.265 decoding remain device-dependent; a Tesla browser or other in-car
 browser is not guaranteed to support them.
 
-1. Park, enable the browser bridge in DiPlay, and connect both devices to the same
-   trusted private LAN.
+1. Park and connect both devices to the same trusted private LAN. On DiPlay's
+   home screen, import the local certificate ZIP, confirm parked/trusted-network
+   use, and enable **HTTPS service**. The validated identity is encrypted in
+   Android private no-backup storage for later app openings. See the
+   [home-screen HTTPS setup guide](../../docs/BROWSER_HTTPS_SETUP.md) for the
+   Android VPN/local-network prompts and certificate deletion controls.
 2. Manually open the built-in HTTPS URL shown above. All viewer assets come from
-   the APK on that connection; loading the page does not connect the WebSocket.
-3. Confirm parked use and click **Connect display**. No IP address entry is needed.
-4. Within 30 seconds, tap **Accept** in DiPlay's Android connection prompt. TLS
-   does not replace approval; each connection requires a fresh manual decision.
-5. Enable touch separately if wanted. It stays inactive until Android
+   the APK on that connection. The page fills the viewport and makes one WSS
+   connection attempt to this device, with no IP address entry.
+3. DiPlay's configured approval mode applies. In manual mode, tap **Accept** on
+   Android within 30 seconds. The protocol-v2 approval handshake is required in
+   either mode; TLS alone does not authorize media or controls.
+4. After approval, tap **Enter fullscreen + audio** if wanted. This real browser
+   gesture requests fullscreen and starts browser audio. If fullscreen is not
+   supported or allowed, the display still fills the page. Playback failures
+   remain visible and keep sound on Android. There is no automatic audio start.
+5. Open **Settings** to enable touch separately if wanted. It stays inactive until Android
    acknowledges ownership. Up to two contacts match the existing CarPlay HID mapper.
+
+The built-in viewer keeps setup, transport explanations, diagnostics, audio and
+touch controls in **Settings**. The compact bar always exposes **Stop** and touch
+state; connection and audio errors stay visible outside the drawer. **Reconnect**
+starts one fresh attempt after a stop, rejection, or failure. Hiding or leaving
+the page closes the session. Returning to a tab or restoring it from BFCache does
+not reconnect; no timer retries failed connections. Reloading the visible page
+is a new opening and makes one new attempt. The embedded browser has no parked
+checkbox: the explicitly enabled Android parked-use guard remains required.
+
+Android's **Start HTTPS when I open DiPlay** and **Automatically allow browser
+connections** are separate opt-ins, both off by default. HTTPS remains tied to
+DiPlay's visible foreground session, including the handoff to CarPlay; leaving
+the app stops it. Stop retains the saved certificate and choices. Delete saved
+certificate and settings stops HTTPS and clears the identity plus both options.
 
 ### External GitHub Pages viewer (compatibility)
 
@@ -74,22 +100,22 @@ depends on the trusted LAN and Android approval. Use only a trusted network. Do 
 pairing credentials, persistent approvals, or raw network-data logging. HTTPS
 secures page delivery; only WSS also protects the WebSocket transport.
 
-Hide/leave the page, lock the screen, uncheck parked use, or click Disconnect to
-close the session. Touch is released on pointer cancel/lost capture, focus loss,
-video reconfiguration, and resize. On reconnect, click Connect, accept again on
-Android, and explicitly enable touch again. The checkbox is a user declaration,
-not a vehicle-speed sensor.
+Hide/leave the page, lock the screen, or click Stop/Disconnect to close the
+session. Unchecking parked use also disconnects the external viewer. Touch is released on pointer cancel/lost capture, focus loss,
+video reconfiguration, and resize. On reconnect, click Connect/Reconnect, complete
+the Android approval handshake, and explicitly enable touch again. The external checkbox and the Android parked-use guard are user declarations,
+not vehicle-speed sensors.
 
 ## Connection diagnostics and LAN checks
 
-The visible **Connection diagnostics** panel shows page scheme, secure-context
+The **Connection diagnostics** panel (inside Settings in the built-in viewer) shows page scheme, secure-context
 status, and the actual connection target's `ws://` or `wss://` transport separately.
 WSS encrypts the WebSocket link with TLS. HTTPS delivery alone does not encrypt
 the external viewer's plaintext WS video, audio signaling, or controls. Audio
 media is separately protected by WebRTC DTLS-SRTP. These labels describe transport,
 not a browser permission verdict or a promise that a connection will work.
 
-Every valid, user-initiated Connect starts a fresh in-memory timeline:
+Every valid connection attempt starts a fresh in-memory timeline:
 
 1. **Connect requested**: endpoint validation passed and the attempt began.
 2. **WebSocket opened**: the browser reported a successful WebSocket handshake.
@@ -127,19 +153,22 @@ status rather than inferring a permission failure.
 ## Wire protocol
 
 One WebSocket client to `/carplay`. Protocol **v2** replaces token authentication
-with an explicit Android consent prompt. The first client text message is:
+with Android-side approval. Manual mode shows an explicit consent prompt; the
+embedded auto-approval opt-in still uses the same versioned handshake. The first
+client text message is:
 
 ```json
 {"type":"requestApproval","version":2}
 ```
 
 The server must first reply `{"type":"approvalPending","version":2}`, then only
-after the user taps Accept on Android send `{"type":"authenticated","version":2}`.
+after Android authorizes the connection send `{"type":"authenticated","version":2}`.
 No video, config, keyframe request, touch ownership request, or touch packet is
 accepted before the authenticated acknowledgment. The viewer closes if approval
 has not completed within 30 seconds of its request. Repeated pending messages
-cannot extend this deadline. Disconnect cancels the request; reconnect always
-requires another explicit click and Android approval.
+cannot extend this deadline. Disconnect cancels the request; retrying within the same page always
+requires another explicit click and the Android approval handshake. A freshly
+opened visible built-in page starts one attempt automatically.
 
 Reject, timeout, and protocol mismatch use `{ "type":"error", "version":2,
 "code":"approvalRejected" }`, with `approvalTimeout` or `upgradeRequired` as the
@@ -354,8 +383,11 @@ Audio tests cover readiness ordering, Opus stereo negotiation, local ICE/size/co
 bounds, legacy fail-closed behavior, delayed promises, repeated/cancelled gestures,
 RTP liveness, explicit test tone signaling, privacy-safe stats, and native fallback.
 Both embedded TLS and external LAN UI flows exercise approval, touch ownership,
-audio, repeated Connect, hide/return, cancellation, and explicit reconnect. The
-Gradle source-contract checks do not replace building and inspecting a real APK.
+audio, repeated Connect, hide/return, cancellation, and explicit reconnect. Entry
+tests cover exactly one embedded opening attempt, hidden openings/BFCache,
+preapproval gesture gating, synchronous audio/fullscreen invocation, repeated
+clicks, rejected/unsupported fullscreen, blocked playback, stale async results,
+and visible connection errors without automatic retry. The Gradle source-contract checks do not replace building and inspecting a real APK.
 Tests use synthetic bytes and identifiers only. Real TLS certificate/hostname
 validation, DNS routing, HTTPS-to-LAN browser permission,
 hardware AVC/HEVC decoding, physical two-finger gestures, background suspension,

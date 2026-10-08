@@ -22,16 +22,23 @@ import org.robolectric.shadows.ShadowAlertDialog
 @LooperMode(LooperMode.Mode.PAUSED)
 class BrowserApprovalUiTest {
     private lateinit var ui: BrowserApprovalUi
+    private lateinit var activity: Activity
 
     @Before fun setUp() {
         BrowserOutput.stop()
-        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        BrowserHttpsPreferences(activity).reset()
+        BrowserHttpsForeground.enter(activity)
         ui = BrowserApprovalUi(activity)
         ui.resume()
     }
 
     @After fun cleanUp() {
         ui.pause()
+        BrowserHttpsPreferences(activity).reset()
+        BrowserHttpsForeground.leave(activity)
+        serviceFlag("ready", false)
+        serviceFlag("running", false)
         BrowserOutput.stop()
         shadowOf(Looper.getMainLooper()).idle()
     }
@@ -89,6 +96,31 @@ class BrowserApprovalUiTest {
         assertFalse(request.approve())
     }
 
+    @Test fun automaticHttpsOptInApprovesWithoutDialogGestureOrTouchOwnership() {
+        BrowserHttpsPreferences(activity).save(BrowserHttpsPreferences.Settings(autoAllowConnections = true))
+        BrowserOutput::class.java.getDeclaredField("endpoint").apply { isAccessible = true }
+            .set(null, "wss://tesla.mark4z.asia:9999/carplay")
+        serviceFlag("ready", true); serviceFlag("running", true)
+        val request = dispatch()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, decision(request))
+        assertTrue(ShadowAlertDialog.getLatestAlertDialog()?.isShowing != true)
+        assertFalse(BrowserOutput.browserTouchOwned)
+        assertFalse(BrowserOutput.viewerConnected)
+        val notice = org.robolectric.shadows.ShadowToast.getTextOfLatestToast().toString()
+        assertTrue(notice.contains("automatically", ignoreCase = true) || notice.contains("自动"))
+    }
+    @Test fun savedAutomaticOptionDoesNotApplyToPlainHttpOrUnreadyHttps() {
+        BrowserHttpsPreferences(activity).save(BrowserHttpsPreferences.Settings(autoAllowConnections = true))
+        val request = dispatch()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, decision(request))
+        assertTrue(ShadowAlertDialog.getLatestAlertDialog().isShowing)
+    }
+    private fun serviceFlag(name: String, value: Boolean) {
+        BrowserHttpsVpnService::class.java.getDeclaredField(name).apply { isAccessible = true }.setBoolean(null, value)
+    }
+
     private fun dispatch(): BrowserApprovalRequest {
         val request = BrowserApprovalRequest::class.java.getDeclaredConstructor(java.lang.Long.TYPE,
             String::class.java, java.lang.Long.TYPE, kotlin.jvm.functions.Function0::class.java)
@@ -105,3 +137,4 @@ class BrowserApprovalUiTest {
     private fun decision(request: BrowserApprovalRequest) = BrowserApprovalRequest::class.java
         .getDeclaredField("decision").apply { isAccessible = true }.getInt(request)
 }
+

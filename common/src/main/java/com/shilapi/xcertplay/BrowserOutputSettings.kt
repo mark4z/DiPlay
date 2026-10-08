@@ -8,7 +8,7 @@ import com.shilapi.xcertplay.browser.BrowserOutput
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
-/** Deliberately session-only controls: no preference, startup service, or persisted token. */
+/** Legacy LAN controls and a shortcut to the home-screen HTTPS setup. No pairing token is persisted. */
 internal object BrowserOutputSettings {
     fun create(context: Context): View = Button(context).apply {
         text = "Browser output (experimental) / 浏览器输出"

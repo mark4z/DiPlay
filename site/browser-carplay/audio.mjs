@@ -4,6 +4,28 @@ const UPGRADE = 'Browser audio needs the WebRTC/Opus APK and viewer. Update both
 const FAILED = 'Browser audio stopped; Android audio restored.';
 const STATS_INTERVAL = 250;
 const STALL_TIMEOUT = 3000;
+const SETUP_LABELS = Object.freeze({
+  offer: 'Android did not send an audio offer',
+  answer: 'the audio offer could not be answered',
+  ice: 'the direct local ICE connection did not connect',
+  dtls: 'the encrypted audio connection did not finish',
+  track: 'the browser did not receive an audio track',
+  rtp: 'audio packets did not begin arriving',
+  pair: 'the browser could not verify the selected local ICE pair',
+  playback: 'the browser did not start playback; tap Audio again',
+  acknowledgment: 'Android did not acknowledge playback readiness',
+  active: 'audio had started',
+});
+const ANDROID_ERRORS = Object.freeze({
+  'audio-offer-timeout': 'Android could not prepare its audio offer',
+  'audio-answer-timeout': 'Android did not receive the browser audio answer',
+  'audio-ice-timeout': 'Android could not establish the direct local audio connection',
+  'audio-capture-timeout': 'the Android application-audio callback did not start',
+  'audio-no-local-candidates': 'Android found no usable local audio network interface',
+  'audio-pcm-init-failed': 'Android could not initialize application-audio export',
+  'audio-pcm-start-failed': 'Android could not start application-audio export',
+  'audio-unsupported-capture-format': 'Android supplied an unsupported application-audio format',
+});
 
 /** A receive-only WebRTC route. No microphone, capture, PCM queue, or auto-start. */
 export class BrowserAudioPlayer {
@@ -20,6 +42,7 @@ export class BrowserAudioPlayer {
     this.diagnostics = { packetsReceived: null, jitterMs: null, concealedSamples: null, selectedCandidatePair: null };
     this.peer = this.audio = this.stream = this.track = null;
     this.handoffTimer = this.statsTimer = null;
+    this.lastSetup = null;
     this.remoteCandidates = []; this.remoteCandidateCount = this.localCandidateCount = this.remoteMessageCount = 0;
     this.addingCandidates = false; this.remoteSet = this.answered = this.playing = this.rtpProgress = this.localPairVerified = false;
     this.lastPackets = null; this.lastProgressAt = this.lastAliveAt = this.alivePackets = 0;
@@ -28,7 +51,26 @@ export class BrowserAudioPlayer {
   emit(message, error = false) { this.onState({ enabled: this.enabled, pending: this.pending, ready: this.ready, message, error }); }
   getDiagnostics() {
     return { transport: AUDIO_TRANSPORT, state: this.enabled ? 'active' : this.pending ? 'starting' : 'native',
+      setup: this.peer ? this.setupDiagnostics() : this.lastSetup ? { ...this.lastSetup } : null,
       ...this.diagnostics, selectedCandidatePair: this.diagnostics.selectedCandidatePair ? { ...this.diagnostics.selectedCandidatePair } : null };
+  }
+  setupDiagnostics() {
+    const stage = this.enabled ? 'active' : this.ready ? 'acknowledgment' : !this.epoch ? 'offer' : !this.answered ? 'answer' :
+      !this.connected() ? 'ice' : this.peer?.connectionState && this.peer.connectionState !== 'connected' ? 'dtls' :
+      !this.track ? 'track' : !this.rtpProgress ? 'rtp' : !this.localPairVerified ? 'pair' : 'playback';
+    const states = ['new', 'checking', 'connecting', 'connected', 'completed', 'disconnected', 'failed', 'closed'];
+    return { stage, iceState: states.includes(this.peer?.iceConnectionState) ? this.peer.iceConnectionState : 'unknown',
+      peerState: states.includes(this.peer?.connectionState) ? this.peer.connectionState : 'unknown',
+      browserCandidates: Math.min(this.localCandidateCount, MAX_AUDIO_CANDIDATES),
+      androidCandidates: Math.min(this.remoteCandidateCount, MAX_AUDIO_CANDIDATES),
+      answerSent: this.answered, trackReceived: Boolean(this.track), playbackReady: this.playing,
+      localPairVerified: this.localPairVerified, rtpProgress: this.rtpProgress };
+  }
+  timeoutMessage(code = null) {
+    const setup = this.setupDiagnostics();
+    const reason = Object.hasOwn(ANDROID_ERRORS, code) ? ANDROID_ERRORS[code] : SETUP_LABELS[setup.stage];
+    const outcome = code && !code.endsWith('-timeout') ? 'failed' : 'timed out';
+    return `Audio setup ${outcome}: ${reason}. ICE candidates: browser ${setup.browserCandidates}, Android ${setup.androidCandidates}. Audio stays on Android.`;
   }
   current(generation) { return generation === this.generation && !this.disposed && Boolean(this.peer); }
   connected() { return ['connected', 'completed'].includes(this.peer?.iceConnectionState); }
@@ -43,6 +85,7 @@ export class BrowserAudioPlayer {
     const generation = ++this.generation;
     this.activeRequestId = ++this.requestId;
     this.test = test === true;
+    this.lastSetup = null;
     this.diagnostics = { packetsReceived: null, jitterMs: null, concealedSamples: null, selectedCandidatePair: null };
     this.pending = true; this.emit('Starting WebRTC browser audio…');
     try {
@@ -87,7 +130,7 @@ export class BrowserAudioPlayer {
       };
       if (!this.sendMode(true, this.activeRequestId, this.test ? 'test' : undefined)) throw new Error('connection');
       this.handoffTimer = this.setTimer(() => {
-        if (this.current(generation) && this.pending) this.disable('WebRTC audio handoff timed out. Update the APK and viewer, or keep audio on Android.', true);
+        if (this.current(generation) && this.pending) this.disable(this.timeoutMessage(), true);
       }, 15000);
       this.scheduleStats(generation);
       this.emit('Waiting for the Android WebRTC audio offer…');
@@ -124,9 +167,11 @@ export class BrowserAudioPlayer {
         // Setup can fail before an offer assigns the epoch. Otherwise only a
         // matching route may revoke playback; old failures cannot stop a new one.
         if (this.epoch && message.epoch !== this.epoch) return;
+        const failure = message.code === 'test-complete' ? 'Audio test finished. Audio plays on Android.' : message.code === 'audio-source-unavailable' ? 'This Android source cannot export audio. Audio stays on Android.' :
+          Object.hasOwn(ANDROID_ERRORS, message.code) || ['audio-handoff-timeout', 'audio-readiness-timeout'].includes(message.code) ? this.timeoutMessage(message.code) :
+          message.code ? 'WebRTC audio is unavailable. Audio stays on Android.' : 'Audio plays on Android.';
         this.closeAudio();
-        this.emit(message.code === 'test-complete' ? 'Audio test finished. Audio plays on Android.' : message.code === 'audio-source-unavailable' ? 'This Android source cannot export audio. Audio stays on Android.' :
-          message.code ? 'WebRTC audio is unavailable. Update the APK and viewer, or keep audio on Android.' : 'Audio plays on Android.', Boolean(message.code && message.code !== 'test-complete'));
+        this.emit(failure, Boolean(message.code && message.code !== 'test-complete'));
         return;
       }
       if (message.transport !== AUDIO_TRANSPORT || !this.epoch) { this.disable(UPGRADE, true); return; }
@@ -237,7 +282,7 @@ export class BrowserAudioPlayer {
     this.cancelHandoffTimer();
     const generation = this.generation;
     this.handoffTimer = this.setTimer(() => {
-      if (this.current(generation) && this.pending) this.disable('Audio handoff acknowledgment timed out; Android audio restored.', true);
+      if (this.current(generation) && this.pending) this.disable(this.timeoutMessage(), true);
     }, 5000);
     this.emit('Audio is receiving. Waiting for Android to confirm the handoff…');
   }
@@ -260,6 +305,7 @@ export class BrowserAudioPlayer {
     this.handoffTimer = null;
   }
   closeAudio() {
+    if (this.peer) this.lastSetup = this.setupDiagnostics();
     this.cancelHandoffTimer();
     if (this.statsTimer !== null) this.clearTimer(this.statsTimer);
     this.statsTimer = null;
@@ -275,3 +321,4 @@ export class BrowserAudioPlayer {
   }
   dispose() { this.disable(); this.disposed = true; }
 }
+

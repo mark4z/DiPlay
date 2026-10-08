@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Bundled HTTP files are served only by the fixed-origin TLS variant. No discovery,
  * URL credentials, TLS fallback, compression, binary input or fragmented messages.
  *
- * Each connection requires an explicit foreground Android approval and the exact trusted HTTPS
+ * Each connection requires a foreground Android permission decision and the exact trusted HTTPS
  * origin. This is plaintext LAN transport: pairing does not protect against a hostile
  * LAN observer. A browser must independently permit HTTPS -> private-address ws://.
  *
@@ -219,6 +219,13 @@ class BrowserApprovalRequest internal constructor(
     private var decision = 0 // pending, approved, rejected, consumed/closed
     private var promptReported = false
     private var promptObserver: ((Boolean) -> Unit)? = null
+    private var automaticObserver: (() -> Unit)? = null
+    @Synchronized internal fun observeAutomaticApproval(observer: () -> Unit) { automaticObserver = observer }
+    @Synchronized fun approveAutomatically(): Boolean {
+        if (!approve()) return false
+        runCatching { automaticObserver?.invoke() }
+        return true
+    }
     @Synchronized internal fun observePrompt(observer: (Boolean) -> Unit) { promptObserver = observer }
     fun markPromptShown() { reportPrompt(true) }
     fun markPromptUnavailable() { reportPrompt(false) }
@@ -413,6 +420,7 @@ internal class BrowserLanConnection(
                     { !stopped.get() }).also { request ->
                     request.observePrompt { shown -> diagnostic?.record(
                         if (shown) BrowserConnectionStage.PROMPT_SHOWN else BrowserConnectionStage.PROMPT_UNAVAILABLE) }
+                    request.observeAutomaticApproval { diagnostic?.record(BrowserConnectionStage.AUTO_APPROVED) }
                     approval = request
                 }
             }

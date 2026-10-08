@@ -248,9 +248,13 @@ test('read-only diagnostics retain only bounded RTP numbers and candidate types,
     ['remote', { type: 'remote-candidate', candidateType: 'host', protocol: 'udp', address: '192.168.1.2' }],
   ]);
   await env.tick(); const diagnostics = env.player.getDiagnostics();
-  assert.deepEqual(diagnostics, { transport: 'webrtc-opus', state: 'starting', packetsReceived: 55, jitterMs: 13, concealedSamples: 480,
+  assert.deepEqual(diagnostics, { transport: 'webrtc-opus', state: 'starting',
+    setup: { stage: 'offer', iceState: 'new', peerState: 'new', browserCandidates: 0, androidCandidates: 0,
+      answerSent: false, trackReceived: false, playbackReady: true, localPairVerified: true, rtpProgress: false },
+    packetsReceived: 55, jitterMs: 13, concealedSamples: 480,
     selectedCandidatePair: { localType: 'host', remoteType: 'host', protocol: 'udp' } });
   diagnostics.selectedCandidatePair.protocol = 'secret'; assert.equal(env.player.getDiagnostics().selectedCandidatePair.protocol, 'udp');
+  diagnostics.setup.stage = 'secret'; assert.equal(env.player.getDiagnostics().setup.stage, 'offer');
   assert.doesNotMatch(JSON.stringify(diagnostics), /192\.168|private\.invalid|sdp/); env.player.dispose();
 });
 
@@ -284,4 +288,57 @@ test('selected mDNS and local IPv6 candidates can establish verified receive-onl
     stats.get('local').address = 'receiver-test.local'; stats.get('remote').address = 'fd00::1234'; } return stats; };
   peer.emitTrack(); peer.connect(); peer.packets = 1; await env.tick(); peer.packets = 2; await env.tick();
   assert.equal(count(env, 'audioReady'), 1); env.player.dispose();
+});
+
+
+test('setup deadlines identify the failed stage and retain bounded diagnostics after teardown', async () => {
+  for (const stage of ['offer', 'answer', 'ice', 'dtls', 'track', 'rtp', 'pair', 'playback', 'acknowledgment']) {
+    const playback = deferred();
+    const env = audioEnvironment(stage === 'playback' ? { playback } : {});
+    await env.player.enableFromGesture();
+    if (stage !== 'offer') await env.offer();
+    const peer = env.peers[0];
+    if (stage === 'answer') env.player.answered = false;
+    if (!['offer', 'answer'].includes(stage)) {
+      peer.onicecandidate({ candidate }); env.message('audioIce', candidate);
+    }
+    if (!['offer', 'answer', 'ice'].includes(stage)) peer.connect();
+    if (stage === 'dtls') peer.connectionState = 'connecting';
+    if (!['offer', 'answer', 'ice', 'dtls', 'track'].includes(stage)) peer.emitTrack();
+    if (['pair', 'playback', 'acknowledgment'].includes(stage)) {
+      if (stage === 'pair') peer.getStats = async () => new Map([['in', { type: 'inbound-rtp', kind: 'audio', packetsReceived: peer.packets }]]);
+      peer.packets = 1; await env.tick(); peer.packets = 2; await env.tick();
+    }
+    assert.equal(env.player.getDiagnostics().setup.stage, stage);
+    await env.tick(stage === 'acknowledgment' ? 5000 : 15000);
+    assert.equal(env.player.pending, false); assert.equal(env.player.enabled, false); assert.equal(peer.closed, true);
+    assert.equal(env.player.getDiagnostics().setup.stage, stage);
+    assert.match(env.states.at(-1).message, /Audio setup timed out:/);
+    assert.match(env.states.at(-1).message, /Audio stays on Android/);
+    assert.equal(env.modes.at(-1).enabled, false);
+    assert.doesNotMatch(JSON.stringify(env.player.getDiagnostics()), /192\.168|candidate:|ice-pwd/);
+    const snapshot = env.player.getDiagnostics(); snapshot.setup.stage = 'private value';
+    assert.equal(env.player.getDiagnostics().setup.stage, stage);
+    await env.player.enableFromGesture(); assert.equal(env.player.getDiagnostics().setup.stage, 'offer');
+    env.player.dispose();
+  }
+});
+
+test('Android candidate, capture and ICE failures show fixed actionable stages without reflecting network text', async () => {
+  for (const [code, expected] of [
+    ['audio-no-local-candidates', /no usable local audio network interface/],
+    ['audio-capture-timeout', /application-audio callback did not start/],
+    ['audio-ice-timeout', /direct local audio connection/],
+    ['audio-pcm-start-failed', /start application-audio export/],
+    ['audio-readiness-timeout', /direct local ICE/],
+    ['secret SDP 192.168.2.3', /WebRTC audio is unavailable/],
+    ['__proto__', /WebRTC audio is unavailable/],
+  ]) {
+    const env = audioEnvironment(); await env.player.enableFromGesture(); await env.offer();
+    env.message('audioState', { enabled: false, code });
+    assert.equal(env.player.peer, null); assert.equal(env.player.enabled, false);
+    assert.match(env.states.at(-1).message, expected);
+    assert.doesNotMatch(env.states.at(-1).message, /secret|192\.168|__proto__/);
+    assert.equal(env.player.getDiagnostics().setup.stage, 'ice');
+  }
 });

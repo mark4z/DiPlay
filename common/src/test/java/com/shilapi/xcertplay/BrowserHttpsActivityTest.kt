@@ -9,6 +9,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.Switch
+import org.robolectric.shadows.ShadowAlertDialog
 import com.shilapi.xcertplay.browser.BrowserOutput
 import com.shilapi.xcertplay.browser.BrowserSession
 import com.shilapi.xcertplay.browser.BrowserTlsIdentity
@@ -38,8 +40,14 @@ class BrowserHttpsActivityTest {
         BrowserOutput.stop()
         BrowserHttpsVpnService.cancelStart()
         controller = Robolectric.buildActivity(BrowserHttpsActivity::class.java).setup()
+        field("loadGeneration", 100)
+        field("loading", false)
+        field("loaded", true)
+        field("loadedRevision", BrowserTlsStore(activity).revision())
+        invoke("refreshControls")
     }
     @After fun cleanUp() {
+        serviceFlag("running", false); serviceFlag("ready", false)
         controller.pause().stop().destroy()
         BrowserHttpsVpnService.cancelStart()
         BrowserOutput.stop()
@@ -77,19 +85,20 @@ class BrowserHttpsActivityTest {
         assertNull(field("importTask"))
         assertTrue(field("importStatus").toString().contains("CONTENT_URI_REQUIRED"))
     }
-    @Test fun stopAndBackgroundCancelOutstandingImportAndForgetIdentity() {
+    @Test fun stopKeepsSavedIdentityAndBackgroundCancelsOutstandingImport() {
         val closed = AtomicInteger()
         val task = BrowserSession({ it.run() }, {})
         task.own(Closeable { closed.incrementAndGet() })
         field("importTask", task)
         field("identity", mock(BrowserTlsIdentity::class.java))
         field("candidate", mock(BrowserTlsIdentity::class.java))
-        button("Stop and forget").performClick()
+        invoke("stop")
+        assertNotNull(field("identity"))
+        controller.pause().stop()
         assertTrue(task.isCancelled)
         assertEquals(1, closed.get())
-        assertNull(field("identity")); assertNull(field("candidate"))
+        assertNotNull(field("identity")); assertNull(field("candidate"))
         task.workerFinished()
-        controller.pause().stop()
         assertFalse(BrowserHttpsVpnService.hasPendingStart())
         controller.restart().start().resume()
     }
@@ -98,7 +107,7 @@ class BrowserHttpsActivityTest {
         field("systemPrompt", true)
         field("pending", true)
         field("selecting", true)
-        BrowserHttpsVpnService.armStart(mock(BrowserTlsIdentity::class.java))
+        BrowserHttpsVpnService.armStart(mock(BrowserTlsIdentity::class.java), BrowserTlsStore(activity).revision())
         val saved = Bundle()
         controller.saveInstanceState(saved).pause().stop().destroy()
         assertFalse(BrowserHttpsVpnService.hasPendingStart())
@@ -109,6 +118,56 @@ class BrowserHttpsActivityTest {
         assertNull(field("importTask"))
         assertFalse(BrowserHttpsVpnService.hasPendingStart())
     }
+    @Test fun automaticOptionsAreOffUntilTheDisclosureIsAccepted() {
+        val start = find(activity.window.decorView) { it is Switch && it.text.toString().startsWith("Start HTTPS when") } as Switch
+        val allow = find(activity.window.decorView) { it is Switch && it.text.toString().startsWith("Automatically allow") } as Switch
+        assertFalse(start.isChecked); assertFalse(allow.isChecked)
+        allow.performClick()
+        assertFalse(allow.isChecked)
+        ShadowAlertDialog.getLatestAlertDialog().cancel()
+        assertFalse(BrowserHttpsPreferences(activity).load().autoAllowConnections)
+    }
+    @Test fun vpnDenialRetainsIdentityAndCannotLoopOnResume() {
+        val identity = mock(BrowserTlsIdentity::class.java)
+        field("identity", identity)
+        field("pending", true); field("systemPrompt", true)
+        BrowserHttpsForeground.suppressAutoStart()
+        result(9912, Activity.RESULT_CANCELED, null)
+        assertEquals(false, field("pending"))
+        assertSame(identity, field("identity"))
+        assertFalse(BrowserHttpsForeground.claimAutoStart())
+        assertFalse(BrowserHttpsVpnService.hasPendingStart())
+    }
+    @Test fun deleteImmediatelyDropsMemoryAndCancelsImportBeforeAsyncErasure() {
+        field("identity", mock(BrowserTlsIdentity::class.java))
+        field("candidate", mock(BrowserTlsIdentity::class.java))
+        activity.controls.deleteSaved()
+        assertNull(field("identity")); assertNull(field("candidate"))
+        assertFalse(BrowserHttpsVpnService.hasPendingStart())
+    }
+    @Test fun carPlayContinuationWaitsForHttpsReadinessAndRunsOnlyOnce() {
+        field("settings", BrowserHttpsPreferences.Settings(autoStartOnOpen = true))
+        field("autoStartEligible", true)
+        serviceFlag("running", true); serviceFlag("ready", false)
+        var continued = 0
+        activity.controls.afterInitialAutoStart { continued++ }
+        invoke("finishAutomaticStart")
+        assertEquals(0, continued)
+        serviceFlag("ready", true)
+        invoke("finishAutomaticStart"); invoke("finishAutomaticStart")
+        assertEquals(1, continued)
+    }
+    @Test fun anotherScreenDeletingIdentityInvalidatesThisScreensMemoryBeforeStarting() {
+        field("identity", mock(BrowserTlsIdentity::class.java))
+        runCatching { BrowserTlsStore(activity).delete() } // no real Keystore alias exists in this fixture
+        activity.controls.onResume()
+        assertNull(field("identity"))
+        assertFalse(BrowserHttpsVpnService.hasPendingStart())
+    }
+    private fun serviceFlag(name: String, value: Boolean) {
+        BrowserHttpsVpnService::class.java.getDeclaredField(name).apply { isAccessible = true }.setBoolean(null, value)
+    }
+
     private fun button(prefix: String) = find(activity.window.decorView) {
         it is Button && it.text.toString().startsWith(prefix)
     } as Button
@@ -119,9 +178,9 @@ class BrowserHttpsActivityTest {
         }
         throw NoSuchElementException()
     }
-    private fun field(name: String): Any? = BrowserHttpsActivity::class.java.getDeclaredField(name).apply { isAccessible = true }.get(activity)
-    private fun field(name: String, value: Any?) { BrowserHttpsActivity::class.java.getDeclaredField(name).apply { isAccessible = true }.set(activity, value) }
-    private fun invoke(name: String) { BrowserHttpsActivity::class.java.getDeclaredMethod(name).apply { isAccessible = true }.invoke(activity) }
+    private fun field(name: String): Any? = BrowserHttpsControls::class.java.getDeclaredField(name).apply { isAccessible = true }.get(activity.controls)
+    private fun field(name: String, value: Any?) { BrowserHttpsControls::class.java.getDeclaredField(name).apply { isAccessible = true }.set(activity.controls, value) }
+    private fun invoke(name: String) { BrowserHttpsControls::class.java.getDeclaredMethod(name).apply { isAccessible = true }.invoke(activity.controls) }
     private fun result(request: Int, result: Int, data: Intent?) {
         BrowserHttpsActivity::class.java.getDeclaredMethod("onActivityResult", Int::class.javaPrimitiveType,
             Int::class.javaPrimitiveType, Intent::class.java).apply { isAccessible = true }.invoke(activity, request, result, data)

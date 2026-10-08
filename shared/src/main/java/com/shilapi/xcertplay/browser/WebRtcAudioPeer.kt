@@ -47,6 +47,7 @@ internal class WebRtcAudioPeer(
     context: Context,
     private val fill: (ByteBuffer) -> Unit,
     private val callbacks: BrowserAudioPeerCallbacks,
+    private val embeddedHttps: Boolean = false,
 ) : BrowserAudioPeer {
     private val context = context.applicationContext
     private val lifecycleLock = Any()
@@ -139,7 +140,9 @@ internal class WebRtcAudioPeer(
         // not provide this guarantee. Do not call prewarmRecording/requestStartRecording.
         module.setAudioRecordEnabled(false)
         module.setSpeakerMute(true)
-        val rtcFactory = PeerConnectionFactory.builder().setAudioDeviceModule(module)
+        val builder = PeerConnectionFactory.builder().setAudioDeviceModule(module)
+        WebRtcAudioNetworkPolicy.factoryOptions(embeddedHttps)?.let { builder.setOptions(it) }
+        val rtcFactory = builder
             .createPeerConnectionFactory()
         factory = rtcFactory
         val configuration = PeerConnection.RTCConfiguration(emptyList()).apply {
@@ -236,7 +239,11 @@ internal class WebRtcAudioPeer(
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = Unit
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
-        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = Unit
+        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = dispatch {
+            if (state == PeerConnection.IceGatheringState.COMPLETE && localCandidates == 0) {
+                terminate("audio-no-local-candidates")
+            }
+        }
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
         override fun onAddStream(stream: MediaStream) = Unit
         override fun onRemoveStream(stream: MediaStream) = Unit
@@ -299,3 +306,4 @@ internal class WebRtcAudioPeer(
         }
     }
 }
+

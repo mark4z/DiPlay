@@ -774,6 +774,7 @@ class CarPlayHostActivity : ComponentActivity() {
         mainHandler.removeCallbacks(pollConfiguration)
         mainHandler.post(pollConfiguration)
         CenterMapOverlay.onDiPlayScreenShown()
+        BrowserHttpsForeground.enter(this)
         homeMonitor?.stop()
         homeScreenVisible = null
     }
@@ -1170,6 +1171,7 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        BrowserHttpsForeground.leave(this)
         closePicturePanel()
         // The controller, USB/iAP2 link, and VPN attachment intentionally outlive the UI.
         isActivityStarted = false
@@ -4985,3 +4987,4 @@ internal object CarPlayBackgroundSession {
         display = null
     }
 }
+

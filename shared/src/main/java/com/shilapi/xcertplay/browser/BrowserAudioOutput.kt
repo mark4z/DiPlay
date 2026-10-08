@@ -24,7 +24,7 @@ object BrowserAudioOutput {
     private var lastStartNs = Long.MIN_VALUE
     @Volatile private var route: Route? = null
     internal var peerFactory: ((Context?, (ByteBuffer) -> Unit, BrowserAudioPeerCallbacks) -> BrowserAudioPeer) =
-        { app, fill, callbacks -> WebRtcAudioPeer(requireNotNull(app), fill, callbacks) }
+        { app, fill, callbacks -> WebRtcAudioPeer(requireNotNull(app), fill, callbacks, embeddedHttps = BrowserOutput.secure) }
     internal var nowNs: () -> Long = System::nanoTime
     private val timer = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "CarPlay-WebRTC-watchdog").apply { isDaemon = true }
@@ -34,6 +34,7 @@ object BrowserAudioOutput {
         val pcm = BrowserPcmMixer()
         var peer: BrowserAudioPeer? = null
         var connected = false
+        var offered = false
         var answered = false
         @Volatile var ready = false
         var active = false
@@ -123,6 +124,7 @@ object BrowserAudioOutput {
             val peer = peerFactory(context, { fill(current, it) }, object : BrowserAudioPeerCallbacks {
                 override fun offer(sdp: String) {
                     if (sdp.length > 6000) { fail(current, "audio-sdp-too-large"); return }
+                    synchronized(lock) { if (route === current) current.offered = true }
                     send(current, envelope(current, "audioOffer").put("sdp", sdp))
                 }
                 override fun ice(candidate: String, mid: String?, index: Int) {
@@ -217,7 +219,13 @@ object BrowserAudioOutput {
         val reason = synchronized(lock) {
             if (route !== current) null
             else if (current.pcm.failureCode != null) current.pcm.failureCode
-            else if (!current.active && now - current.started > 15_000_000_000L) "audio-handoff-timeout"
+            else if (!current.active && now - current.started > 15_000_000_000L) when {
+                !current.offered -> "audio-offer-timeout"
+                !current.answered -> "audio-answer-timeout"
+                !current.connected -> "audio-ice-timeout"
+                !current.captureStarted.get() -> "audio-capture-timeout"
+                else -> "audio-readiness-timeout"
+            }
             else if (current.active && current.test && now - current.activeAt > 3_000_000_000L) "test-complete"
             else if (current.active && now - current.lastAlive > 4_000_000_000L) "audio-playback-timeout"
             else null
@@ -254,3 +262,4 @@ object BrowserAudioOutput {
         return number.toLong().takeIf { number.toDouble().isFinite() && number.toDouble() == it.toDouble() }
     }
 }
+

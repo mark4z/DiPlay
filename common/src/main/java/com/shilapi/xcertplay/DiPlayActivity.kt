@@ -70,6 +70,7 @@ import kotlin.math.roundToInt
 /** DiAuto's visual language, with a connection flow for an independent CarPlay receiver. */
 class DiPlayActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
+    private val httpsControls by lazy { BrowserHttpsControls(this) }
     private var page = "home"
     private var clusterSafeAreaDialog: Dialog? = null
     private var clusterContentRequestVersion = 0L
@@ -253,6 +254,15 @@ class DiPlayActivity : ComponentActivity() {
         outState.putBoolean("byd_vehicle_advanced", bydVehicleAdvancedExpanded)
         super.onSaveInstanceState(outState)
     }
+    @Deprecated("Platform result forwarding for the local-only HTTPS picker")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        httpsControls.onActivityResult(requestCode, resultCode, data)
+    }
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        httpsControls.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
     override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); render() }
     private fun openOverlayPermission() {
         val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
@@ -264,9 +274,12 @@ class DiPlayActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         CenterMapOverlay.onDiPlayScreenShown()
+        BrowserHttpsForeground.enter(this)
     }
 
     override fun onStop() {
+        httpsControls.onStop()
+        BrowserHttpsForeground.leave(this, preserveAutoStart = httpsControls.hasSystemInteraction)
         cancelUsbPermissionSetup()
         clusterSafeAreaDialog?.dismiss()
         startupHotspotCancelled = true
@@ -276,6 +289,7 @@ class DiPlayActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        httpsControls.onResume(allowAutoStart = !intent.getBooleanExtra("skip_https_autostart", false))
         if (Build.VERSION.SDK_INT < 33 && AppLocale.preference(this) != languagePreferenceAtCreate) {
             recreate()
             return
@@ -290,11 +304,12 @@ class DiPlayActivity : ComponentActivity() {
             startCarHotspotOnLaunch()
             if (setupError == null && identityImportAttempt == null && !identityImportInterrupted && !CarPlayBackgroundSession.hasSession() &&
                 DiPlayPreferences.autoConnect(this) && intent.getStringExtra("page") == null) {
-                handler.post { connect(AirPlayPersistence.loadWirelessEnabled(this)) }
+                handler.post { httpsControls.afterInitialAutoStart { connect(AirPlayPersistence.loadWirelessEnabled(this)) } }
             }
         }
     }
     override fun onPause() {
+        httpsControls.onPause()
         WheelKeyService.cancelLearning()
         pausedForAdbSwitchChange = adbSwitchChangePending
         handler.removeCallbacks(tick)
@@ -302,6 +317,7 @@ class DiPlayActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        httpsControls.onDestroy()
         cancelIdentityImport(updateUi = false)
         hotspotJoinControls?.close()
         cancelUsbPermissionSetup()
@@ -428,6 +444,7 @@ class DiPlayActivity : ComponentActivity() {
 
             content.addView(card)
             setupError?.let { content.addView(label(it, 13, WARNING).apply { setPadding(0, dp(6), 0, 0) }) }
+            content.addView(httpsControls.createView())
             identityImportControls(content, compact = true)
             return
         }
@@ -510,6 +527,7 @@ class DiPlayActivity : ComponentActivity() {
         }
         setupError?.let { body.addView(label(it, 16, WARNING).apply { setPadding(0, dp(16), 0, 0) }) }
         content.addView(body)
+        content.addView(httpsControls.createView())
         identityImportControls(content)
     }
 
@@ -3524,3 +3542,4 @@ class DiPlayActivity : ComponentActivity() {
         private val WARNING = Color.rgb(255, 196, 128)
     }
 }
+

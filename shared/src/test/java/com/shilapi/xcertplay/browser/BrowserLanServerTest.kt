@@ -21,6 +21,20 @@ class BrowserLanServerTest {
     private val host = "192.168.40.2:41234"
     private val token = "0123456789abcdefghijABCDEFGHIJ_-"
 
+    @Test fun automaticApprovalIsOneShotAndNeverClaimsAPromptWasShown() {
+        val request = BrowserApprovalRequest(1, "192.168.40.5", System.nanoTime() / 1_000_000 + 30_000)
+        var prompts = 0
+        var automatic = 0
+        request.observePrompt { prompts++ }
+        request.observeAutomaticApproval { automatic++ }
+        assertTrue(request.approveAutomatically())
+        assertFalse(request.approveAutomatically())
+        assertEquals(0, prompts)
+        assertEquals(1, automatic)
+        request.reject()
+        assertEquals(2, request.takeDecision())
+    }
+
     @Test fun onlyRfc1918Ipv4IsAccepted() {
         for (address in listOf("10.0.0.1", "172.16.0.1", "172.31.255.254", "192.168.0.1")) {
             assertTrue(address, BrowserLanProtocol.isPrivateIpv4(InetAddress.getByName(address)))
@@ -438,7 +452,7 @@ class BrowserLanServerTest {
             try {
                 client = Socket("127.0.0.1", listener.localPort).apply { soTimeout = 3000 }
                 connection = BrowserLanConnection(listener.accept(), host, origin,
-                    { approvalRequest = it; approvalRequested.countDown(); requestHook(); if (approveAutomatically) it.approve() },
+                    { approvalRequest = it; approvalRequested.countDown(); requestHook(); if (approveAutomatically) it.approveAutomatically() },
                     { approvalFinished.incrementAndGet(); finishHook() },
                     { authenticatedCount.incrementAndGet(); authenticated.countDown() },
                     { textCount.incrementAndGet(); textReceived.countDown() },
@@ -504,3 +518,4 @@ class BrowserLanServerTest {
         }
     }
 }
+

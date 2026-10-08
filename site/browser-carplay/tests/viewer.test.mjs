@@ -5,7 +5,7 @@ import { audioEnvironment, audioSdp, flush } from './audio-fixtures.mjs';
 // Minimal DOM/WebCodecs stubs exercise the actual page module's event wiring.
 // This supplements (not replaces) a real browser/hardware acceptance test.
 for (const embedded of [false, true]) {
-test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer requires explicit connection/touch and releases frames/contacts on interrupted flows`, async t => {
+test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection policy, explicit touch and releases frames/contacts on interrupted flows`, async t => {
   class Events {
     constructor() { this.listeners = new Map(); }
     addEventListener(name, handler) { const handlers = this.listeners.get(name) || []; handlers.push(handler); this.listeners.set(name, handlers); }
@@ -24,6 +24,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer requires explicit con
     }
     getContext() { return { clearRect() {}, fillRect() {}, drawImage: (...args) => draws.push(args) }; }
     replaceChildren(...children) { this.children = children; }
+    append(...children) { this.children.push(...children); }
     getBoundingClientRect() { return this.bounds; }
     setPointerCapture(id) { captured.add(id); }
     hasPointerCapture(id) { return captured.has(id); }
@@ -33,7 +34,10 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer requires explicit con
     'video', 'viewport', 'placeholder', 'status', 'indicator', 'origin', 'touch-status', 'audio', 'audio-test', 'audio-status',
     'connection-timeline', 'connection-attempt', 'connection-transport', 'manual-endpoint', 'local-endpoint',
     'local-endpoint-value', 'connection-instructions', 'transport-warning', 'browser-requirements', 'lan-diagnostics',
-    'connection-troubleshooting'].map(id => [id, new Element()]));
+    'connection-troubleshooting', 'viewer-shell', 'enter', 'retry', 'stop', 'entry-status', 'embedded-controls',
+    'page-header', 'intro', 'parked-control', 'settings-content', 'placeholder-title', 'placeholder-note',
+    'parking-explanation', 'local-approval-help', 'touch-control', 'audio-toolbar', 'setup', 'diagnostics',
+    'display-note', 'requirements', 'legal', 'compact-audio-error', 'compact-touch-state', 'display-toolbar', 'viewer-settings'].map(id => [id, new Element()]));
   elements.parked.checked = true;
   elements.touch.checked = true;
   elements.ip.value = 'untrusted.invalid'; // Restored form values cannot override the embedded endpoint.
@@ -80,7 +84,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer requires explicit con
   const pointer = (pointerId, clientX = 500, clientY = 500) => ({ pointerId, clientX, clientY, pointerType: 'touch', buttons: 1 });
   await import(`../viewer.mjs?ui-test-${embedded}`);
 
-  assert.equal(sockets.length, 0, 'page load must not connect');
+  assert.equal(sockets.length, embedded ? 1 : 0, 'only the built-in page connects once on load');
   assert.equal(audioPeers.length, 0, 'page load must not create a peer connection');
   elements.audio.dispatch('click');
   assert.equal(audioPeers.length, 0, 'preapproval cannot start audio');
@@ -101,14 +105,14 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer requires explicit con
     assert.equal(elements['lan-diagnostics'].hidden, true);
     assert.match(elements['transport-warning'].textContent, /TLS/);
   }
-  assert.match(elements['connection-transport'].textContent, /Page: HTTPS\. Secure context: yes.*not attempted/);
-  assert.equal(elements['connection-timeline'].children.length, 0);
+  assert.match(elements['connection-transport'].textContent, /Page: HTTPS\. Secure context: yes/);
+  assert.equal(elements['connection-timeline'].children.length, embedded ? 1 : 0);
   elements.connection.dispatch('submit');
-  assert.equal(sockets.length, 0);
+  assert.equal(sockets.length, embedded ? 1 : 0);
 
+  if (!embedded) {
   elements.parked.checked = true;
   elements.parked.dispatch('change');
-  if (!embedded) {
   elements.ip.value = 'ws://192.168.1.20:8765/carplay';
   elements.port.value = '8765';
   elements.connection.dispatch('submit');
@@ -271,8 +275,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer requires explicit con
   window.dispatch('pageshow', { persisted: true });
   assert.equal(sockets.length, 1, 'returning to the page must never reconnect');
 
-  elements.parked.checked = true;
-  elements.parked.dispatch('change');
+  if (!embedded) { elements.parked.checked = true; elements.parked.dispatch('change'); }
   elements.connection.dispatch('submit');
   assert.equal(sockets.length, 2);
   assert.equal(elements.touch.checked, false);

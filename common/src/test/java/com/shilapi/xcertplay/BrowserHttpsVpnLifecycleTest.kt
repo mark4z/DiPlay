@@ -4,6 +4,8 @@ import android.app.Service
 import android.content.Intent
 import android.os.Looper
 import com.shilapi.xcertplay.browser.BrowserSession
+import com.shilapi.xcertplay.browser.BrowserTlsIdentity
+import org.mockito.Mockito.mock
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -32,6 +34,15 @@ class BrowserHttpsVpnLifecycleTest {
         assertEquals(Service.START_NOT_STICKY, service.onStartCommand(null, 0, 1))
         assertEquals(Service.START_NOT_STICKY, service.onStartCommand(Intent().setAction(BrowserHttpsVpnService.START).putExtra("grant", 42L), 0, 2))
         assertNull(session())
+        assertFalse(BrowserHttpsVpnService.running)
+    }
+    @Test fun changedOrDeletedSavedIdentityCannotStartFromAnOlderGrant() {
+        val revision = BrowserTlsStore(service).revision()
+        val token = BrowserHttpsVpnService.armStart(mock(BrowserTlsIdentity::class.java), revision - 1)
+        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(
+            Intent().setAction(BrowserHttpsVpnService.START).putExtra("grant", token), 0, 1))
+        assertNull(session())
+        assertFalse(BrowserHttpsVpnService.hasPendingStart())
         assertFalse(BrowserHttpsVpnService.running)
     }
     @Test fun explicitStopClosesBothDescriptorsAndSocketOnce() {

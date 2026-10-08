@@ -23,11 +23,12 @@ class BrowserAudioOutputTest {
         }
         override fun setNativeAudioEnabled(enabled: Boolean) { native = enabled }
     }
-    private class Peer(val fill: (ByteBuffer) -> Unit, val callbacks: BrowserAudioPeerCallbacks) : BrowserAudioPeer {
+    private class Peer(val fill: (ByteBuffer) -> Unit, val callbacks: BrowserAudioPeerCallbacks,
+                       val emitOffer: Boolean = true) : BrowserAudioPeer {
         var closed = false
         var answers = 0
         var candidates = 0
-        override fun start() { callbacks.offer("test-offer") }
+        override fun start() { if (emitOffer) callbacks.offer("test-offer") }
         override fun answer(sdp: String) { answers++ }
         override fun addIce(candidate: String, mid: String?, index: Int) { candidates++ }
         override fun close() { closed = true }
@@ -119,6 +120,33 @@ class BrowserAudioOutputTest {
     @Test fun negotiationDeadlineClosesPeerWithoutMutingNative() {
         start(); clock += 15_000_000_001L; BrowserAudioOutput.checkDeadline()
         assertTrue(source.native); assertTrue(peer.closed)
+        assertEquals("audio-answer-timeout", messages.last().getString("code"))
+    }
+    @Test fun setupDeadlineDistinguishesMissingOffer() {
+        BrowserAudioOutput.peerFactory = { _, fill, cb -> Peer(fill, cb, emitOffer = false).also { peer = it } }
+        start(); clock += 15_000_000_001L; BrowserAudioOutput.checkDeadline()
+        assertEquals("audio-offer-timeout", messages.last().getString("code"))
+        assertTrue(source.native); assertTrue(peer.closed)
+    }
+    @Test fun setupDeadlineDistinguishesIceFromCaptureAndBrowserPlayback() {
+        for ((index, expected) in listOf("audio-ice-timeout", "audio-capture-timeout", "audio-readiness-timeout").withIndex()) {
+            val request = index + 1L
+            start(request = request)
+            BrowserAudioOutput.receive(signal("audioAnswer", request).put("sdp", "test-answer"))
+            if (index >= 1) peer.callbacks.connected(true)
+            if (index >= 2) peer.fill(ByteBuffer.allocate(1920))
+            clock += 15_000_000_001L; BrowserAudioOutput.checkDeadline()
+            assertEquals(expected, messages.last().getString("code"))
+            assertTrue(source.native); assertTrue(peer.closed)
+        }
+    }
+    @Test fun setupTimeoutCannotBeExtendedByPrematureAliveMessages() {
+        start()
+        BrowserAudioOutput.receive(signal("audioAnswer").put("sdp", "test-answer"))
+        repeat(3) { clock += 4_000_000_000L; BrowserAudioOutput.receive(signal("audioAlive")) }
+        clock += 3_000_000_001L; BrowserAudioOutput.checkDeadline()
+        assertEquals("audio-ice-timeout", messages.last().getString("code"))
+        assertTrue(source.native); assertTrue(peer.closed)
     }
     @Test fun sourceReplacementRejectsRetiredCallbacksAndReadiness() {
         start(); val retired = peer; val stale = signal("audioReady")
@@ -165,3 +193,4 @@ class BrowserAudioOutputTest {
         assertTrue(peer.closed); assertTrue(source.native)
     }
 }
+
