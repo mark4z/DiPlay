@@ -246,16 +246,29 @@ export class BrowserAudioPlayer {
         else if (!selectedPair && report.type === 'candidate-pair' && report.nominated && report.state === 'succeeded') selectedPair = report;
       });
       const local = selectedPair && stats.get(selectedPair.localCandidateId), remote = selectedPair && stats.get(selectedPair.remoteCandidateId);
-      this.localPairVerified = Boolean(selectedPair?.state === 'succeeded' && local?.candidateType === 'host' && remote?.candidateType === 'host' &&
+      const localPairMetadataVerified = Boolean(local?.candidateType === 'host' && remote?.candidateType === 'host' &&
         ['udp', 'tcp'].includes(local?.protocol) && local.protocol === remote?.protocol &&
         typeof local.address === 'string' && localIceAddress(local.address) && typeof remote.address === 'string' && localIceAddress(remote.address));
-      if ((selectedPair || this.ready) && !this.localPairVerified) {
-        this.disable('Could not verify a local-only WebRTC audio connection. Audio stays on Android.', true); return;
-      }
+      this.localPairVerified = selectedPair?.state === 'succeeded' && localPairMetadataVerified;
+      // A transport can reference a pair before connectivity checks finish. Wait
+      // only during setup and only when every host/local/protocol check passes.
+      // The original setup deadline remains in force; this never grants readiness.
+      const pairChecking = !this.ready && localPairMetadataVerified &&
+        ['frozen', 'waiting', 'in-progress'].includes(selectedPair?.state);
       const candidateType = value => ['host', 'srflx', 'prflx', 'relay'].includes(value) ? value : null;
       this.diagnostics = { packetsReceived: found && Number.isSafeInteger(packets) ? packets : null, jitterMs, concealedSamples,
         selectedCandidatePair: selectedPair ? { localType: candidateType(local?.candidateType), remoteType: candidateType(remote?.candidateType),
           protocol: ['udp', 'tcp'].includes(local?.protocol) ? local.protocol : null } : null };
+      if ((selectedPair || this.ready) && !this.localPairVerified && !pairChecking) {
+        // Fixed labels preserve the cause without exposing addresses, SDP, or raw stats.
+        const reason = !selectedPair ? 'selected pair missing' : !local || !remote ? 'candidate details missing' :
+          local.candidateType !== 'host' || remote.candidateType !== 'host' ? 'candidate type is not host' :
+          !['udp', 'tcp'].includes(local.protocol) || local.protocol !== remote.protocol ? 'candidate protocol is missing or mismatched' :
+          typeof local.address !== 'string' || typeof remote.address !== 'string' ? 'candidate address unavailable' :
+          !localIceAddress(local.address) || !localIceAddress(remote.address) ? 'candidate address is outside local policy' :
+          'selected pair has not succeeded';
+        this.disable(`Could not verify a local-only WebRTC audio connection (${reason}). Audio stays on Android.`, true); return;
+      }
       const now = this.now();
       if (found && Number.isSafeInteger(packets)) {
         if (this.lastPackets !== null && packets > this.lastPackets) { this.rtpProgress = true; this.lastProgressAt = now; }
