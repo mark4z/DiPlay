@@ -7,7 +7,7 @@ import android.os.Looper
 import java.util.Collections
 import java.util.IdentityHashMap
 
-/** A visible DiPlay task owns HTTPS. Short activity handoffs do not widen background access. */
+/** Visibility gates new starts and interactive approvals, never the lifetime of an enabled service. */
 internal object BrowserHttpsForeground {
     private val main = Handler(Looper.getMainLooper())
     private val owners = Collections.newSetFromMap(IdentityHashMap<Activity, Boolean>())
@@ -19,7 +19,7 @@ internal object BrowserHttpsForeground {
         if (owners.isEmpty()) {
             visible = false
             if (!preserveVisit) autoStartClaimed = false
-            context?.let { BrowserHttpsVpnService.stop(it, userStop = false) }
+            // An explicitly enabled foreground service survives Home and screen-off.
         }
     }
     fun enter(activity: Activity) {
@@ -31,8 +31,7 @@ internal object BrowserHttpsForeground {
     fun leave(activity: Activity, preserveAutoStart: Boolean = false) {
         preserveVisit = preserveAutoStart
         owners.remove(activity)
-        // A new internal Activity normally starts before the old one's onStop. The bounded
-        // grace also covers configuration recreation, without keeping a hidden service alive.
+        // Preserve a single visit across short internal Activity/configuration handoffs.
         if (owners.isEmpty()) main.postDelayed(background, 700)
     }
     fun claimAutoStart(): Boolean {

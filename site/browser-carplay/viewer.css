@@ -95,3 +95,16 @@ footer { border-top: 1px solid #25344a; padding: 20px 0 0; margin-top: 12px; }
   #viewer-settings > summary { padding: 5px 10px; }
   #settings-content { padding: 16px; }
 }
+
+
+/* A dedicated grip avoids consuming any CarPlay canvas pointer or multitouch.
+   The transparent safe-area probe cannot intercept input. */
+#controls-safe-area { display: none; }
+.embedded-viewer #controls-safe-area { display: block; position: fixed; inset: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); pointer-events: none; visibility: hidden; }
+.embedded-viewer #embedded-controls { right: auto; width: max-content; max-width: calc(100% - 24px); overflow: auto; }
+.embedded-viewer .quick-actions { flex-wrap: wrap; }
+#controls-grip { min-width: 46px; touch-action: none; user-select: none; cursor: grab; font-size: 20px; padding: 5px 10px; }
+#controls-grip[data-dragging] { cursor: grabbing; }
+#controls-reveal { position: fixed; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); z-index: 4; min-height: 44px; padding: 8px 12px; opacity: .8; }
+/* Settings keep their own safe-area viewport, even if the bar was dragged down. */
+.embedded-viewer #settings-content { position: fixed; top: max(70px, calc(env(safe-area-inset-top) + 58px)); right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); width: min(620px, calc(100% - max(12px, env(safe-area-inset-left)) - max(12px, env(safe-area-inset-right)))); max-height: none; }

@@ -23,7 +23,7 @@ import com.shilapi.xcertplay.browser.*
 import java.io.Closeable
 import java.io.IOException
 
-/** Shared by the home screen and the optional detail page; no secret enters an Intent or saved state. */
+/** Settings/detail controls; no secret enters an Intent or saved state. */
 internal class BrowserHttpsControls(private val activity: Activity) {
     private val applicationContext get() = activity.applicationContext
     private val store = BrowserTlsStore(applicationContext)
@@ -42,6 +42,9 @@ internal class BrowserHttpsControls(private val activity: Activity) {
     private lateinit var serviceSwitch: Switch
     private lateinit var autoStart: Switch
     private lateinit var autoAllow: Switch
+    private lateinit var relayOnly: Switch
+    private lateinit var backgroundAllow: Switch
+    private var parkedConsent = false
     private var disclosure: AlertDialog? = null
     private val main = Handler(Looper.getMainLooper())
     private var resumed = false
@@ -106,13 +109,14 @@ internal class BrowserHttpsControls(private val activity: Activity) {
             it.setOnClickListener { action() }; column.addView(it)
         }
         label("HTTPS browser / HTTPS 浏览器")
-        label("${BrowserHttpsPolicy.VIEWER_URL}\n在连接 CarPlay 前完成本机证书导入。仅限停车和可信局域网。 / Configure before connecting CarPlay; parked, trusted LAN only.")
+        label("${BrowserHttpsPolicy.VIEWER_URL}\nBuilt-in certificates need no import. Manual import is a fallback. / 内置证书无需导入，手动导入仅作备用。仅限停车和可信局域网。")
         importButton = button("Import local certificate ZIP / 本机导入证书 ZIP", ::chooseZip)
         cancelButton = button("Cancel import / 取消导入") { cancelImport("IMPORT_CANCELLED") }
         parked = CheckBox(activity).apply {
             text = "I am parked and trust this network / 已停车并信任此网络"
             setTextColor(Color.WHITE)
-            setOnCheckedChangeListener { _, _ -> refreshControls() }
+            isChecked = parkedConsent
+            setOnCheckedChangeListener { _, checked -> parkedConsent = checked; refreshControls() }
             column.addView(this)
         }
         serviceSwitch = Switch(activity).apply {
@@ -141,6 +145,33 @@ internal class BrowserHttpsControls(private val activity: Activity) {
             }
             column.addView(this)
         }
+        relayOnly = Switch(activity).apply {
+            text = "Android backend mode · no local picture or sound / 安卓后端模式 · 本机不显示、不发声"
+            setTextColor(Color.WHITE)
+            setOnCheckedChangeListener { _, enabled ->
+                if (!updatingSwitches) saveSettings(settings.copy(relayOnly = enabled))
+            }
+            column.addView(this)
+        }
+        label("Change backend mode after disconnecting CarPlay. Encoded video and decoded audio still forward to the browser; Android remains silent even if the browser disconnects. Screen-off is supported while the foreground service runs; Android or the device maker can still stop the app. / 请断开 CarPlay 后切换后端模式。仍转发视频和音频，浏览器断开也不会恢复本机声音。服务运行时支持熄屏，但系统仍可能终止应用。")
+        backgroundAllow = Switch(activity).apply {
+            text = "Allow browser connections while screen is off / 熄屏时允许浏览器连接"
+            setTextColor(Color.WHITE)
+            setOnCheckedChangeListener { _, enabled ->
+                if (!updatingSwitches) {
+                    if (!enabled) saveSettings(settings.copy(autoAllowInBackground = false))
+                    else {
+                        refreshControls()
+                        AlertDialog.Builder(activity).setTitle("Allow background connections? / 允许后台连接？")
+                            .setMessage("While HTTPS is enabled, any browser that can reach this service on your trusted LAN may view CarPlay and request audio or touch without an Android prompt, including while locked. One browser at a time; browser audio and touch controls remain separate. / HTTPS 开启期间，可信局域网中能访问服务的浏览器可在锁屏时连接，无需逐次确认。仅一台浏览器，音频和触控仍独立控制。")
+                            .setNegativeButton("Cancel / 取消", null)
+                            .setPositiveButton("Enable / 开启") { _, _ -> saveSettings(settings.copy(autoAllowInBackground = true)) }
+                            .show()
+                    }
+                }
+            }
+            column.addView(this)
+        }
         state = label("").apply { setTextIsSelectable(true); textSize = 13f }
         forgetButton = button("Delete saved certificate and settings / 删除已保存证书和设置", ::confirmDelete)
         button("Copy HTTPS viewer URL / 复制 HTTPS 播放页地址") {
@@ -158,7 +189,7 @@ internal class BrowserHttpsControls(private val activity: Activity) {
                 .setMessage("Your manually selected ZIP is validated, then encrypted with Android Keystore in app-private storage excluded from backup. No upload, export or saved file permission. Deleting removes the saved identity and both automatic options. Stop keeps the certificate.\n\n" +
                     "手动选择的 ZIP 经校验后使用 Android Keystore 加密保存在应用私有目录，不参与备份、不上传、不导出、不保留文件权限。删除会清除证书和两个自动开关；停止服务保留证书。\n\n" +
                     "Android VPN consent is still required. Only this app and 100.99.9.9/32 + 192.168.247.2/32 are routed; no default route, DNS rewrite or forwarding. Stop other VPNs first; do not use always-on VPN. Normal DNS must resolve ${BrowserHttpsPolicy.HOSTNAME} to 100.99.9.9. Never bypass certificate warnings.\n\n" +
-                    "仍需安卓 VPN 授权。先停止其他 VPN，勿开启始终开启 VPN。车机需正常解析域名到 100.99.9.9，请勿绕过证书警告。服务仅在 DiPlay 前台运行，首页与 CarPlay 间切换不中断。")
+                    "仍需安卓 VPN 授权。先停止其他 VPN，勿开启始终开启 VPN。车机需正常解析域名到 100.99.9.9，请勿绕过证书警告。服务开启后可在后台和熄屏时运行，请用开关或常驻通知停止。后台新连接需单独启用允许选项，否则请回到应用确认。")
                 .setPositiveButton("OK / 知道了", null).show()
         }
         refreshControls()
@@ -214,7 +245,7 @@ internal class BrowserHttpsControls(private val activity: Activity) {
         disclosure = AlertDialog.Builder(activity)
             .setTitle(if (startOnOpen) "Start on app open? / 打开时自动启动？" else "Trust this LAN? / 信任此局域网？")
             .setMessage(if (startOnOpen)
-                "Whenever you open DiPlay, start HTTPS with the saved certificate. Only use while parked on a trusted LAN. Android may still ask for VPN/local-network consent. No HTTPS startup at device boot; leaving DiPlay stops the service. Stop or a declined prompt will not retry until you open the app again.\n\n每次打开 DiPlay 使用保存的证书启动。仅停车和可信局域网使用；系统权限仍需你确认。不随系统开机启动，离开应用会停止；手动停止或拒绝权限后本次不再自动重试。"
+                "Whenever you open DiPlay, start HTTPS with the saved certificate. Only use while parked on a trusted LAN. Android may still ask for VPN/local-network consent. No HTTPS startup at device boot; the service stays on in the background until you stop it. Stop or a declined prompt will not retry until you open the app again.\n\n每次打开 DiPlay 使用保存的证书启动。仅停车和可信局域网使用；系统权限仍需你确认。不随系统开机启动，离开应用后继续运行，需手动停止；手动停止或拒绝权限后本次不再自动重试。"
             else "While you have enabled the HTTPS service and DiPlay is in front, browsers on this LAN can view CarPlay and request audio or touch without another Android approval. A network address is not verified device identity. Anyone on the same network who can reach this service may connect. Only one browser at a time. You will receive a connection notice. Audio playback and touch ownership still need their own browser controls. Use only while parked on a trusted private LAN.\n\nHTTPS 服务开启且 DiPlay 在前台时，同网段可访问服务的浏览器都可能连接，仅通知、不再逐次确认。网络地址不代表已验证设备。仅允许一个浏览器；音频播放和触控仍有独立控制。仅停车和可信私有局域网使用。")
             .setNegativeButton("Cancel / 取消", null)
             .setPositiveButton("Enable / 开启") { _, _ ->
@@ -263,7 +294,8 @@ internal class BrowserHttpsControls(private val activity: Activity) {
     private fun maybeAutoStart() {
         if (!resumed || !loaded || loading || !autoStartEligible || !settings.autoStartOnOpen || identity == null ||
             pending || BrowserHttpsVpnService.running || !BrowserHttpsForeground.claimAutoStart()) return
-        parked.isChecked = true // The explicit saved opt-in contains the parked/trusted-LAN disclosure.
+        parkedConsent = true // Explicit saved opt-in includes the parked/trusted-LAN disclosure.
+        if (::parked.isInitialized) parked.isChecked = true
         prepareStart()
     }
 
@@ -280,6 +312,9 @@ internal class BrowserHttpsControls(private val activity: Activity) {
         serviceSwitch.isEnabled = BrowserHttpsVpnService.running || (idle && identity != null && parked.isChecked && !BrowserHttpsVpnService.recoveryRequired && BrowserOutput.endpoint == null)
         autoStart.isChecked = settings.autoStartOnOpen
         autoAllow.isChecked = settings.autoAllowConnections
+        relayOnly.isChecked = settings.relayOnly
+        relayOnly.isEnabled = !CarPlayBackgroundSession.hasSession()
+        backgroundAllow.isChecked = settings.autoAllowInBackground
         updatingSwitches = false
         state.text = "${BrowserHttpsVpnService.status}\n\nCertificate / 证书: $importStatus\n" +
             "Self-check / 自检: ${BrowserHttpsVpnService.selfCheck}" +
@@ -389,7 +424,7 @@ internal class BrowserHttpsControls(private val activity: Activity) {
 
     private fun prepareStart() {
         if (loadedRevision != store.revision()) { identity = null; loaded = false; loadSaved(); refreshControls(); return }
-        if (loading || BrowserHttpsVpnService.recoveryRequired || !resumed || pending || selecting || importTask != null || identity == null || !parked.isChecked || BrowserHttpsVpnService.running || BrowserOutput.endpoint != null) return
+        if (loading || BrowserHttpsVpnService.recoveryRequired || !resumed || pending || selecting || importTask != null || identity == null || !parkedConsent || BrowserHttpsVpnService.running || BrowserOutput.endpoint != null) return
         BrowserHttpsForeground.suppressAutoStart()
         pending = true
         refreshControls()
@@ -460,7 +495,8 @@ internal class BrowserHttpsControls(private val activity: Activity) {
         resumed = true
         autoStartEligible = allowAutoStart
         settings = preferences.load()
-        if (loaded && loadedRevision != store.revision()) { identity = null; loaded = false; loadSaved() }
+        if (loaded && loadedRevision != store.revision()) { identity = null; loaded = false }
+        loadSaved()
         maybeAutoStart()
         if (prepareAfterResume) { prepareAfterResume = false; prepareVpn() }
         if (beginAfterResume) beginSession()

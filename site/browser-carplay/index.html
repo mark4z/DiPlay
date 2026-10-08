@@ -6,19 +6,29 @@
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws:; worker-src 'self'; img-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>DiPlay · Browser CarPlay preview</title>
-  <link rel="stylesheet" href="viewer.css?v=embedded-entry-v2">
-  <script type="module" src="viewer.mjs?v=embedded-entry-v2"></script>
+  <link rel="stylesheet" href="viewer.css?v=floating-controls-v1">
+  <script type="module" src="viewer.mjs?v=floating-controls-v1"></script>
 </head>
 <body>
 <main id="viewer-shell">
+  <div id="controls-safe-area" aria-hidden="true"></div>
+  <button id="controls-reveal" class="secondary" type="button" aria-controls="embedded-controls" aria-expanded="true" hidden>Controls</button>
   <div id="embedded-controls" hidden>
     <div class="quick-actions">
+      <button id="controls-grip" class="secondary" type="button" aria-label="Move display controls" title="Drag to move; use arrow keys when focused">⠿</button>
       <button id="enter" type="button" disabled aria-describedby="entry-status">Enter fullscreen + audio</button>
       <button id="retry" class="secondary" type="button" hidden>Reconnect</button>
       <button id="stop" class="secondary" type="button" disabled>Stop</button>
       <details id="viewer-settings">
         <summary>Settings <span id="compact-touch-state">Touch off</span></summary>
-        <div id="settings-content"></div>
+        <div id="settings-content">
+          <button id="settings-close" class="secondary" type="button">Close settings</button>
+          <section id="resolution-settings" hidden aria-label="Browser resolution">
+            <h2>Browser resolution</h2>
+            <label class="check"><input id="resolution-follow" type="checkbox" disabled> Automatically follow this browser’s size</label>
+            <p id="resolution-status" role="status" aria-live="polite">After Android approval, a stable browser size is saved automatically. DiPlay’s resolution percentage still applies. A different output size briefly reconnects CarPlay.</p>
+          </section>
+        </div>
       </details>
     </div>
     <p id="entry-status" role="status" aria-live="polite" hidden></p>

@@ -29,6 +29,20 @@ class BrowserHttpsPreferencesTest {
         assertEquals(9L, file.length())
     }
 
+    @Test fun oldForegroundTrustDoesNotGrantBackgroundTrustOrRelayMode() {
+        val file = file()
+        file.writeBytes("DIPSET01".toByteArray() + byteArrayOf(3))
+        val old = BrowserHttpsPreferences(file).load()
+        assertTrue(old.autoAllowConnections)
+        assertFalse(old.autoAllowInBackground)
+        assertFalse(old.relayOnly)
+        for (relay in listOf(false, true)) for (background in listOf(false, true)) {
+            val settings = old.copy(relayOnly = relay, autoAllowInBackground = background)
+            BrowserHttpsPreferences(file).save(settings)
+            assertEquals(settings, BrowserHttpsPreferences(file).load())
+        }
+    }
+
     @Test fun truncatedOversizedUnknownVersionAndUnknownFlagsFailClosed() {
         val file = file()
         val preferences = BrowserHttpsPreferences(file)
@@ -37,7 +51,7 @@ class BrowserHttpsPreferencesTest {
         for (bad in listOf(
             byteArrayOf(), valid.copyOf(8), valid + 0.toByte(),
             valid.copyOf().apply { this[0] = 0 },
-            valid.copyOf().apply { this[lastIndex] = 7 },
+            valid.copyOf().apply { this[lastIndex] = 16 },
             ByteArray(1024 * 1024) { 1 },
         )) {
             file.writeBytes(bad)

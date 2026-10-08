@@ -14,11 +14,15 @@ async function page(t, { hidden = false, fullscreen = 'resolve', playback } = {}
   }
   class Element extends Events {
     constructor() {
-      super(); this.checked = false; this.value = ''; this.hidden = false; this.dataset = {}; this.children = [];
+      super(); this.style = {}; this.attributes = {}; this.checked = false; this.value = ''; this.hidden = false; this.dataset = {}; this.children = [];
       this.classes = new Set();
       this.classList = { remove: name => this.classes.delete(name), toggle: (name, value) => value ? this.classes.add(name) : this.classes.delete(name) };
     }
+    contains(element) { return element === this || this.children.includes(element); }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    removeAttribute(name) { delete this.attributes[name]; }
     getContext() { return { clearRect() {} }; }
+    getBoundingClientRect() { return { left: 12, top: 12, right: 1000, bottom: 700, width: 500, height: 60 }; }
     append(...elements) { this.children.push(...elements); }
     replaceChildren(...elements) { this.children = elements; }
   }

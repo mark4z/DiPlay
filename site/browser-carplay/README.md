@@ -57,13 +57,32 @@ browser is not guaranteed to support them.
    acknowledges ownership. Up to two contacts match the existing CarPlay HID mapper.
 
 The built-in viewer keeps setup, transport explanations, diagnostics, audio and
-touch controls in **Settings**. The compact bar always exposes **Stop** and touch
-state; connection and audio errors stay visible outside the drawer. **Reconnect**
+touch controls in **Settings**. Drag the dedicated grip to move the compact bar;
+when focused, arrow keys move it (Shift moves farther). A healthy live display
+hides the bar after four seconds without control activity. **Controls** reveals
+it again. Focused controls, an open Settings panel, and connection/audio/fullscreen
+errors keep the bar visible. The canvas itself never becomes a reveal gesture,
+so existing CarPlay single- and two-contact input is preserved. **Close settings**
+or Escape closes the panel even if the bar was moved behind it. **Stop** and touch
+state are in the bar; connection and audio errors stay visible outside the drawer. **Reconnect**
 starts one fresh attempt after a stop, rejection, or failure. Hiding or leaving
 the page closes the session. Returning to a tab or restoring it from BFCache does
 not reconnect; no timer retries failed connections. Reloading the visible page
 is a new opening and makes one new attempt. The embedded browser has no parked
 checkbox: the explicitly enabled Android parked-use guard remains required.
+
+After approval, the embedded viewer reports its stable display viewport in CSS
+pixels after a two-second debounce. Android saves a bounded, even browser baseline,
+then applies the existing resolution percentage and encoder alignment. A changed
+final output can reconnect CarPlay; matching output does not reconnect. Browser
+DPR, decoded video dimensions, and toolbar visibility never become the baseline.
+**Automatically follow this browser’s size** can disable the browser override.
+Settings shows Android's acknowledged baseline, effective output target, and
+whether CarPlay is reconnecting or waiting for its next connection. Requests are
+correlated by ID; duplicates, stale ACKs, and missing ACKs never create a retry
+loop. A failed automatic CarPlay reconnect leaves the normal Android manual
+connection controls available. These CarPlay reconnections do not relax the
+browser approval handshake or trigger automatic browser-audio playback.
 
 Android's **Start HTTPS when I open DiPlay** and **Automatically allow browser
 connections** are separate opt-ins, both off by default. HTTPS remains tied to
@@ -398,4 +417,3 @@ Tests use synthetic bytes and identifiers only. Real TLS certificate/hostname
 validation, DNS routing, HTTPS-to-LAN browser permission,
 hardware AVC/HEVC decoding, physical two-finger gestures, background suspension,
 and CarPlay hardware integration still require a parked-device test.
-

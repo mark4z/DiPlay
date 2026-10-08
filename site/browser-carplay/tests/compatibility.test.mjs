@@ -19,11 +19,14 @@ for (const [index, scenario] of scenarios.entries()) {
   test(`${scenario.name} stays blocked even after parked confirmation and manual submit`, async () => {
     class Element {
       constructor() {
-        this.listeners = new Map(); this.dataset = {}; this.checked = false; this.value = '';
+        this.style = {}; this.listeners = new Map(); this.dataset = {}; this.checked = false; this.value = '';
         this.classList = { remove() {}, toggle() {} };
       }
       addEventListener(name, callback) { this.listeners.set(name, callback); }
       dispatch(name) { this.listeners.get(name)?.({ preventDefault() {} }); }
+      contains() { return false; }
+      setAttribute() {}
+      getBoundingClientRect() { return { left: 12, top: 12, right: 1000, bottom: 700, width: 500, height: 60 }; }
       getContext() { return scenario.canvas === false ? null : {}; }
       replaceChildren() {}
       append() {}

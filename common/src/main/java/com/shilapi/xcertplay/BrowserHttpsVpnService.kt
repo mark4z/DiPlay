@@ -52,7 +52,7 @@ class BrowserHttpsVpnService : VpnService() {
                 .setAction(if (userStop) STOP else BACKGROUND_STOP))
         }
         internal fun notifyAutomaticConnection(context: Context) {
-            if (!ready || !running || !BrowserHttpsForeground.visible) return
+            if (!ready || !running) return
             val stop = PendingIntent.getService(context, 9999,
                 Intent(context, BrowserHttpsVpnService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE)
             val open = PendingIntent.getActivity(context, 9999,
@@ -83,7 +83,7 @@ class BrowserHttpsVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == BACKGROUND_STOP) {
-            if (!BrowserHttpsForeground.visible) stopSession("APP_BACKGROUNDED")
+            // Old lifecycle callers no longer stop an explicitly enabled service.
             return START_NOT_STICKY
         }
         if (intent?.action == STOP) { BrowserHttpsForeground.suppressAutoStart(); stopSession("USER_STOP"); return START_NOT_STICKY }
@@ -149,7 +149,7 @@ class BrowserHttpsVpnService : VpnService() {
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle("DiPlay embedded HTTPS viewer")
-            .setContentText("Foreground only · Stop closes both local VPN interfaces")
+            .setContentText("Background / screen-off enabled · Stop closes remote access / 后台运行，点停止关闭远程")
             .setContentIntent(open).setOngoing(true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop / 停止", stop).build()
         if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
@@ -163,7 +163,6 @@ class BrowserHttpsVpnService : VpnService() {
             if (Build.VERSION.SDK_INT >= 37 && checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED)
                 throw StartFailure("LOCAL_NETWORK_PERMISSION_DENIED")
             if (prepare(this) != null) throw StartFailure("VPN_CONSENT_REQUIRED")
-            if (!BrowserHttpsForeground.visible) throw StartFailure("APP_NOT_VISIBLE")
             if (revision != BrowserTlsStore(this).revision()) throw StartFailure("SAVED_IDENTITY_CHANGED")
             startupStage = BrowserHttpsStartup.Stage.TLS_VALIDATION
             identity.checkValidity(BrowserHttpsPolicy.HOSTNAME)
@@ -209,6 +208,11 @@ class BrowserHttpsVpnService : VpnService() {
                     main.removeCallbacks(startupTimeout)
                     selfCheck = "PASS (system trust + SNI + HTTPS hostname verification)"
                     ready = true
+                    installBackgroundApproval()
+                    val resolution = BrowserResolutionCoordinator.get(applicationContext)
+                    BrowserOutput.setResolutionHandler(this) { request, reply, isCurrent ->
+                        resolution.request(request, reply, isCurrent)
+                    }
                     status = "HTTPS ready / HTTPS 已就绪\n${BrowserHttpsPolicy.VIEWER_URL}\nLocal self-check passed; Tesla reachability still needs a browser test. / 本机自检通过，仍需车机测试。"
                 }
             }
@@ -222,6 +226,16 @@ class BrowserHttpsVpnService : VpnService() {
             val code = BrowserHttpsStartup.failureCode(startupStage, failure)
             fail(current, code, "$code; causes=${BrowserHttpsStartup.causeTypes(failure)}")
         } finally { current.workerFinished() }
+    }
+
+    internal fun installBackgroundApproval() {
+        BrowserOutput.setBackgroundApproval(this) { request ->
+            if (running && ready && BrowserHttpsPreferences(this).load().autoAllowInBackground) {
+                request.approveAutomatically().also { approved ->
+                    if (approved) main.post { notifyAutomaticConnection(this) }
+                }
+            } else false
+        }
     }
 
     private fun establishInterface(address: String): ParcelFileDescriptor? = Builder()
@@ -262,6 +276,8 @@ class BrowserHttpsVpnService : VpnService() {
         cancelStart()
         main.removeCallbacks(startupTimeout)
         ready = false
+        BrowserOutput.clearBackgroundApproval(this)
+        BrowserOutput.clearResolutionHandler(this)
         val current = session
         if (current == null) { if (!destroyed) stopSelf(); return }
         if (current.isCancelled) return
@@ -286,7 +302,9 @@ class BrowserHttpsVpnService : VpnService() {
     }
 
     override fun onRevoke() { main.post { stopSession("SYSTEM_REVOKED") } }
-    override fun onTaskRemoved(rootIntent: Intent?) { stopSession("TASK_REMOVED") }
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swiping the UI is not the service switch. Stop/revoke/process death still close resources.
+    }
     override fun onDestroy() {
         destroyed = true
         stopSession("SERVICE_DESTROYED")

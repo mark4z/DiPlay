@@ -5,7 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.ScrollView
 
-/** Optional detail entry; the same controls are also directly on the DiPlay home screen. */
+/** Remote and certificate settings entry, also reachable from the ongoing notification. */
 class BrowserHttpsActivity : Activity() {
     internal val controls by lazy { BrowserHttpsControls(this) }
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -1,3 +1,5 @@
+import { followBrowserResolution } from './resolution.mjs?v=browser-resolution-v1';
+import { floatingControls } from './controls.mjs?v=floating-controls-v1';
 import { Contacts, EMBEDDED_VIEWER_ORIGIN, EMBEDDED_VIEWER_ENDPOINT, fitRect, mapPointer } from './core.mjs?v=embedded-https-v1';
 import { BrowserSession } from './session.mjs?v=embedded-https-v1';
 import { BrowserAudioPlayer } from './audio.mjs?v=webrtc-audio-v1';
@@ -40,6 +42,8 @@ let videoHeight = 0;
 let live = false;
 let audioState = { enabled: false, ready: false, pending: false };
 let audioPlayer = null;
+let displayControls = null;
+let resolutionFollow = null;
 
 // The browser's actual origin is the only selector. URL parameters, fragments,
 // persisted input and server-provided config can never override the destination.
@@ -69,6 +73,10 @@ if (embeddedViewer) {
   byId('browser-requirements').textContent = 'The built-in HTTPS viewer needs WebCodecs video decoding and a valid TLS connection. No Chrome 147 Local Network Access exemption is needed for the same-origin WSS link. In-car browser and H.265 support still depend on the browser and device. Install the latest DiPlay APK and reload this viewer together; both must support Android approval (protocol v2).';
   byId('connection-troubleshooting').textContent = 'If a connection is blocked, check that DiPlay is enabled, both devices share a trusted private LAN, and the built-in HTTPS page loads with a valid certificate. Do not disable browser security, ignore certificate warnings, or expose the bridge to the internet.';
   byId('lan-diagnostics').hidden = true;
+}
+if (embeddedViewer) {
+  displayControls = floatingControls({ panel: byId('embedded-controls'), grip: byId('controls-grip'),
+    reveal: byId('controls-reveal'), settings: byId('viewer-settings'), safeArea: byId('controls-safe-area'), document, window });
 }
 // Restored form state must never count as a fresh safety/control choice.
 parked.checked = touch.checked = false;
@@ -100,6 +108,7 @@ showDiagnostics({ attempt: 0, transport: null, events: [] });
 const session = new BrowserSession({ WebSocket, VideoDecoder: window.VideoDecoder,
   EncodedVideoChunk: window.EncodedVideoChunk, onState: setState, onFrame: queueFrame, onTouchOwnership: setTouchState,
   onDiagnostics: showDiagnostics,
+  onBrowserResolution: message => resolutionFollow?.acknowledged(message),
   onAudioMessage: message => audioPlayer?.handleMessage(message),
   onAudioPacket: packet => audioPlayer?.handlePacket(packet),
   onAudioReset: () => audioPlayer?.reset() });
@@ -115,11 +124,40 @@ audioPlayer = new BrowserAudioPlayer({
   },
 });
 
+if (embeddedViewer) {
+  const closeSettings = () => {
+    byId('viewer-settings').open = false;
+    byId('controls-grip').focus({ preventScroll: true });
+  };
+  byId('settings-close').addEventListener('click', closeSettings);
+  byId('settings-content').addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeSettings(); }
+  });
+  byId('resolution-settings').hidden = false;
+  byId('resolution-follow').checked = true;
+  resolutionFollow = followBrowserResolution({ measure: () => viewport.getBoundingClientRect(),
+    send: message => session.setBrowserResolution(message),
+    onStatus: message => { byId('resolution-status').textContent = message; } });
+  byId('resolution-follow').addEventListener('change', () => {
+    if (!resolutionFollow.enable(byId('resolution-follow').checked)) {
+      byId('resolution-follow').checked = !byId('resolution-follow').checked;
+      byId('resolution-status').textContent = 'Wait for Android to confirm before changing this option.';
+    }
+  });
+  const changed = () => resolutionFollow.changed();
+  if (window.ResizeObserver) new window.ResizeObserver(changed).observe(viewport);
+  window.addEventListener('resize', changed);
+  document.addEventListener('fullscreenchange', changed);
+}
+
 // Read-only, bounded operational counters for parked manual validation.
 export const getAudioDiagnostics = () => audioPlayer.getDiagnostics();
 
 function updateControls() {
+  displayControls?.update({ critical: !live || Boolean(blocked) || Boolean(audioState.error) || !entryStatus.hidden });
   const active = !session.closed;
+  resolutionFollow?.connected(session.authenticated && active && document.visibilityState === 'visible');
+  if (embeddedViewer) byId('resolution-follow').disabled = !session.authenticated || !active;
   connect.disabled = Boolean(blocked) || active || !parkedUseAllowed();
   disconnect.disabled = stop.disabled = !active;
   retry.hidden = active || Boolean(blocked);

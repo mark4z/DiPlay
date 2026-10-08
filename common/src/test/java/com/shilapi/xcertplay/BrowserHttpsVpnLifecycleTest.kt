@@ -124,10 +124,14 @@ class BrowserHttpsVpnLifecycleTest {
         service.onDestroy()
         assertEquals(3, closes.get())
     }
-    @Test fun taskRemovalCancelsStartupBeforeAnyLateDescriptorCanEscape() {
+    @Test fun taskRemovalAndLegacyBackgroundCommandsKeepExplicitServiceAlive() {
         val closes = attachSyntheticResources()
         val current = session()!!
         service.onTaskRemoved(Intent())
+        service.onStartCommand(Intent().setAction("com.shilapi.xcertplay.browser.HTTPS_BACKGROUND_STOP"), 0, 1)
+        assertFalse(current.isCancelled)
+        assertEquals(0, closes.get())
+        service.onStartCommand(Intent().setAction(BrowserHttpsVpnService.STOP), 0, 2)
         assertTrue(current.isCancelled)
         assertEquals(3, closes.get())
         assertFalse(current.own(Closeable { closes.incrementAndGet() }))

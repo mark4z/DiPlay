@@ -31,6 +31,16 @@ object BrowserOutput {
     private data class ApprovalUi(val owner: Any, val requested: (BrowserApprovalRequest) -> Unit,
         val finished: (Long) -> Unit)
     private var approvalUi: ApprovalUi? = null
+    private var backgroundApprovalOwner: Any? = null
+    private var backgroundApproval: ((BrowserApprovalRequest) -> Boolean)? = null
+    /** Service-owned explicit opt-in only; interactive approval keeps priority. */
+    fun setBackgroundApproval(owner: Any, approve: (BrowserApprovalRequest) -> Boolean) = synchronized(lock) {
+        backgroundApprovalOwner = owner
+        backgroundApproval = approve
+    }
+    fun clearBackgroundApproval(owner: Any) = synchronized(lock) {
+        if (backgroundApprovalOwner === owner) { backgroundApprovalOwner = null; backgroundApproval = null }
+    }
     private var pendingApproval: BrowserApprovalRequest? = null
     private var viewerGeneration = 0L
     private var touchGeneration = 0L
@@ -38,6 +48,26 @@ object BrowserOutput {
     private var lastOwnershipRequestId = 0L
     private var serverGeneration = 0L
     private var mediaGeneration = 0L
+    private var nativeMedia: MediaSink? = null
+    private var resolutionOwner: Any? = null
+    private var resolutionHandler: ((JSONObject, (JSONObject) -> Unit, () -> Boolean) -> Unit)? = null
+    fun setResolutionHandler(owner: Any, handler: (JSONObject, (JSONObject) -> Unit, () -> Boolean) -> Unit) = synchronized(lock) {
+        resolutionOwner = owner; resolutionHandler = handler
+    }
+    fun clearResolutionHandler(owner: Any) = synchronized(lock) {
+        if (resolutionOwner === owner) { resolutionOwner = null; resolutionHandler = null }
+    }
+    /** Closing CarPlay never toggles the independently enabled HTTPS listener. */
+    fun detachMedia(native: MediaSink?) = synchronized(lock) {
+        if (native == null || nativeMedia !== native) return@synchronized
+        nativeMedia = null
+        ++mediaGeneration
+        ++streamId
+        format = null; recovery = null; waitingForKey = true
+        releaseTouches()
+        BrowserAudioOutput.detach(native)
+        if (viewerConnected) server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
+    }
     private var streamId = 0L
     private var codec = VideoCodec.H264
     private var format: BrowserVideoFormat? = null
@@ -94,6 +124,10 @@ object BrowserOutput {
             }
         }
         if (ui == null) {
+            val automatic = synchronized(lock) {
+                if (generation == serverGeneration && activeSecureIdentity != null && secureReady) backgroundApproval else null
+            }
+            if (automatic != null && runCatching { automatic(request) }.getOrDefault(false)) return
             request.markPromptUnavailable()
             request.reject()
         } else try { ui.requested(request) } catch (_: Exception) {
@@ -212,6 +246,7 @@ object BrowserOutput {
             setTouchOwnership: ((Boolean, (Boolean) -> Unit) -> Unit)? = null): MediaSink {
         val generation = synchronized(lock) {
             releaseTouches()
+            nativeMedia = native
             BrowserAudioOutput.attach(native)
             if (viewerConnected && format != null) {
                 server?.sendText("{\"type\":\"status\",\"code\":\"waiting\"}", resetVideo = true)
@@ -323,6 +358,16 @@ object BrowserOutput {
             when (json.getString("type")) {
                 "requestKeyframe" -> { waitingForKey = true; requestKeyframe() }
                 "setTouchOwnership" -> changeTouchOwnership(json)
+                "setBrowserResolution" -> {
+                    val viewer = viewerGeneration
+                    val owner = resolutionOwner
+                    val current = { synchronized(lock) {
+                        generation == serverGeneration && viewer == viewerGeneration && viewerConnected && resolutionOwner === owner
+                    } }
+                    resolutionHandler?.invoke(json, { response -> synchronized(lock) {
+                        if (current()) server?.sendText(response.toString())
+                    } }, current)
+                }
                 "audioMode" -> {
                     val id = json.get("requestId")
                     require(id is Number && id.toDouble().isFinite() && id.toDouble() == id.toLong().toDouble())
@@ -402,4 +447,3 @@ object BrowserOutput {
         }
     }
 }
-

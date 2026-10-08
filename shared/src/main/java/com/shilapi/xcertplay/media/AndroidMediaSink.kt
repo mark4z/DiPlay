@@ -133,6 +133,7 @@ internal class AudioFocusCoordinator(
  */
 class AndroidMediaSink(
     surface: Surface? = null,
+    val relayOnly: Boolean = false,
     private val videoWidth: Int = 1280,
     private val videoHeight: Int = 720,
     private val preferSoftwareHevcDecoder: Boolean = false,
@@ -165,7 +166,7 @@ class AndroidMediaSink(
     private val audioRenderers = ConcurrentHashMap<AudioStreamId, AudioRenderer>()
     private val microphoneUplinks = ConcurrentHashMap<AudioStreamId, MicrophoneUplink>()
     @Volatile private var decodedAudioOutput: DecodedAudioOutput? = null
-    @Volatile private var nativeAudioEnabled = true
+    @Volatile private var nativeAudioEnabled = !relayOnly
 
     override fun setDecodedAudioOutput(output: DecodedAudioOutput?): Boolean {
         decodedAudioOutput = output
@@ -174,7 +175,7 @@ class AndroidMediaSink(
     }
 
     override fun setNativeAudioEnabled(enabled: Boolean) {
-        nativeAudioEnabled = enabled
+        nativeAudioEnabled = enabled && !relayOnly
         audioRenderers.values.forEach { it.refreshVolume() }
     }
     private val audioModeLock = Any()
@@ -213,6 +214,7 @@ class AndroidMediaSink(
     }
 
     fun setSurface(type: Int, surface: Surface) {
+        if (relayOnly) return
         surfaces[type] = surface
         videoDecoders[type]?.setSurface(surface)
     }
@@ -226,6 +228,7 @@ class AndroidMediaSink(
      * starts at the next keyframe it asks for; null stops it. The stream's own surface is not affected.
      */
     fun setMirrorSurface(type: Int, key: String, surface: Surface?) {
+        if (relayOnly) return
         val id = type to key
         synchronized(mirrorLock) {
             mirrorDecoders.remove(id)?.close()
@@ -258,12 +261,14 @@ class AndroidMediaSink(
 
     override fun onVideoConfig(type: Int, codecData: ByteArray) {
         val codec = pendingVideoCodec[type] ?: VideoCodec.H264
+        if (relayOnly) return
         lastVideoConfig[type] = codec to codecData
         videoDecoder(type).configure(codec, codecData)
         mirrorDecoders(type).forEach { it.configure(codec, codecData) }
     }
 
     override fun onVideoFrame(type: Int, naluBytes: ByteArray) {
+        if (relayOnly) return
         videoDecoder(type).submit(naluBytes)
         mirrorDecoders(type).forEach { it.submit(naluBytes) }
     }
@@ -283,6 +288,10 @@ class AndroidMediaSink(
             if (active) activeScreenTypes.add(type) else activeScreenTypes.remove(type)
             screenStreamActiveChanged?.invoke(type, active)
         }
+    }
+
+    fun hasRealtimeAudio(): Boolean = audioRenderers.values.any {
+        it.format.audioType == "telephony" || it.format.audioType == "speech" || it.format.audioType == "alert"
     }
 
     override fun onAudioStarted(id: AudioStreamId, format: AudioFormat, firstSample: Int) {
@@ -309,6 +318,7 @@ class AndroidMediaSink(
     }
 
     override fun onMicrophoneStarted(id: AudioStreamId, config: MicrophoneConfig) {
+        if (relayOnly) return
         // This callback runs on the downlink thread; microphone failures must not stop playback.
         try {
             if (config.audioType == "telephony") enterCommunicationMode(id)
@@ -420,7 +430,8 @@ class AndroidMediaSink(
             mediaBufferMillis,
             onAudioDiagnostic,
             { decodedAudioOutput },
-            { nativeAudioEnabled },
+            { nativeAudioEnabled && !relayOnly },
+            relayOnly,
         ).also { audioRenderers[id] = it }
     }
 }
@@ -968,6 +979,7 @@ private class AudioRenderer(
     private val report: (String) -> Unit,
     private val decodedOutput: () -> DecodedAudioOutput?,
     private val nativeEnabled: () -> Boolean,
+    private val relayOnly: Boolean,
 ) : Closeable {
     private val outputStream = nextOutputStream.incrementAndGet()
     private var outputSamples = 0L
@@ -1067,9 +1079,11 @@ private class AudioRenderer(
                 AudioCodecKind.OPUS -> configureCodec(MediaFormat.MIMETYPE_AUDIO_OPUS)
                 AudioCodecKind.LPCM -> Unit
             }
-            createTrack()
-            diagnosticStage = "focus"
-            requestAudioFocus()
+            if (!relayOnly) {
+                createTrack()
+                diagnosticStage = "focus"
+                requestAudioFocus()
+            }
             while (running) {
                 diagnosticStage = "packet"
                 queue.poll(AUDIO_POLL_MILLIS, TimeUnit.MILLISECONDS)?.let(::handle)

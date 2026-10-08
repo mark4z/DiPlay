@@ -70,6 +70,20 @@ object BrowserAudioOutput {
         }
     }
 
+    fun detach(native: MediaSink) {
+        val old = synchronized(lock) {
+            if (source !== native) return
+            val old = route
+            route = null
+            source?.setDecodedAudioOutput(null)
+            source = null
+            sourceSupported = false
+            ++sourceGeneration
+            old
+        }
+        old?.peer?.close()
+    }
+
     fun connect(sendText: (String) -> Boolean) {
         disconnect()
         synchronized(lock) { transport = sendText; lastRequest = 0; lastStartNs = Long.MIN_VALUE }
@@ -262,4 +276,3 @@ object BrowserAudioOutput {
         return number.toLong().takeIf { number.toDouble().isFinite() && number.toDouble() == it.toDouble() }
     }
 }
-

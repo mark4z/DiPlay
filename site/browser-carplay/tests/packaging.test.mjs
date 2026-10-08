@@ -72,3 +72,9 @@ test('embedded mode never reads endpoint configuration or requests browser micro
   assert.doesNotMatch(source, /location\.(?:search|hash)|URLSearchParams|\b(?:localStorage|sessionStorage)\b/);
   assert.doesNotMatch(source, /\b(?:getUserMedia|getDisplayMedia|webkitGetUserMedia|mozGetUserMedia)\b/);
 });
+
+test('Android serving allowlist contains every imported browser runtime asset', () => {
+  const native = read('../../shared/src/main/java/com/shilapi/xcertplay/browser/BrowserViewerAssets.kt');
+  const names = native.match(/val NAMES = listOf\(([\s\S]*?)\)/)?.[1] || '';
+  for (const name of runtimeAssets) assert.ok(names.includes(`"${name}"`), `Android must serve ${name}`);
+});

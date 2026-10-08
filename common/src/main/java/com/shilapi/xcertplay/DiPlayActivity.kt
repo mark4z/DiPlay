@@ -444,8 +444,6 @@ class DiPlayActivity : ComponentActivity() {
 
             content.addView(card)
             setupError?.let { content.addView(label(it, 13, WARNING).apply { setPadding(0, dp(6), 0, 0) }) }
-            content.addView(httpsControls.createView())
-            identityImportControls(content, compact = true)
             return
         }
 
@@ -527,11 +525,11 @@ class DiPlayActivity : ComponentActivity() {
         }
         setupError?.let { body.addView(label(it, 16, WARNING).apply { setPadding(0, dp(16), 0, 0) }) }
         content.addView(body)
-        content.addView(httpsControls.createView())
-        identityImportControls(content)
     }
 
     private fun settings(content: LinearLayout) {
+        content.addView(httpsControls.createView())
+        identityImportControls(content)
         content.addView(label(getString(R.string.your_drive_your_way), 34, TEXT, true))
         content.addView(label(getString(R.string.apply_reconnects_carplay_for_size_resolution_music_buffer), 17, MUTED).apply { setPadding(0, dp(8), 0, dp(24)) })
         section(content, getString(R.string.carplay_controls), R.drawable.ic_dp_controls) { card ->
@@ -3543,4 +3541,3 @@ class DiPlayActivity : ComponentActivity() {
         private val WARNING = Color.rgb(255, 196, 128)
     }
 }
-

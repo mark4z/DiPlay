@@ -6,7 +6,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 NAMES = {"index.html", "viewer.css", "viewer.mjs", "core.mjs", "session.mjs",
-         "audio.mjs", "audio-protocol.mjs", "diagnostics.mjs", "config.mjs"}
+         "controls.mjs", "resolution.mjs", "audio.mjs", "audio-protocol.mjs", "diagnostics.mjs", "config.mjs"}
 PREFIX = "assets/browser-carplay/"
 HTTPS_CONFIG = "diplay-browser-https.properties"
 DEFAULT_HOSTNAME = "tesla.mark4z.asia"

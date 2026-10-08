@@ -61,17 +61,26 @@ class LocalIdentityImportUiTest {
         shadowOf(Looper.getMainLooper()).idle()
     }
 
-    @Test fun homeOffersImportWhileConnectIsDisabledByMissingAuthentication() {
+    @Test fun homeKeepsConnectDisabledAndMovesImportsToSettings() {
         assertNotNull(ReflectionHelpers.getField<String?>(activity, "setupError"))
         assertFalse(button(R.string.connect_phone).isEnabled)
+        assertFalse(texts().contains(activity.getString(R.string.identity_import_action)))
+        assertFalse(texts().any { it.startsWith("Import local certificate ZIP") })
+        showPage("settings")
         assertTrue(button(R.string.identity_import_action).isEnabled)
         assertTrue(texts().contains(activity.getString(R.string.identity_import_none)))
+        assertTrue(texts().any { it.startsWith("Import local certificate ZIP") })
+        assertTrue(texts().any { it.startsWith("Android backend mode") })
     }
 
     @Config(qualifiers = "en-w500dp-h400dp")
-    @Test fun compactHomeOffersImportWhileConnectIsDisabled() {
+    @Test fun compactHomeMovesImportsToSettings() {
         assertFalse(button(R.string.connect_phone).isEnabled)
+        assertFalse(texts().contains(activity.getString(R.string.identity_import_action)))
+        assertFalse(texts().any { it.startsWith("Import local certificate ZIP") })
+        showPage("settings")
         assertTrue(button(R.string.identity_import_action).isEnabled)
+        assertTrue(texts().any { it.startsWith("Android backend mode") })
     }
 
     @Test fun connectionSetupAlsoOffersImport() {
@@ -132,6 +141,7 @@ class LocalIdentityImportUiTest {
     }
 
     @Test fun activeSessionRequiresExplicitDisconnectAndNeverOpensPickerAutomatically() {
+        showPage("settings")
         var stops = 0
         val stop: ((() -> Unit) -> Unit) = { done ->
             stops++
@@ -189,7 +199,9 @@ class LocalIdentityImportUiTest {
         invokeCommit()
         verify(session).commit()
         assertNull(ReflectionHelpers.getField<String?>(activity, "setupError"))
+        showPage("home")
         assertTrue(button(R.string.connect_phone).isEnabled)
+        showPage("settings")
         assertTrue(button(R.string.identity_import_action).isEnabled)
         assertTrue(texts().contains(activity.getString(R.string.identity_import_installed)))
         assertTrue(texts().contains(activity.getString(R.string.identity_import_success)))
@@ -207,7 +219,9 @@ class LocalIdentityImportUiTest {
         invokeCommit()
         verify(session).commit()
         assertNotNull(ReflectionHelpers.getField<String?>(activity, "setupError"))
+        showPage("home")
         assertFalse(button(R.string.connect_phone).isEnabled)
+        showPage("settings")
         assertTrue(button(R.string.identity_import_action).isEnabled)
         assertTrue(texts().contains(activity.getString(R.string.identity_import_recovery_failed)))
         assertTrue(texts().none { "synthetic-private-storage-detail" in it })
@@ -273,6 +287,7 @@ class LocalIdentityImportUiTest {
     }
 
     private fun beginKeyPicker() {
+        showPage("settings")
         call("requestIdentityImport")
         latestDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
         // AlertDialog queues its listener and dismissal on the main Looper.
@@ -300,6 +315,11 @@ class LocalIdentityImportUiTest {
     private fun receive(code: Int, uri: Uri?, privateKey: Boolean) {
         DiPlayActivity::class.java.getDeclaredMethod("receiveIdentityDocument", Int::class.javaPrimitiveType, Uri::class.java, Boolean::class.javaPrimitiveType)
             .apply { isAccessible = true }.invoke(activity, code, uri, privateKey)
+    }
+
+    private fun showPage(page: String) {
+        ReflectionHelpers.setField(activity, "page", page)
+        call("render")
     }
 
     private fun attempt(): Any? = ReflectionHelpers.getField(activity, "identityImportAttempt")

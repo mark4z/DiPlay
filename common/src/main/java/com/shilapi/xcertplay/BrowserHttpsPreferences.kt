@@ -13,6 +13,8 @@ internal class BrowserHttpsPreferences internal constructor(private val file: Fi
     data class Settings(
         val autoStartOnOpen: Boolean = false,
         val autoAllowConnections: Boolean = false,
+        val relayOnly: Boolean = false,
+        val autoAllowInBackground: Boolean = false,
     )
 
     class Failure(val code: String) : IOException(code)
@@ -30,8 +32,8 @@ internal class BrowserHttpsPreferences internal constructor(private val file: Fi
                 }
                 if (input.read() != -1 || !HEADER.indices.all { bytes[it] == HEADER[it] }) return@synchronized Settings()
                 val flags = bytes.last().toInt() and 255
-                if (flags and 3 != flags) return@synchronized Settings()
-                Settings(flags and 1 != 0, flags and 2 != 0)
+                if (flags and 15 != flags) return@synchronized Settings()
+                Settings(flags and 1 != 0, flags and 2 != 0, flags and 4 != 0, flags and 8 != 0)
             }
         } catch (_: Exception) { Settings() }
     }
@@ -45,7 +47,8 @@ internal class BrowserHttpsPreferences internal constructor(private val file: Fi
             if (!parent.isDirectory && !parent.mkdirs()) throw Failure("HTTPS_SETTINGS_SAVE_FAILED")
             output = atomic.startWrite()
             output.write(HEADER)
-            output.write((if (settings.autoStartOnOpen) 1 else 0) or (if (settings.autoAllowConnections) 2 else 0))
+            output.write((if (settings.autoStartOnOpen) 1 else 0) or (if (settings.autoAllowConnections) 2 else 0) or
+                (if (settings.relayOnly) 4 else 0) or (if (settings.autoAllowInBackground) 8 else 0))
             atomic.finishWrite(output)
             output = null
             if (load() != settings) throw Failure("HTTPS_SETTINGS_SAVE_FAILED")

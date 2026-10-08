@@ -15,12 +15,12 @@ const APPROVAL_ERRORS = {
 // backpressure are tested without a network, browser, or real accessory identity.
 export class BrowserSession {
   constructor({ WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame,
-    onTouchOwnership = () => {}, onAudioMessage = () => {}, onAudioPacket = () => {}, onAudioReset = () => {}, onDiagnostics = () => {},
+    onBrowserResolution = () => {}, onTouchOwnership = () => {}, onAudioMessage = () => {}, onAudioPacket = () => {}, onAudioReset = () => {}, onDiagnostics = () => {},
     now = () => performance.now(),
     // Window timers require their host receiver, not this BrowserSession.
     setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
     clearTimer = id => globalThis.clearTimeout(id) }) {
-    Object.assign(this, { WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame, onTouchOwnership, onAudioMessage, onAudioPacket, onAudioReset, now, setTimer, clearTimer });
+    Object.assign(this, { WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame, onBrowserResolution, onTouchOwnership, onAudioMessage, onAudioPacket, onAudioReset, now, setTimer, clearTimer });
     this.diagnostics = new ConnectionDiagnostics({ now, onUpdate: onDiagnostics });
     this.socket = null;
     this.decoder = null;
@@ -168,6 +168,15 @@ export class BrowserSession {
     }
     if (message.type === 'config') {
       void this.configure(message);
+    } else if (message.type === 'browserResolution') {
+      // Accept only fixed schema fields, never arbitrary server text in the UI.
+      if (!positiveId(message.requestId) || typeof message.enabled !== 'boolean' ||
+          !['nextConnection', 'reconnecting', 'unchanged'].includes(message.applies) ||
+          (message.code !== undefined && !['invalidDimensions', 'saveFailed', 'reconnectFailed'].includes(message.code)) ||
+          ([message.effectiveWidth, message.effectiveHeight].some(value => value !== undefined) && ![message.effectiveWidth, message.effectiveHeight].every(value => Number.isSafeInteger(value) && value >= 2 && value <= 16384)) ||
+          (message.enabled && (![message.width, message.height].every(value => Number.isSafeInteger(value) && value >= 2 && value <= 16384)))) return;
+      this.onBrowserResolution({ requestId: message.requestId, enabled: message.enabled,
+        width: message.width, height: message.height, effectiveWidth: message.effectiveWidth, effectiveHeight: message.effectiveHeight, applies: message.applies, code: message.code });
     } else if (message.type === 'touchOwnership') {
       if (typeof message.enabled !== 'boolean' || !Number.isSafeInteger(message.streamId) || message.streamId <= 0 ||
           !Number.isSafeInteger(message.requestId) || message.requestId <= 0) {
@@ -366,6 +375,13 @@ export class BrowserSession {
     }
     try { this.socket.send(JSON.stringify(message)); return true; }
     catch { this.close('The local bridge connection was lost.', true); return false; }
+  }
+
+  setBrowserResolution(message) {
+    if (!message || !positiveId(message.requestId) || typeof message.enabled !== 'boolean' ||
+        (message.enabled && ![message.width, message.height].every(value => Number.isSafeInteger(value) && value >= 320 && value <= 16384))) return false;
+    return this.send({ type: 'setBrowserResolution', requestId: message.requestId, enabled: message.enabled,
+      ...(message.enabled ? { width: message.width, height: message.height } : {}) });
   }
 
   setAudioEnabled(enabled, requestId, source) {

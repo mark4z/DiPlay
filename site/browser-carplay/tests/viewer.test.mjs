@@ -14,14 +14,17 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   const draws = [], captured = new Set();
   class Element extends Events {
     constructor() {
-      super(); this.value = ''; this.disabled = false; this.checked = false; this.hidden = false; this.textContent = '';
+      super(); this.style = {}; this.attributes = {}; this.value = ''; this.disabled = false; this.checked = false; this.hidden = false; this.textContent = '';
       this.dataset = {}; this.width = 1280; this.height = 720;
       this.children = [];
-      this.bounds = { left: 0, top: 0, width: 1000, height: 1000 };
+      this.bounds = { left: 0, top: 0, width: 1000, height: 1000, right: 1000, bottom: 1000 };
       this.classes = new Set();
       this.classList = { remove: name => this.classes.delete(name),
         toggle: (name, enabled) => enabled ? this.classes.add(name) : this.classes.delete(name) };
     }
+    contains(element) { return element === this || this.children.includes(element); }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    removeAttribute(name) { delete this.attributes[name]; }
     getContext() { return { clearRect() {}, fillRect() {}, drawImage: (...args) => draws.push(args) }; }
     replaceChildren(...children) { this.children = children; }
     append(...children) { this.children.push(...children); }
@@ -30,7 +33,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
     hasPointerCapture(id) { return captured.has(id); }
     releasePointerCapture(id) { captured.delete(id); this.dispatch('lostpointercapture', { pointerId: id }); }
   }
-  const elements = Object.fromEntries(['connection', 'ip', 'port', 'parked', 'touch', 'connect', 'disconnect',
+  const elements = Object.fromEntries(['settings-close', 'resolution-settings', 'resolution-follow', 'resolution-status', 'controls-grip', 'controls-reveal', 'controls-safe-area', 'connection', 'ip', 'port', 'parked', 'touch', 'connect', 'disconnect',
     'video', 'viewport', 'placeholder', 'status', 'indicator', 'origin', 'touch-status', 'audio', 'audio-test', 'audio-status',
     'connection-timeline', 'connection-attempt', 'connection-transport', 'manual-endpoint', 'local-endpoint',
     'local-endpoint-value', 'connection-instructions', 'transport-warning', 'browser-requirements', 'lan-diagnostics',
@@ -214,7 +217,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.deepEqual(socket.sent.at(-1).contacts, [{ id: 0, x: .5, y: .5 }]);
   elements.video.dispatch('lostpointercapture', pointer(350));
   assert.deepEqual(socket.sent.at(-1).contacts, []);
-  elements.video.bounds = { left: 0, top: 0, width: 1000, height: 1000 };
+  elements.video.bounds = { left: 0, top: 0, width: 1000, height: 1000, right: 1000, bottom: 1000 };
 
   elements.video.dispatch('pointerdown', pointer(400));
   window.dispatch('blur');

@@ -117,6 +117,25 @@ class BrowserApprovalUiTest {
         assertEquals(0, decision(request))
         assertTrue(ShadowAlertDialog.getLatestAlertDialog().isShowing)
     }
+    @Test fun backgroundApprovalRequiresNewOptInAndStopRevokesIt() {
+        ui.pause()
+        val serviceController = Robolectric.buildService(BrowserHttpsVpnService::class.java).create()
+        val service = serviceController.get()
+        try {
+            BrowserOutput::class.java.getDeclaredField("activeSecureIdentity").apply { isAccessible = true }
+                .set(null, org.mockito.Mockito.mock(com.shilapi.xcertplay.browser.BrowserTlsIdentity::class.java))
+            BrowserOutput::class.java.getDeclaredField("secureReady").apply { isAccessible = true }.setBoolean(null, true)
+            serviceFlag("ready", true); serviceFlag("running", true)
+            service.installBackgroundApproval()
+            BrowserHttpsPreferences(activity).save(BrowserHttpsPreferences.Settings(autoAllowConnections = true))
+            assertEquals(2, decision(dispatch()))
+            BrowserHttpsPreferences(activity).save(BrowserHttpsPreferences.Settings(autoAllowInBackground = true))
+            assertEquals(1, decision(dispatch()))
+            service.onStartCommand(android.content.Intent().setAction(BrowserHttpsVpnService.STOP), 0, 1)
+            assertEquals(2, decision(dispatch()))
+        } finally { serviceController.destroy() }
+    }
+
     private fun serviceFlag(name: String, value: Boolean) {
         BrowserHttpsVpnService::class.java.getDeclaredField(name).apply { isAccessible = true }.setBoolean(null, value)
     }
@@ -137,4 +156,3 @@ class BrowserApprovalUiTest {
     private fun decision(request: BrowserApprovalRequest) = BrowserApprovalRequest::class.java
         .getDeclaredField("decision").apply { isAccessible = true }.getInt(request)
 }
-
