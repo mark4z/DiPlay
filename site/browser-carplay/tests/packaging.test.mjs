@@ -24,7 +24,9 @@ test('Gradle copies canonical root runtime assets into the APK before Android pr
   assert.match(gradle, /US_ASCII\.newEncoder\(\)\.canEncode\(value\)/);
   assert.ok(gradle.indexOf('US_ASCII.newEncoder().canEncode(value)') < gradle.indexOf('value.trim().toLowerCase'),
     'reject non-ASCII input before Unicode case folding can convert it to ASCII');
-  assert.match(gradle, /sourceSets\.main\.resources\.srcDir\(browserHttpsResources\)/);
+  assert.match(gradle, /sourceSets\.main\.resources\.srcDir\(browserHttpsResources\.get\(\)\.asFile\)/);
+  assert.doesNotMatch(gradle, /sourceSets\.main\.resources\.srcDir\(browserHttpsResources\)/,
+    'Android source-set API requires the resolved File, not a Provider');
   assert.match(gradle, /dependsOn generateBrowserHttpsConfig/);
   assert.equal(runtimeAssets.includes('README.md'), false);
   assert.equal(runtimeAssets.includes('tests'), false);
