@@ -116,9 +116,13 @@ object BrowserOutput {
 
     /** Caller owns explicit VPN consent and both descriptors for this single in-memory session. */
     fun startSecure(context: android.content.Context, identity: BrowserTlsIdentity,
+                    onStage: (BrowserHttpsStartup.Stage) -> Unit = {},
                     onStopped: () -> Unit = {}): String {
+        onStage(BrowserHttpsStartup.Stage.TLS_VALIDATION)
         identity.checkValidity(BrowserViewerAssets.HOSTNAME)
+        onStage(BrowserHttpsStartup.Stage.VIEWER_ASSETS)
         val assets = BrowserViewerAssets.load { context.assets.open(it) }
+        onStage(BrowserHttpsStartup.Stage.LISTENER_BIND)
         return startTransport(InetAddress.getByName(BrowserViewerAssets.ADDRESS), BrowserViewerAssets.ORIGIN,
             context, identity, assets, onStopped)
     }

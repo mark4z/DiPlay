@@ -3,6 +3,7 @@ package com.shilapi.xcertplay
 import android.app.Service
 import android.content.Intent
 import android.os.Looper
+import com.shilapi.xcertplay.browser.BrowserInterfaces
 import com.shilapi.xcertplay.browser.BrowserSession
 import com.shilapi.xcertplay.browser.BrowserTlsIdentity
 import org.mockito.Mockito.mock
@@ -45,6 +46,67 @@ class BrowserHttpsVpnLifecycleTest {
         assertFalse(BrowserHttpsVpnService.hasPendingStart())
         assertFalse(BrowserHttpsVpnService.running)
     }
+    @Test fun startupFailureSurvivesCleanupCommandsAndAppearsInExistingReport() {
+        attachSyntheticResources()
+        BrowserHttpsVpnService::class.java.getDeclaredField("selfCheck").apply { isAccessible = true }
+            .set(null, "NOT_RUN")
+        BrowserHttpsVpnService::class.java.getDeclaredMethod("fail", BrowserSession::class.java,
+            String::class.java, String::class.java).apply { isAccessible = true }
+            .invoke(service, session(), "LISTENER_BIND_BIND_FAILED_ERRNO_98",
+                "LISTENER_BIND_BIND_FAILED_ERRNO_98; causes=BindException -> ErrnoException")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(session()!!.isCancelled)
+        service.onStartCommand(Intent().setAction(BrowserHttpsVpnService.STOP), 0, 1)
+        service.onDestroy()
+        val report = BrowserHttpsVpnService.diagnosticReport()
+        assertTrue(report.contains("LISTENER_BIND_BIND_FAILED_ERRNO_98"))
+        assertTrue(report.contains("causes=BindException -> ErrnoException"))
+        assertEquals("NOT_RUN", BrowserHttpsVpnService.selfCheck)
+    }
+
+    @Test fun finalCleanupKeepsFailureVisibleAndOnlyBlocksRetryWhenUnconfirmed() {
+        try {
+            for (readFailed in listOf(false, true)) {
+                attachSyntheticResources()
+                val current = session()!!
+                BrowserHttpsVpnService::class.java.getDeclaredMethod("fail", BrowserSession::class.java,
+                    String::class.java, String::class.java).apply { isAccessible = true }
+                    .invoke(service, current, "VPN_COMPATIBILITY_IO_FAILED", "VPN_COMPATIBILITY_IO_FAILED; causes=IOException")
+                shadowOf(Looper.getMainLooper()).idle()
+                current.workerFinished()
+                val snapshot = BrowserInterfaces.Snapshot::class.java.getDeclaredConstructor(
+                    String::class.java, Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+                    .apply { isAccessible = true }.newInstance("synthetic cleanup snapshot", false, readFailed)
+                BrowserHttpsVpnService::class.java.getDeclaredMethod("finishStopped", BrowserSession::class.java,
+                    BrowserInterfaces.Snapshot::class.java).apply { isAccessible = true }.invoke(service, current, snapshot)
+                assertNull(session())
+                assertFalse(BrowserHttpsVpnService.running)
+                assertEquals(readFailed, BrowserHttpsVpnService.recoveryRequired)
+                assertTrue(BrowserHttpsVpnService.status.contains("VPN_COMPATIBILITY_IO_FAILED"))
+                assertTrue(BrowserHttpsVpnService.diagnosticReport().contains("causes=IOException"))
+            }
+        } finally {
+            BrowserHttpsVpnService::class.java.getDeclaredField("recoveryRequired").apply { isAccessible = true }
+                .setBoolean(null, false)
+        }
+    }
+
+    @Test fun failureBeforeSelfCheckDoesNotClaimTheCheckWasCancelled() {
+        attachSyntheticResources()
+        BrowserHttpsVpnService::class.java.getDeclaredField("selfCheck").apply { isAccessible = true }
+            .set(null, "NOT_RUN")
+        service.onStartCommand(Intent().setAction(BrowserHttpsVpnService.STOP), 0, 1)
+        assertEquals("NOT_RUN", BrowserHttpsVpnService.selfCheck)
+    }
+
+    @Test fun stopDuringActualSelfCheckStillReportsCancellation() {
+        attachSyntheticResources()
+        BrowserHttpsVpnService::class.java.getDeclaredField("selfCheck").apply { isAccessible = true }
+            .set(null, "PENDING")
+        service.onStartCommand(Intent().setAction(BrowserHttpsVpnService.STOP), 0, 1)
+        assertEquals("CANCELLED", BrowserHttpsVpnService.selfCheck)
+    }
+
     @Test fun explicitStopClosesBothDescriptorsAndSocketOnce() {
         val closes = attachSyntheticResources()
         assertEquals(Service.START_NOT_STICKY, service.onStartCommand(Intent().setAction(BrowserHttpsVpnService.STOP), 0, 1))

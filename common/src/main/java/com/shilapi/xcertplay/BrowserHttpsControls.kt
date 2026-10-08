@@ -150,7 +150,7 @@ internal class BrowserHttpsControls(private val activity: Activity) {
         }
         button("Connection diagnostics / 连接诊断") {
             AlertDialog.Builder(activity).setTitle("HTTPS diagnostics / HTTPS 诊断")
-                .setMessage("${BrowserHttpsVpnService.status}\n${BrowserHttpsVpnService.selfCheck}\n${BrowserHttpsVpnService.interfaceReport}\n\n${BrowserOutput.connectionDiagnosticReport()}")
+                .setMessage("${BrowserHttpsVpnService.diagnosticReport()}\n\n${BrowserOutput.connectionDiagnosticReport()}")
                 .setPositiveButton("Close / 关闭", null).show()
         }
         button("HTTPS details / HTTPS 说明") {

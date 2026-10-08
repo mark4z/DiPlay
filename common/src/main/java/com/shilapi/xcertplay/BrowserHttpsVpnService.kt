@@ -38,6 +38,10 @@ class BrowserHttpsVpnService : VpnService() {
         @Volatile var status = "Stopped / 已停止"; private set
         @Volatile var selfCheck = "NOT_RUN"; private set
         @Volatile var interfaceReport = "NOT_RUN"; private set
+        @Volatile var startupFailure = "NONE"; private set
+        /** The same bounded, credential-free state used by the screen and existing export. */
+        internal fun diagnosticReport(): String =
+            "$status\nStartup failure / 启动错误: $startupFailure\nSelf-check / 自检: $selfCheck\n$interfaceReport"
         internal fun armStart(identity: BrowserTlsIdentity, revision: Long): Long = grant.arm(SavedIdentity(identity, revision))
         internal fun cancelStart() = grant.cancel()
         internal fun hasPendingStart(): Boolean = grant.hasPending()
@@ -89,15 +93,21 @@ class BrowserHttpsVpnService : VpnService() {
             if (!running) stopSelf()
             return START_NOT_STICKY
         }
+        // A fresh accepted attempt must not display the previous attempt's failure.
+        selfCheck = "NOT_RUN"
+        interfaceReport = "NOT_RUN"
+        startupFailure = "NONE"
         // A systemExempted foreground service is eligible only as this user-configured VPN.
         // Do not request unrelated exact-alarm permissions to satisfy the alternate eligibility.
         try {
             if (prepare(this) != null) {
+                startupFailure = "PREFLIGHT: VPN_CONSENT_REQUIRED"
                 status = "Stopped / 已停止: VPN_CONSENT_REQUIRED"
                 stopSelf()
                 return START_NOT_STICKY
             }
-        } catch (_: RuntimeException) {
+        } catch (failure: RuntimeException) {
+            startupFailure = "PREFLIGHT: VPN_CONSENT_UNAVAILABLE; causes=${BrowserHttpsStartup.causeTypes(failure)}"
             status = "Stopped / 已停止: VPN_CONSENT_UNAVAILABLE"
             stopSelf()
             return START_NOT_STICKY
@@ -105,8 +115,9 @@ class BrowserHttpsVpnService : VpnService() {
         running = true
         ready = false
         status = "Starting HTTPS / 正在启动 HTTPS"
-        selfCheck = "PENDING"
+        selfCheck = "NOT_RUN"
         interfaceReport = "PENDING"
+        startupFailure = "NONE"
         val interfaces = BrowserInterfaces(BrowserHttpsPolicy.DUAL)
         lateinit var current: BrowserSession
         current = BrowserSession(
@@ -120,7 +131,8 @@ class BrowserHttpsVpnService : VpnService() {
         try {
             enterForeground()
             worker("browser-https-start") { startSession(current, interfaces, identity, granted.revision) }
-        } catch (_: RuntimeException) {
+        } catch (failure: RuntimeException) {
+            startupFailure = "FOREGROUND_START_FAILED; causes=${BrowserHttpsStartup.causeTypes(failure)}"
             stopSession("FOREGROUND_START_FAILED")
             current.workerFinished()
         }
@@ -145,6 +157,7 @@ class BrowserHttpsVpnService : VpnService() {
     }
 
     private fun startSession(current: BrowserSession, interfaces: BrowserInterfaces, identity: BrowserTlsIdentity, revision: Long) {
+        var startupStage = BrowserHttpsStartup.Stage.PREFLIGHT
         try {
             if (current.isCancelled) return
             if (Build.VERSION.SDK_INT >= 37 && checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED)
@@ -152,9 +165,13 @@ class BrowserHttpsVpnService : VpnService() {
             if (prepare(this) != null) throw StartFailure("VPN_CONSENT_REQUIRED")
             if (!BrowserHttpsForeground.visible) throw StartFailure("APP_NOT_VISIBLE")
             if (revision != BrowserTlsStore(this).revision()) throw StartFailure("SAVED_IDENTITY_CHANGED")
+            startupStage = BrowserHttpsStartup.Stage.TLS_VALIDATION
             identity.checkValidity(BrowserHttpsPolicy.HOSTNAME)
+            startupStage = BrowserHttpsStartup.Stage.CONFLICT_CHECK
             rejectConflicts()
             if (!BrowserHandover.establish(current, BrowserHttpsPolicy.DUAL, { address -> establishInterface(address) }, { stage ->
+                startupStage = if (stage.startsWith("PRIMARY") || stage == "AFTER_PRIMARY")
+                    BrowserHttpsStartup.Stage.VPN_PRIMARY else BrowserHttpsStartup.Stage.VPN_COMPATIBILITY
                 val snapshot = if (stage.startsWith("AFTER_")) interfaces.snapshot().text else null
                 main.post {
                     if (session === current && !current.isCancelled) {
@@ -164,13 +181,15 @@ class BrowserHttpsVpnService : VpnService() {
                 }
             })) return
             if (current.isCancelled) return
-            BrowserOutput.startSecure(applicationContext, identity) {
+            BrowserOutput.startSecure(applicationContext, identity, onStage = { startupStage = it }) {
                 main.post { if (session === current && !current.isCancelled) stopSession("LISTENER_STOPPED") }
             }
             // Late start completion after Stop still acquires and closes this exact session's server.
             // No replacement session may start until this worker AND all closes finish.
             if (!current.own(Closeable { BrowserOutput.stop() })) return
             if (current.isCancelled) return
+            startupStage = BrowserHttpsStartup.Stage.SELF_CHECK
+            main.post { if (session === current && !current.isCancelled) selfCheck = "PENDING" }
             val socket = Socket()
             if (!current.own(socket)) return
             val check = BrowserHttpsSelfCheck(BrowserOutput.healthResponseForSelfCheck())
@@ -194,13 +213,14 @@ class BrowserHttpsVpnService : VpnService() {
                 }
             }
         } catch (failure: BrowserTlsIdentity.Failure) {
+            fail(current, failure.code, "${startupStage.name}: ${failure.code}")
+        } catch (failure: BrowserHandover.Failure) {
             fail(current, failure.code)
         } catch (failure: StartFailure) {
-            fail(current, failure.code)
-        } catch (_: SecurityException) {
-            fail(current, "PERMISSION_DENIED")
-        } catch (_: Exception) {
-            fail(current, "START_OR_BIND_FAILED")
+            fail(current, failure.code, "${startupStage.name}: ${failure.code}")
+        } catch (failure: Exception) {
+            val code = BrowserHttpsStartup.failureCode(startupStage, failure)
+            fail(current, code, "$code; causes=${BrowserHttpsStartup.causeTypes(failure)}")
         } finally { current.workerFinished() }
     }
 
@@ -229,8 +249,13 @@ class BrowserHttpsVpnService : VpnService() {
         }
     }
 
-    private fun fail(current: BrowserSession, code: String) {
-        main.post { if (session === current && !current.isCancelled) stopSession(code) }
+    private fun fail(current: BrowserSession, code: String, detail: String = code) {
+        main.post {
+            if (session === current && !current.isCancelled) {
+                startupFailure = detail
+                stopSession(code)
+            }
+        }
     }
 
     private fun stopSession(reason: String) {
@@ -255,7 +280,7 @@ class BrowserHttpsVpnService : VpnService() {
         ready = false
         recoveryRequired = current.didCloseFail() || afterClose.visible || afterClose.failed
         interfaceReport += "\nAFTER_ALL_OWNED_CLOSES\n${afterClose.text}"
-        status = if (recoveryRequired) "Cleanup could not be confirmed. Disconnect VPN and force-stop this app before retrying. / 清理未确认，请断开 VPN 并强行停止本应用。"
+        status = if (recoveryRequired) "Cleanup could not be confirmed. Disconnect VPN and force-stop this app before retrying. / 清理未确认，请断开 VPN 并强行停止本应用。\nStopped because / 停止原因: $stopReason"
             else "Stopped / 已停止: $stopReason"
         if (!destroyed) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
     }

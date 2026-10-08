@@ -104,6 +104,22 @@ public class BrowserHandoverTest {
         }
     }
 
+    @Test public void nullEstablishIdentifiesPrimaryOrCompatibilityWithoutLeakingMessages() {
+        for (boolean primary : new boolean[]{true, false}) {
+            Fixture f = new Fixture();
+            BrowserHandover.Failure failure = assertThrows(BrowserHandover.Failure.class, () ->
+                BrowserHandover.establish(f.session, BrowserHttpsPolicy.DUAL, address -> {
+                    if (primary || BrowserHttpsPolicy.COMPATIBILITY_ADDRESS.equals(address)) return null;
+                    return f.establish(address);
+                }, f.stages::add));
+            assertEquals(primary ? "VPN_PRIMARY_ESTABLISH_REJECTED" : "VPN_COMPATIBILITY_ESTABLISH_REJECTED", failure.code);
+            f.stop();
+            assertEquals(primary ? 0 : 1, f.primaryCloses.get());
+            assertEquals(0, f.compatibilityCloses.get());
+            assertEquals(1, f.finished.get());
+        }
+    }
+
     @Test public void failedObserverCannotLeaveUnownedPrimary() {
         Fixture f = new Fixture();
         assertThrows(IllegalStateException.class, () -> BrowserHandover.establish(f.session, BrowserHttpsPolicy.DUAL,

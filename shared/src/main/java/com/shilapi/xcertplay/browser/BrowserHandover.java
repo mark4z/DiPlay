@@ -5,6 +5,12 @@ import java.io.IOException;
 
 /** Sequential public-API experiment. Own every returned descriptor before another operation. */
 public final class BrowserHandover {
+    /** A fixed rejection code, distinct from an OEM exception thrown by establish(). */
+    public static final class Failure extends IOException {
+        private static final long serialVersionUID = 1L;
+        public final String code;
+        private Failure(String code) { super(code); this.code = code; }
+    }
     public interface Establisher { Closeable establish(String address) throws Exception; }
     public interface Observer { void observe(String stage); }
 
@@ -17,7 +23,7 @@ public final class BrowserHandover {
             observer.observe(label + "_ESTABLISHING");
             if (session.isCancelled()) return false;
             Closeable descriptor = establisher.establish(addresses[i]);
-            if (descriptor == null) throw new IOException(label + "_ESTABLISH_REJECTED");
+            if (descriptor == null) throw new Failure("VPN_" + label + "_ESTABLISH_REJECTED");
             // Includes a descriptor returned after Stop, revoke, timeout or backgrounding.
             if (!session.own(descriptor)) return false;
             if (session.isCancelled()) return false;
