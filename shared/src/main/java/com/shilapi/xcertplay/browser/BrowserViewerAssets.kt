@@ -14,18 +14,18 @@ class BrowserViewerAssets private constructor(private val files: Map<String, Byt
     }
 
     companion object {
-        const val HOSTNAME = "tesla.mark4z.asia"
-        const val PORT = 9999
-        const val AUTHORITY = "tesla.mark4z.asia:9999"
-        const val ORIGIN = "https://tesla.mark4z.asia:9999"
-        const val ADDRESS = "100.99.9.9"
-        const val COMPAT_ADDRESS = "192.168.247.2"
+        val HOSTNAME = BrowserHttpsPolicy.HOSTNAME
+        const val PORT = BrowserHttpsPolicy.HTTPS_PORT
+        val AUTHORITY = "$HOSTNAME:$PORT"
+        val ORIGIN = "https://$AUTHORITY"
+        const val ADDRESS = BrowserHttpsPolicy.ADDRESS
+        const val COMPAT_ADDRESS = BrowserHttpsPolicy.COMPATIBILITY_ADDRESS
         const val MAX_FILE_BYTES = 512 * 1024
         const val MAX_TOTAL_BYTES = 2 * 1024 * 1024
         val NAMES = listOf("index.html", "viewer.css", "viewer.mjs", "core.mjs",
-            "session.mjs", "audio.mjs", "audio-protocol.mjs", "diagnostics.mjs")
-        const val CSP = "default-src 'none'; script-src 'self'; style-src 'self'; " +
-            "connect-src 'self' wss://tesla.mark4z.asia:9999; worker-src 'self'; " +
+            "session.mjs", "audio.mjs", "audio-protocol.mjs", "diagnostics.mjs", "config.mjs")
+        val CSP = "default-src 'none'; script-src 'self'; style-src 'self'; " +
+            "connect-src 'self' wss://$AUTHORITY; worker-src 'self'; " +
             "img-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; " +
             "object-src 'none'; frame-ancestors 'none'"
 
@@ -47,10 +47,15 @@ class BrowserViewerAssets private constructor(private val files: Map<String, Byt
                 require(bytes.isNotEmpty()) { "Viewer asset is empty" }
                 total += bytes.size
                 require(total <= MAX_TOTAL_BYTES) { "Viewer assets exceed limit" }
-                "/$name" to bytes
+                // The installed APK policy is authoritative. A static-site default
+                // cannot diverge from TLS validation, request routing or the UI.
+                "/$name" to if (name == "config.mjs") configurationModule() else bytes
             }
             return BrowserViewerAssets(files)
         }
+
+        internal fun configurationModule(): ByteArray =
+            "export const HTTPS_HOSTNAME = '$HOSTNAME';\n".toByteArray(Charsets.US_ASCII)
 
         private fun mime(path: String): String = when {
             path.endsWith(".html") -> "text/html; charset=utf-8"

@@ -347,6 +347,63 @@ class BrowserTlsStoreTest {
         assertFalse(File(context.noBackupFilesDir, "browser-https-identity/identity.sealed").exists())
     }
 
+    @Test fun optionalBundleBootstrapsOnceAndDeletionSurvivesNewInstances() {
+        val directory = directory()
+        val keys = TestKeys()
+        var reads = 0
+        var input: ByteArray? = null
+        fun instance() = BrowserTlsStore(directory, keys, {
+            reads++; bytes.also { input = it }
+        }) { identity }
+        val store = instance()
+        assertSame(identity, store.load())
+        assertTrue(input!!.all { it == 0.toByte() })
+        assertFalse(active(directory).readText().contains(String(bytes)))
+        assertSame(identity, instance().load())
+        assertEquals(1, reads)
+        store.delete()
+        assertNull(instance().load())
+        assertEquals(1, reads)
+        commitArchive(store) // ZIP picker remains available after bundle deletion
+        assertSame(identity, instance().load())
+    }
+
+    @Test fun bundleNeverOverwritesExistingOrInvalidSavedIdentity() {
+        val directory = directory()
+        val keys = TestKeys()
+        val store = store(directory, keys)
+        commitArchive(store)
+        val bundled = BrowserTlsStore(directory, keys, { error("must not read bundle") }) { identity }
+        assertSame(identity, bundled.load())
+        active(directory).writeBytes(byteArrayOf(1))
+        assertFailure("TLS_STORE_SIZE_INVALID") { bundled.load() }
+    }
+
+    @Test fun preexistingDiskMarkerSuppressesBundleWithoutAnyCachedState() {
+        val directory = directory() // unique path has never been passed to a store
+        directory.mkdirs()
+        File(directory, "bundle-disabled").writeBytes(byteArrayOf(1))
+        val keys = TestKeys()
+        var reads = 0
+        val store = BrowserTlsStore(directory, keys, { reads++; bytes }) { identity }
+        assertNull(store.load())
+        assertEquals(0, reads)
+        assertEquals(0, keys.creates)
+        assertFalse(active(directory).exists())
+        assertTrue(File(directory, "bundle-disabled").isFile)
+    }
+
+    @Test fun invalidBundleFailsClosedWithoutPersistingAndWipesInput() {
+        val directory = directory()
+        val keys = TestKeys()
+        val input = bytes
+        val store = BrowserTlsStore(directory, keys, { input }) { error("synthetic failure") }
+        assertFailure("TLS_STORE_SAVE_FAILED") { store.load() }
+        assertFalse(active(directory).exists())
+        assertTrue(input.all { it == 0.toByte() })
+        assertEquals(0, keys.creates)
+    }
+
     private fun assertFailure(code: String, action: () -> Any?) {
         try {
             action()
@@ -358,3 +415,4 @@ class BrowserTlsStoreTest {
         }
     }
 }
+

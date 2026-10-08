@@ -16,6 +16,12 @@ task copies only the root runtime files into `browser-carplay/` assets before
 Android `preBuild`; README and tests are excluded. There is no second viewer
 source tree, build-time CDN fetch, external script, font, or media dependency.
 
+An optional build-time `DIPLAY_HTTPS_DOMAIN` selects another bare ASCII DNS
+hostname. It defaults to `tesla.mark4z.asia`; the port and local VPN addresses
+stay fixed. See [the public build-hook contract](../../docs/HTTPS_BUILD_HOOKS.md).
+The APK's TLS checks, displayed URLs, request routing, CSP and served `config.mjs`
+all use the same immutable policy. Packaging never rewrites these source files.
+
 On that exact HTTPS origin, the viewer selects only
 **wss://tesla.mark4z.asia:9999/carplay**. IP and port inputs are hidden, disabled,
 and not required. No query parameter, fragment, persisted setting, server video

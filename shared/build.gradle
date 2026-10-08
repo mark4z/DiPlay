@@ -2,6 +2,33 @@ plugins {
     id 'com.android.library'
 }
 
+// Public source is immutable during packaging. Only this non-secret generated
+// Java resource changes for an explicitly configured HTTPS hostname.
+def browserHttpsHostname = providers.environmentVariable('DIPLAY_HTTPS_DOMAIN')
+    .orElse('tesla.mark4z.asia').map { value ->
+        // Reject Unicode before case folding (for example, Kelvin sign -> k).
+        if (!java.nio.charset.StandardCharsets.US_ASCII.newEncoder().canEncode(value)) {
+            throw new GradleException('DIPLAY_HTTPS_DOMAIN must be a bare ASCII DNS hostname.')
+        }
+        def hostname = value.trim().toLowerCase(java.util.Locale.ROOT)
+        def labels = hostname.split('\\.', -1)
+        if (hostname.length() > 253 || labels.length < 2 || labels.last() ==~ /[0-9]+/ ||
+            labels.any { !(it ==~ /[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/) }) {
+            throw new GradleException('DIPLAY_HTTPS_DOMAIN must be a bare ASCII DNS hostname.')
+        }
+        hostname
+    }
+def browserHttpsResources = layout.buildDirectory.dir('generated/browserHttpsResources')
+def generateBrowserHttpsConfig = tasks.register('generateBrowserHttpsConfig') {
+    inputs.property('hostname', browserHttpsHostname)
+    outputs.dir(browserHttpsResources)
+    doLast {
+        def output = browserHttpsResources.get().file('diplay-browser-https.properties').asFile
+        output.parentFile.mkdirs()
+        output.setText("hostname=${browserHttpsHostname.get()}\n", 'US-ASCII')
+    }
+}
+
 // Package the canonical, dependency-free viewer, not a second maintained copy.
 // Sync drops removed assets; only runtime files are shipped, never README/tests.
 def browserViewerAssets = layout.buildDirectory.dir('generated/browserViewerAssets')
@@ -47,10 +74,17 @@ android {
     // The WebRTC AAR omits its notices; ship the preserved dependency licenses in every APK.
     sourceSets.main.assets.srcDir(rootProject.file('docs/licenses'))
     sourceSets.main.assets.srcDir(browserViewerAssets.get().asFile)
+    sourceSets.main.resources.srcDir(browserHttpsResources)
 }
 
 tasks.named('preBuild').configure {
     dependsOn syncBrowserViewerAssets
+    dependsOn generateBrowserHttpsConfig
+}
+
+// Also cover direct Java-resource tasks and JVM tests, not just APK assembly.
+tasks.configureEach { task ->
+    if (task.name ==~ /process.*JavaRes/) task.dependsOn(generateBrowserHttpsConfig)
 }
 
 dependencies {

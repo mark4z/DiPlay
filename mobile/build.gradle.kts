@@ -7,6 +7,9 @@ plugins {
 val localAuthenticationAssets = providers.environmentVariable("DIPLAY_AUTH_ASSETS_DIR")
     .orNull?.let { file(it).canonicalFile }
 
+val privateHttpsAssets = providers.environmentVariable("DIPLAY_HTTPS_ASSETS_DIR")
+    .orNull?.let { file(it).canonicalFile }
+
 android {
     namespace = "com.shilapi.xcertplay"
     compileSdk {
@@ -24,6 +27,8 @@ android {
 
 
     localAuthenticationAssets?.let { sourceSets.getByName("main").assets.srcDir(it) }
+
+    privateHttpsAssets?.let { sourceSets.getByName("main").assets.srcDir(it) }
 
     signingConfigs {
         create("release") {
@@ -43,6 +48,10 @@ android {
             versionNameSuffix = "-hud-test"
         }
         release {
+            if (providers.environmentVariable("DIPLAY_PRIVATE_BUILD").orNull == "true") {
+                applicationIdSuffix = ".hudtest"
+                versionNameSuffix = "-private"
+            }
             optimization {
                 enable = false
             }
@@ -77,7 +86,7 @@ dependencies {
 val credentialAssets = files(android.sourceSets.flatMap { source ->
     source.assets.directories.map { directory ->
         fileTree(directory) {
-            include("**/offline-mfi/**", "**/*.pk8", "**/*.p7b", "**/*.key",
+            include("**/private-https/**", "**/offline-mfi/**", "**/*.pk8", "**/*.p7b", "**/*.key",
                 "**/*.pem", "**/*.p12", "**/*.pfx", "**/*.jks", "**/*.keystore")
         }
     }
@@ -86,9 +95,9 @@ val rejectBundledCredentials by tasks.registering {
     group = "verification"
     description = "Reject unexpected credential files in APK assets."
     val filesToCheck = credentialAssets
-    val allowed = localAuthenticationAssets?.let { dir ->
+    val allowed = (localAuthenticationAssets?.let { dir ->
         listOf("identity.pk8", "certificate.p7b").map { dir.resolve("offline-mfi/$it").canonicalFile }.toSet()
-    } ?: emptySet()
+    } ?: emptySet()) + (privateHttpsAssets?.let { setOf(it.resolve("private-https/identity.zip").canonicalFile) } ?: emptySet())
     inputs.files(filesToCheck)
     doLast {
         check(allowed.all { it.isFile }) { "Explicit local authentication assets are incomplete" }
@@ -118,3 +127,4 @@ tasks.register("assembleStandaloneDebug") {
     description = "Build a standalone car-test APK with explicitly provisioned authentication."
     dependsOn(verifyStandaloneAuthentication, "assembleDebug")
 }
+

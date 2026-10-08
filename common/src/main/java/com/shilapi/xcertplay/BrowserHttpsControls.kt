@@ -157,7 +157,7 @@ internal class BrowserHttpsControls(private val activity: Activity) {
             AlertDialog.Builder(activity).setTitle("HTTPS / TLS")
                 .setMessage("Your manually selected ZIP is validated, then encrypted with Android Keystore in app-private storage excluded from backup. No upload, export or saved file permission. Deleting removes the saved identity and both automatic options. Stop keeps the certificate.\n\n" +
                     "手动选择的 ZIP 经校验后使用 Android Keystore 加密保存在应用私有目录，不参与备份、不上传、不导出、不保留文件权限。删除会清除证书和两个自动开关；停止服务保留证书。\n\n" +
-                    "Android VPN consent is still required. Only this app and 100.99.9.9/32 + 192.168.247.2/32 are routed; no default route, DNS rewrite or forwarding. Stop other VPNs first; do not use always-on VPN. Normal DNS must resolve tesla.mark4z.asia to 100.99.9.9. Never bypass certificate warnings.\n\n" +
+                    "Android VPN consent is still required. Only this app and 100.99.9.9/32 + 192.168.247.2/32 are routed; no default route, DNS rewrite or forwarding. Stop other VPNs first; do not use always-on VPN. Normal DNS must resolve ${BrowserHttpsPolicy.HOSTNAME} to 100.99.9.9. Never bypass certificate warnings.\n\n" +
                     "仍需安卓 VPN 授权。先停止其他 VPN，勿开启始终开启 VPN。车机需正常解析域名到 100.99.9.9，请勿绕过证书警告。服务仅在 DiPlay 前台运行，首页与 CarPlay 间切换不中断。")
                 .setPositiveButton("OK / 知道了", null).show()
         }

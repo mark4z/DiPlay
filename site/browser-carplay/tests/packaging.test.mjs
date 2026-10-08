@@ -19,6 +19,13 @@ test('Gradle copies canonical root runtime assets into the APK before Android pr
   assert.ok(runtimeAssets.includes('index.html'));
   assert.ok(runtimeAssets.includes('viewer.css'));
   assert.ok(runtimeAssets.includes('viewer.mjs'));
+  assert.ok(runtimeAssets.includes('config.mjs'));
+  assert.match(gradle, /environmentVariable\('DIPLAY_HTTPS_DOMAIN'\)/);
+  assert.match(gradle, /US_ASCII\.newEncoder\(\)\.canEncode\(value\)/);
+  assert.ok(gradle.indexOf('US_ASCII.newEncoder().canEncode(value)') < gradle.indexOf('value.trim().toLowerCase'),
+    'reject non-ASCII input before Unicode case folding can convert it to ASCII');
+  assert.match(gradle, /sourceSets\.main\.resources\.srcDir\(browserHttpsResources\)/);
+  assert.match(gradle, /dependsOn generateBrowserHttpsConfig/);
   assert.equal(runtimeAssets.includes('README.md'), false);
   assert.equal(runtimeAssets.includes('tests'), false);
   for (const name of runtimeAssets) assert.ok(statSync(new URL(name, viewerRoot)).isFile());
@@ -38,8 +45,24 @@ test('every stylesheet, script and module dependency resolves inside the package
     assert.ok(runtimeAssets.includes(resolved.pathname.split('/').at(-1)), dependency);
   }
   assert.doesNotMatch(read('viewer.css'), /@import|url\s*\(/i, 'no remote fonts, stylesheets, or image dependencies');
-  assert.match(html, /connect-src 'self' ws: wss:\/\/tesla\.mark4z\.asia:9999;/);
+  // ws: already permits its secure upgrade. APK responses further intersect
+  // this external-viewer policy with an exact-host, wss-only CSP header.
+  assert.match(html, /connect-src 'self' ws:;/);
+  assert.doesNotMatch(html, /tesla\.mark4z\.asia/);
   assert.doesNotMatch(html, /connect-src[^;]*(?:\*|\bwss:;)/);
+});
+
+test('browser and Android use a single immutable build hostname rather than source edits', () => {
+  const core = read('core.mjs');
+  const native = read('../../shared/src/main/java/com/shilapi/xcertplay/browser/BrowserViewerAssets.kt');
+  const controls = read('../../common/src/main/java/com/shilapi/xcertplay/BrowserHttpsControls.kt');
+  assert.match(core, /import \{ HTTPS_HOSTNAME \} from '\.\/config\.mjs'/);
+  assert.doesNotMatch(core, /tesla\.mark4z\.asia/);
+  assert.match(native, /val HOSTNAME = BrowserHttpsPolicy\.HOSTNAME/);
+  assert.match(native, /name == "config\.mjs"\) configurationModule\(\)/);
+  assert.doesNotMatch(native, /tesla\.mark4z\.asia/);
+  assert.match(controls, /\$\{BrowserHttpsPolicy\.HOSTNAME\}/);
+  assert.doesNotMatch(controls, /tesla\.mark4z\.asia/);
 });
 
 test('embedded mode never reads endpoint configuration or requests browser microphone capture', () => {

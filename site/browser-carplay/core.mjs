@@ -1,15 +1,16 @@
 // Pure protocol and coordinate helpers. No network, storage, or browser side effects.
+import { HTTPS_HOSTNAME } from './config.mjs';
 // CarPlay's existing HID touch mapper exposes two stable contact slots.
 export const MAX_CONTACTS = 2;
 export const MAX_VIDEO_PACKET_BYTES = 4 * 1024 * 1024 + 9;
 export const MAX_DECODE_QUEUE = 4;
-export const EMBEDDED_VIEWER_ORIGIN = 'https://tesla.mark4z.asia:9999';
-export const EMBEDDED_VIEWER_ENDPOINT = 'wss://tesla.mark4z.asia:9999/carplay';
+export const EMBEDDED_VIEWER_ORIGIN = `https://${HTTPS_HOSTNAME}:9999`;
+export const EMBEDDED_VIEWER_ENDPOINT = `wss://${HTTPS_HOSTNAME}:9999/carplay`;
 
 // Construct, never parse, the network destination: inputs cannot supply a scheme,
 // hostname, credentials, path, query, fragment, or browser-normalized IP alias.
 // Only the exact APK-served page origin enables its fixed TLS endpoint. Never
-// derive a destination from a URL parameter, fragment, hostname input or config.
+// derive a destination from a URL parameter, fragment, hostname input or user config.
 export function parseEndpoint(ip, port, pageOrigin = null) {
   if (pageOrigin === EMBEDDED_VIEWER_ORIGIN) {
     if (ip !== undefined || port !== undefined) throw new Error('The embedded viewer uses its fixed same-origin TLS connection.');

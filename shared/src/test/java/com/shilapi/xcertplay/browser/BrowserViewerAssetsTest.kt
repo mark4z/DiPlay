@@ -14,6 +14,14 @@ class BrowserViewerAssetsTest {
     private fun classify(request: BrowserLanProtocol.HttpRequest) = BrowserLanProtocol.classifyRequest(
         request, BrowserViewerAssets.AUTHORITY, BrowserViewerAssets.ORIGIN, assets())
 
+    @Test fun generatedBrowserConfigurationMatchesTlsPolicyAndIgnoresStaticDefault() {
+        assertEquals(BrowserHttpsPolicy.HOSTNAME, BrowserViewerAssets.HOSTNAME)
+        assertEquals(BrowserHttpsPolicy.VIEWER_URL.removeSuffix("/"), BrowserViewerAssets.ORIGIN)
+        assertEquals("export const HTTPS_HOSTNAME = '${BrowserHttpsPolicy.HOSTNAME}';\n",
+            String(assets().resource("/config.mjs")!!.bytes, Charsets.US_ASCII))
+        assertTrue(BrowserViewerAssets.CSP.contains("wss://${BrowserViewerAssets.AUTHORITY};"))
+    }
+
     @Test fun canonicalAssetsAndVersionQueriesHaveCorrectMime() {
         val assets = assets()
         assertEquals("text/html; charset=utf-8", assets.resource("/")!!.mime)

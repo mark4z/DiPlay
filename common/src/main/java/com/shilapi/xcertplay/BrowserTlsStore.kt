@@ -34,11 +34,32 @@ import javax.crypto.spec.GCMParameterSpec
 internal class BrowserTlsStore internal constructor(
     private val directory: File,
     private val keys: Keys,
+    private val bundled: (() -> ByteArray?)? = null,
     private val validate: (ByteArray) -> BrowserTlsIdentity,
 ) {
     constructor(context: Context) : this(
         File(context.applicationContext.noBackupFilesDir, DIRECTORY),
         AndroidKeys(),
+        {
+            val assets = context.applicationContext.assets
+            if (assets.list("private-https")?.contains("identity.zip") != true) null
+            else assets.open("private-https/identity.zip").use { input ->
+                val buffer = ByteArray(BrowserTlsBundle.MAX_ARCHIVE_BYTES + 1)
+                try {
+                    var count = 0
+                    while (count < buffer.size) {
+                        val read = input.read(buffer, count, buffer.size - count)
+                        if (read < 0) break
+                        if (read == 0) throw Failure("TLS_BUNDLE_READ_FAILED")
+                        count += read
+                    }
+                    if (count == 0 || count > BrowserTlsBundle.MAX_ARCHIVE_BYTES) {
+                        throw Failure("TLS_ARCHIVE_SIZE_INVALID")
+                    }
+                    buffer.copyOf(count)
+                } finally { buffer.fill(0) }
+            }
+        },
         { BrowserTlsBundle.read(it, BrowserHttpsPolicy.HOSTNAME) },
     )
 
@@ -52,6 +73,7 @@ internal class BrowserTlsStore internal constructor(
     }
 
     private class State {
+        var bundleDisabled = false
         var generation = 0L
         var revision = 0L
         val pendingNames = mutableSetOf<String>()
@@ -171,7 +193,19 @@ internal class BrowserTlsStore internal constructor(
         var plaintext: ByteArray? = null
         try {
             cleanOrphanStages()
-            if (!active.exists()) return@synchronized null
+            if (!active.exists()) {
+                // Optional private-build bootstrap. Existing imports always win, and deletion
+                // permanently suppresses bootstrap until app data is explicitly cleared.
+                if (state.bundleDisabled || File(directory, "bundle-disabled").exists() ||
+                    state.pendingNames.isNotEmpty()) return@synchronized null
+                val zip = bundled?.invoke() ?: return@synchronized null
+                try {
+                    beginImport().use { ticket ->
+                        ticket.prepare(zip) // normal trust, validity, SAN and key-match checks
+                        if (!ticket.commit()) throw Failure("TLS_IMPORT_CANCELLED")
+                    }
+                } finally { zip.fill(0) }
+            }
             sealed = readSealed(active)
             val key = keys.existing() ?: throw Failure("TLS_STORE_KEY_UNAVAILABLE")
             plaintext = decrypt(sealed, key)
@@ -194,6 +228,11 @@ internal class BrowserTlsStore internal constructor(
         state.revision++
         state.pendingNames.clear()
         var failed = false
+        state.bundleDisabled = true
+        try {
+            if (!directory.isDirectory && !directory.mkdirs()) throw IOException()
+            FileOutputStream(File(directory, "bundle-disabled")).use { it.write(1); it.fd.sync() }
+        } catch (_: Exception) { failed = true }
         try {
             if (directory.exists()) {
                 val files = directory.listFiles()
@@ -303,3 +342,4 @@ internal class BrowserTlsStore internal constructor(
         private fun isStage(name: String) = name.startsWith("pending-") && name.endsWith(".sealed")
     }
 }
+
