@@ -3,6 +3,7 @@ package com.shilapi.xcertplay
 import android.content.Context
 import android.system.ErrnoException
 import android.system.OsConstants
+import android.system.Os
 import com.shilapi.xcertplay.browser.BrowserTlsBundle
 import com.shilapi.xcertplay.browser.BrowserTlsIdentity
 import java.io.File
@@ -73,6 +74,27 @@ class BrowserTlsStoreTest {
     }
     private fun active(directory: File) = File(directory, "identity.sealed")
     private fun stages(directory: File) = directory.listFiles()?.filter { it.name.startsWith("pending-") }.orEmpty()
+
+    @Test fun atomicRenameReplacesExistingFileAndRejectsMissingSource() {
+        val directory = temporary.newFolder()
+        val source = File(directory, "source").apply { writeText("new") }
+        val target = File(directory, "target").apply { writeText("old") }
+        // First prove the host filesystem supports the operation independently of the shadow.
+        Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE,
+            StandardCopyOption.REPLACE_EXISTING)
+        assertEquals("new", target.readText())
+        source.writeText("replacement")
+        // Deliberately outside BrowserTlsStore's redaction boundary: any test harness failure
+        // must show its real exception, using only these synthetic temporary paths.
+        Os.rename(source.absolutePath, target.absolutePath)
+        assertEquals("replacement", target.readText())
+        assertFalse(source.exists())
+        try {
+            Os.rename(source.absolutePath, target.absolutePath)
+            fail("Missing source unexpectedly renamed")
+        } catch (_: ErrnoException) { }
+        assertEquals("replacement", target.readText())
+    }
 
     @Test fun savesOnlyCiphertextAndRevalidatesEveryLoadAcrossNewStoreInstances() {
         val directory = directory()
