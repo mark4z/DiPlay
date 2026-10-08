@@ -85,10 +85,10 @@ class BrowserLanServer(
         require(network != null && (secureIdentity != null || network.isUp) && !network.isLoopback) { "The selected LAN interface is unavailable" }
         // Own the raw TCP listener/socket independently from TLS. Cancellation must
         // interrupt a blocked TLS writer even if its provider drains close_notify.
-        val server = ServerSocket()
+        val server = bindBrowserListener(bindAddress,
+            if (secureIdentity == null) 0 else BrowserViewerAssets.PORT,
+            reuseAddress = secureIdentity != null)
         try {
-            server.reuseAddress = false
-            server.bind(InetSocketAddress(bindAddress, if (secureIdentity == null) 0 else BrowserViewerAssets.PORT), 16)
             listener = server
             watchdog = Executors.newSingleThreadScheduledExecutor { task ->
                 Thread(task, "CarPlay-LAN-deadlines").apply { isDaemon = true }
@@ -201,6 +201,23 @@ class BrowserLanServer(
         }
     }
 
+}
+
+/** The fixed HTTPS endpoint must reopen after server-closed health/asset connections.
+ * Set SO_REUSEADDR before bind so their TIME_WAIT sockets do not reserve the endpoint.
+ * This is not SO_REUSEPORT: a second live listener on the same address still fails.
+ * Keep the selected address and port exact; never fall back to wildcard or another port.
+ * Internal seam permits real loopback restart tests without relaxing public bind policy. */
+internal fun bindBrowserListener(address: InetAddress, port: Int, reuseAddress: Boolean): ServerSocket {
+    val server = ServerSocket()
+    try {
+        server.reuseAddress = reuseAddress
+        server.bind(InetSocketAddress(address, port), 16)
+        return server
+    } catch (failure: Exception) {
+        runCatching { server.close() }
+        throw failure
+    }
 }
 
 internal data class BrowserLanAudioTransport(

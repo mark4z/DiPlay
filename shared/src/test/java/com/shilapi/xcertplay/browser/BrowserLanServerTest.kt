@@ -10,6 +10,7 @@ import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.InetAddress
+import java.net.BindException
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
@@ -20,6 +21,51 @@ class BrowserLanServerTest {
     private val origin = "https://viewer.example.com"
     private val host = "192.168.40.2:41234"
     private val token = "0123456789abcdefghijABCDEFGHIJ_-"
+
+    @Test fun fixedHttpsListenerReopensAfterServerClosedConnections() {
+        val address = InetAddress.getByName("127.0.0.1")
+        var port = 0
+        // Reserve an OS-selected port once, then immediately rebind that SAME port.
+        // Server-first FIN mirrors /health and asset responses, including startup self-check.
+        repeat(20) {
+            bindBrowserListener(address, port, reuseAddress = true).use { listener ->
+                if (port == 0) port = listener.localPort
+                assertEquals(port, listener.localPort)
+                assertEquals(address, listener.inetAddress)
+                assertTrue(listener.reuseAddress)
+                listener.soTimeout = 2_000
+                Socket(address, port).use { client ->
+                    client.soTimeout = 2_000
+                    listener.accept().use { accepted -> accepted.getOutputStream().write(42) }
+                    assertEquals(42, client.getInputStream().read())
+                    assertEquals(-1, client.getInputStream().read())
+                }
+            }
+        }
+    }
+
+    @Test fun reuseNeverAllowsASecondLiveListenerOrSilentPortFallback() {
+        val address = InetAddress.getByName("127.0.0.1")
+        bindBrowserListener(address, 0, reuseAddress = true).use { first ->
+            assertThrows(BindException::class.java) {
+                bindBrowserListener(address, first.localPort, reuseAddress = true).use { }
+            }
+            // A rejected competitor must not damage the listener it conflicted with.
+            first.soTimeout = 2_000
+            Socket(address, first.localPort).use { client ->
+                client.soTimeout = 2_000
+                first.accept().use { accepted -> accepted.getOutputStream().write(42) }
+                assertEquals(42, client.getInputStream().read())
+            }
+        }
+    }
+
+    @Test fun ephemeralPlainLanListenerKeepsReuseDisabled() {
+        bindBrowserListener(InetAddress.getByName("127.0.0.1"), 0, reuseAddress = false).use {
+            assertFalse(it.reuseAddress)
+            assertTrue(it.localPort > 0)
+        }
+    }
 
     @Test fun automaticApprovalIsOneShotAndNeverClaimsAPromptWasShown() {
         val request = BrowserApprovalRequest(1, "192.168.40.5", System.nanoTime() / 1_000_000 + 30_000)
