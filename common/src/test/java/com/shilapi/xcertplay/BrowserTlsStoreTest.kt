@@ -1,9 +1,14 @@
 package com.shilapi.xcertplay
 
 import android.content.Context
+import android.system.ErrnoException
+import android.system.OsConstants
 import com.shilapi.xcertplay.browser.BrowserTlsBundle
 import com.shilapi.xcertplay.browser.BrowserTlsIdentity
 import java.io.File
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.io.RandomAccessFile
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -19,11 +24,30 @@ import org.mockito.Mockito.mock
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
+import org.robolectric.shadows.ShadowLinux
 
 /** Synthetic bytes and runtime-generated AES keys only; never reads a real TLS ZIP or private key. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28], manifest = Config.NONE)
+@Config(sdk = [28], manifest = Config.NONE, shadows = [BrowserTlsStoreTest.AtomicRenameLinux::class])
 class BrowserTlsStoreTest {
+    // Robolectric 4.17's SDK-28 Linux shadow does not implement rename. Exercise real
+    // atomic filesystem replacement rather than treating the unimplemented native call as success.
+    @Implements(className = "libcore.io.Linux", minSdk = 26, isInAndroidSdk = false)
+    class AtomicRenameLinux : ShadowLinux() {
+        @Implementation
+        @Throws(ErrnoException::class)
+        fun rename(oldPath: String, newPath: String) {
+            try {
+                Files.move(File(oldPath).toPath(), File(newPath).toPath(),
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (failure: IOException) {
+                throw ErrnoException("rename", OsConstants.EIO, failure)
+            }
+        }
+    }
+
     @get:Rule val temporary = TemporaryFolder()
     private val identity = mock(BrowserTlsIdentity::class.java)
     private val bytes get() = "synthetic-local-archive-marker-0123456789".toByteArray()
