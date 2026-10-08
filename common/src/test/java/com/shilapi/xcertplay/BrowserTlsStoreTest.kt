@@ -27,24 +27,26 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
-import org.robolectric.shadows.ShadowLinux
 
 /** Synthetic bytes and runtime-generated AES keys only; never reads a real TLS ZIP or private key. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28], manifest = Config.NONE, shadows = [BrowserTlsStoreTest.AtomicRenameLinux::class])
+@Config(sdk = [28], manifest = Config.NONE, shadows = [BrowserTlsStoreTest.AtomicRenameOs::class])
 class BrowserTlsStoreTest {
-    // Robolectric 4.17's SDK-28 Linux shadow does not implement rename. Exercise real
-    // atomic filesystem replacement rather than treating the unimplemented native call as success.
-    @Implements(className = "libcore.io.Linux", minSdk = 26, isInAndroidSdk = false)
-    class AtomicRenameLinux : ShadowLinux() {
-        @Implementation
-        @Throws(ErrnoException::class)
-        fun rename(oldPath: String, newPath: String) {
-            try {
-                Files.move(File(oldPath).toPath(), File(newPath).toPath(),
-                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            } catch (failure: IOException) {
-                throw ErrnoException("rename", OsConstants.EIO, failure)
+    // Robolectric 4.17's SDK-28 Linux shadow does not implement rename. Shadow the
+    // static Os boundary because the SDK's Linux singleton already owns its default shadow.
+    @Implements(Os::class)
+    class AtomicRenameOs {
+        companion object {
+            @JvmStatic
+            @Implementation
+            @Throws(ErrnoException::class)
+            fun rename(oldPath: String, newPath: String) {
+                try {
+                    Files.move(File(oldPath).toPath(), File(newPath).toPath(),
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                } catch (failure: IOException) {
+                    throw ErrnoException("rename", OsConstants.EIO, failure)
+                }
             }
         }
     }
