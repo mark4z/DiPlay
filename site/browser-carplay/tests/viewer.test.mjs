@@ -33,7 +33,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
     hasPointerCapture(id) { return captured.has(id); }
     releasePointerCapture(id) { captured.delete(id); this.dispatch('lostpointercapture', { pointerId: id }); }
   }
-  const elements = Object.fromEntries(['resolution-target', 'resolution-actual', 'settings-close', 'resolution-settings', 'resolution-follow', 'resolution-status', 'controls-grip', 'controls-reveal', 'controls-safe-area', 'connection', 'ip', 'port', 'parked', 'touch', 'connect', 'disconnect',
+  const elements = Object.fromEntries(['resolution-follow-state', 'resolution-target', 'resolution-actual', 'settings-close', 'resolution-settings', 'resolution-follow', 'resolution-status', 'controls-grip', 'controls-reveal', 'controls-safe-area', 'connection', 'ip', 'port', 'parked', 'touch', 'connect', 'disconnect',
     'video', 'viewport', 'placeholder', 'status', 'indicator', 'origin', 'touch-status',
     'connection-timeline', 'connection-attempt', 'connection-transport', 'manual-endpoint', 'local-endpoint',
     'local-endpoint-value', 'connection-instructions', 'transport-warning', 'browser-requirements', 'lan-diagnostics',

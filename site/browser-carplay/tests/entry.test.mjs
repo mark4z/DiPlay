@@ -35,7 +35,7 @@ async function page(t, { hidden = false, fullscreen = 'resolve', socketFailure =
   if (fullscreen !== 'unavailable') element('viewer-shell').requestFullscreen = () => {
     fullscreenCalls++;
     if (fullscreen === 'throw') throw new Error('Blocked');
-    if (fullscreen === 'reject') return Promise.reject(new Error('Blocked'));
+    if (fullscreen === 'reject' || (fullscreen === 'reject-once' && fullscreenCalls === 1)) return Promise.reject(new Error('Blocked'));
     if (fullscreen === 'pending') return full.promise;
     document.fullscreenElement = element('viewer-shell'); document.dispatch('fullscreenchange'); return Promise.resolve();
   };
@@ -49,7 +49,7 @@ async function page(t, { hidden = false, fullscreen = 'resolve', socketFailure =
     send(message) { this.sent.push(JSON.parse(message)); }
     close() { this.readyState = 3; }
   }
-  const window = Object.assign(new Events(), { VideoDecoder: class {}, EncodedVideoChunk: class {}, PointerEvent: class {} });
+  const window = Object.assign(new Events(), { getComputedStyle: () => ({ width: '1280px', height: '720px' }), VideoDecoder: class {}, EncodedVideoChunk: class {}, PointerEvent: class {} });
   window.self = window.top = window;
   Object.assign(globalThis, { document, window, location: { protocol: 'https:', origin: 'https://tesla.mark4z.asia:9999' },
     isSecureContext: true, VideoDecoder: window.VideoDecoder, EncodedVideoChunk: window.EncodedVideoChunk,
@@ -60,7 +60,7 @@ async function page(t, { hidden = false, fullscreen = 'resolve', socketFailure =
   return { element, document, window, sockets, timers, approve, full, fullscreenCalls: () => fullscreenCalls };
 }
 
-test('embedded entry starts exactly once, keeps approval gates, and requests fullscreen only from a real gesture', async t => {
+test('embedded entry starts exactly once, keeps approval gates, and tries fullscreen once after approval', async t => {
   const p = await page(t, { fullscreen: 'pending' });
   assert.equal(p.sockets.length, 1);
   assert.equal(p.sockets[0].url, 'wss://tesla.mark4z.asia:9999/carplay');
@@ -72,7 +72,7 @@ test('embedded entry starts exactly once, keeps approval gates, and requests ful
   assert.equal(p.fullscreenCalls(), 0, 'preapproval click cannot enter fullscreen');
   const socket = p.approve();
   assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
-  assert.equal(p.fullscreenCalls(), 0, 'approval alone must not manufacture a fullscreen gesture');
+  assert.equal(p.fullscreenCalls(), 1, 'approval starts one best-effort request without manufacturing a gesture');
   assert.equal(p.element('enter').textContent, 'Enter fullscreen');
   p.element('enter').dispatch('click');
   assert.equal(p.fullscreenCalls(), 1);
@@ -92,15 +92,19 @@ test('embedded entry starts exactly once, keeps approval gates, and requests ful
   assert.equal(p.sockets.length, 2, 'page return starts exactly one fresh attempt');
   p.sockets[1].open();
   assert.deepEqual(p.sockets[1].sent, [{ type: 'requestApproval', version: 2 }]);
+  p.sockets[1].receive({ type: 'approvalPending', version: 2 });
+  p.sockets[1].receive({ type: 'authenticated', version: 2 });
+  assert.equal(p.sockets[1].readyState, 1, 'valid approval handshake leaves the reconnected socket active');
+  assert.equal(p.element('enter').disabled, false);
+  assert.equal(p.fullscreenCalls(), 1, 'reconnection and BFCache return do not repeat the automatic request');
   p.window.dispatch('pagehide');
 });
 
 test('successful fullscreen hides Enter until fullscreen exits without changing the session', async t => {
   const p = await page(t);
   const socket = p.approve();
-  assert.equal(p.element('enter').hidden, false);
-  p.element('enter').dispatch('click');
-  assert.equal(p.fullscreenCalls(), 1, 'request occurs within the click');
+  assert.equal(p.element('enter').hidden, true);
+  assert.equal(p.fullscreenCalls(), 1, 'first approved connection requests fullscreen');
   await flush();
   assert.equal(p.element('enter').hidden, true);
   p.element('enter').dispatch('click');
@@ -110,6 +114,10 @@ test('successful fullscreen hides Enter until fullscreen exits without changing 
   assert.equal(p.element('enter').hidden, false);
   assert.equal(p.element('enter').disabled, false);
   assert.equal(p.element('enter').textContent, 'Enter fullscreen');
+  assert.equal(p.fullscreenCalls(), 1, 'explicit exit is respected');
+  p.document.dispatch('fullscreenchange');
+  p.window.dispatch('pageshow', { persisted: true });
+  assert.equal(p.fullscreenCalls(), 1, 'later page updates do not force re-entry');
   assert.equal(socket.readyState, 1);
   assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
   p.window.dispatch('pagehide');
@@ -119,7 +127,13 @@ for (const fullscreen of ['unavailable', 'reject', 'throw']) {
   test(`fullscreen ${fullscreen} leaves video connection intact and exposes a truthful fallback`, async t => {
     const p = await page(t, { fullscreen });
     const socket = p.approve();
+    await flush();
+    assert.equal(p.element('entry-status').hidden, true, 'automatic refusal stays quiet');
+    assert.equal(p.element('enter').hidden, false);
+    assert.equal(p.element('enter').disabled, false);
+    assert.equal(p.fullscreenCalls(), fullscreen === 'unavailable' ? 0 : 1);
     p.element('enter').dispatch('click');
+    assert.equal(p.fullscreenCalls(), fullscreen === 'unavailable' ? 0 : 2, 'manual click retries synchronously');
     await flush();
     assert.equal(p.element('entry-status').hidden, false);
     assert.match(p.element('entry-status').textContent, /fullscreen is unavailable.*fills this page/);
@@ -202,4 +216,63 @@ test('synchronous WebSocket constructor failure keeps a single five-second retry
   }
   p.window.dispatch('pagehide');
   assert.equal([...p.timers.values()].some(timer => timer.delay === 5000), false);
+});
+
+
+test('automatic fullscreen rejection can succeed on a manual retry without touching video input', async t => {
+  const p = await page(t, { fullscreen: 'reject-once' });
+  const socket = p.approve();
+  await flush();
+  assert.equal(p.fullscreenCalls(), 1);
+  assert.equal(p.element('entry-status').hidden, true);
+  p.element('video').dispatch('click');
+  assert.equal(p.fullscreenCalls(), 1, 'ordinary CarPlay taps never trigger fullscreen');
+  p.element('enter').dispatch('click');
+  assert.equal(p.fullscreenCalls(), 2, 'manual request happens inside its click');
+  await flush();
+  assert.equal(p.element('enter').hidden, true);
+  assert.equal(p.element('entry-status').hidden, true);
+  assert.equal(socket.readyState, 1);
+  assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
+  p.window.dispatch('pagehide');
+});
+
+test('resolution checkbox and visible On/Off label follow accepted intent through pending ACK, reconnect, and page restoration', async t => {
+  const p = await page(t, { fullscreen: 'unavailable' });
+  const checkbox = p.element('resolution-follow'), label = p.element('resolution-follow-state');
+  const assertState = enabled => { assert.equal(checkbox.checked, enabled); assert.equal(label.textContent, enabled ? 'On' : 'Off'); };
+  const settle = () => { for (const [id, timer] of [...p.timers]) if (timer.delay === 2000) { p.timers.delete(id); timer.callback(); } };
+  const latest = socket => socket.sent.filter(message => message.type === 'setBrowserResolution').at(-1);
+  const ack = socket => socket.receive({ ...latest(socket), type: 'browserResolution', applies: 'unchanged', effectiveWidth: 1280, effectiveHeight: 720 });
+  assertState(true);
+  let socket = p.approve(); settle(); assertState(true);
+  checkbox.checked = false; checkbox.dispatch('change');
+  assertState(true); // Pending changes cannot silently invert the displayed intent.
+  ack(socket);
+  checkbox.checked = false; checkbox.dispatch('change');
+  assertState(false); assert.equal(latest(socket).enabled, false); ack(socket); assertState(false);
+  p.window.dispatch('pagehide'); p.window.dispatch('pageshow', { persisted: true });
+  socket = p.approve(); assertState(false); settle();
+  assert.equal(latest(socket), undefined, 'intent remains off on ordinary reconnect');
+  checkbox.checked = true; checkbox.dispatch('change'); settle();
+  assert.equal(latest(socket).enabled, true); ack(socket); assertState(true);
+  checkbox.checked = false; // A browser can restore form state without a change event.
+  p.window.dispatch('pageshow', { persisted: true }); assertState(true);
+  assert.equal(latest(socket).enabled, true, 'rendering does not send an unintended off request');
+  p.window.dispatch('pagehide');
+});
+
+test('first visible approved connection reports viewport pixels and accepts Android output target without any click', async t => {
+  const p = await page(t, { fullscreen: 'unavailable' });
+  const socket = p.approve();
+  assert.equal(socket.sent.filter(message => message.type === 'setBrowserResolution').length, 0);
+  for (const [id, timer] of [...p.timers]) if (timer.delay === 2000) { p.timers.delete(id); timer.callback(); }
+  const requests = socket.sent.filter(message => message.type === 'setBrowserResolution');
+  assert.deepEqual(requests, [{ type: 'setBrowserResolution', requestId: 1, enabled: true, width: 1280, height: 720, units: 'device-pixels' }]);
+  socket.receive({ ...requests[0], type: 'browserResolution', effectiveWidth: 1024, effectiveHeight: 576, applies: 'reconnecting' });
+  assert.equal(p.element('resolution-follow').checked, true);
+  assert.equal(p.element('resolution-follow-state').textContent, 'On');
+  assert.equal(p.element('resolution-target').textContent, '1024 × 576 px');
+  assert.match(p.element('resolution-status').textContent, /Android’s resolution percentage still applies/);
+  p.window.dispatch('pagehide');
 });

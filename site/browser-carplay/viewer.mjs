@@ -1,4 +1,4 @@
-import { followBrowserResolution, observeRenderPixels } from './resolution.mjs?v=automatic-viewer-v1';
+import { followBrowserResolution, observeRenderPixels } from './resolution.mjs?v=fullscreen-state-v1';
 import { floatingControls } from './controls.mjs?v=floating-controls-v1';
 import { Contacts, EMBEDDED_VIEWER_ORIGIN, EMBEDDED_VIEWER_ENDPOINT, fitRect, mapPointer } from './core.mjs?v=embedded-https-v1';
 import { BrowserSession, AutoReconnect } from './session.mjs?v=automatic-viewer-v1';
@@ -11,6 +11,7 @@ const enter = byId('enter');
 const entryStatus = byId('entry-status');
 let entryGeneration = 0;
 let fullscreenPending = false;
+let automaticFullscreenAttempted = false;
 const ip = byId('ip');
 const port = byId('port');
 const parked = byId('parked');
@@ -115,19 +116,26 @@ if (embeddedViewer) {
   const measure = observeRenderPixels(viewport, changed);
   resolutionFollow = followBrowserResolution({ measure,
     send: message => session.setBrowserResolution(message),
-    onStatus: message => { byId('resolution-status').textContent = message; },
+    onStatus: message => { byId('resolution-status').textContent = message; renderResolutionControl(); },
     onTarget: size => { byId('resolution-target').textContent = size ? `${size.width} × ${size.height} px` : '等待 Android 确认'; } });
   byId('resolution-follow').addEventListener('change', () => {
     if (!resolutionFollow.enable(byId('resolution-follow').checked)) {
-      byId('resolution-follow').checked = !byId('resolution-follow').checked;
       byId('resolution-status').textContent = 'Wait for Android to confirm before changing this option.';
     }
+    renderResolutionControl();
   });
   window.addEventListener('resize', changed);
   document.addEventListener('fullscreenchange', changed);
 }
 
+function renderResolutionControl() {
+  if (!resolutionFollow) return;
+  byId('resolution-follow').checked = resolutionFollow.enabled;
+  byId('resolution-follow-state').textContent = resolutionFollow.enabled ? 'On' : 'Off';
+}
+
 function updateControls() {
+  renderResolutionControl();
   displayControls?.update({ critical: !live || Boolean(blocked) || !entryStatus.hidden });
   const active = !session.closed;
   resolutionFollow?.connected(session.authenticated && active && document.visibilityState === 'visible');
@@ -138,6 +146,10 @@ function updateControls() {
   enter.textContent = 'Enter fullscreen';
   ip.disabled = port.disabled = embeddedViewer || active;
   reconnect?.update();
+  if (!automaticFullscreenAttempted && embeddedViewer && !blocked && session.authenticated && active && document.visibilityState === 'visible') {
+    automaticFullscreenAttempted = true;
+    requestViewerFullscreen(true);
+  }
 }
 
 function setState(state, text) {
@@ -306,17 +318,20 @@ reconnect = new AutoReconnect({ connect: connectSession,
   eligible: () => !blocked && parkedUseAllowed() && document.visibilityState === 'visible' && (embeddedViewer || Boolean(ip.value && port.value)),
   closed: () => session.closed, blocked: () => session.retryBlocked });
 
-enter.addEventListener('click', () => {
+function requestViewerFullscreen(automatic = false) {
   if (!embeddedViewer || blocked || !session.authenticated || session.closed || fullscreenPending || document.visibilityState !== 'visible') return;
   const generation = ++entryGeneration;
   entryStatus.hidden = true;
-  // Request fullscreen synchronously inside this real user gesture.
+  // Try once after approval. Browsers may reject without user activation; the
+  // manual button retries synchronously in its real click without intercepting touch.
   if (document.fullscreenElement === shell) return;
   const failed = () => {
     if (generation !== entryGeneration || session.closed) return;
     fullscreenPending = false;
-    entryStatus.textContent = 'Browser fullscreen is unavailable. The display still fills this page; you can retry Enter or use the browser’s fullscreen control.';
-    entryStatus.hidden = false;
+    if (!automatic) {
+      entryStatus.textContent = 'Browser fullscreen is unavailable. The display still fills this page; you can retry Enter or use the browser’s fullscreen control.';
+      entryStatus.hidden = false;
+    }
     updateControls();
   };
   if (typeof shell.requestFullscreen !== 'function') { failed(); return; }
@@ -329,7 +344,8 @@ enter.addEventListener('click', () => {
       updateControls();
     }, failed);
   } catch { failed(); }
-});
+}
+enter.addEventListener('click', () => requestViewerFullscreen());
 document.addEventListener('fullscreenchange', () => { releaseContacts(); updateControls(); });
 byId('viewer-settings').addEventListener('toggle', releaseContacts);
 
@@ -346,7 +362,10 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', leavePage);
 window.addEventListener('blur', releaseContacts);
-window.addEventListener('pageshow', () => { if (document.visibilityState === 'visible') reconnect.resume(); });
+window.addEventListener('pageshow', () => {
+  renderResolutionControl();
+  if (document.visibilityState === 'visible') reconnect.resume();
+});
 // Changing the picture bounds mid-gesture must not leave pressed contacts behind.
 if (window.ResizeObserver) new ResizeObserver(releaseContacts).observe(viewport);
 else window.addEventListener('resize', releaseContacts);

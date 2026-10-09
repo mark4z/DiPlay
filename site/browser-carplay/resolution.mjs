@@ -134,6 +134,7 @@ export function followBrowserResolution({ measure, send, onStatus, onTarget = ()
         : `Browser size override disabled. DiPlay’s normal resolution settings apply. ${application}`);
       if (first) settle();
     },
+    get enabled() { return enabled; },
     get pending() { return pending !== null; },
   };
 }

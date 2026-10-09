@@ -92,3 +92,9 @@ test('packaged viewer has no audio forwarding assets, APIs, controls, or diagnos
   assert.match(html, /phone’s direct connection to the car/);
   assert.doesNotMatch(read('viewer.css'), /audio-toolbar|audio-status|compact-audio-error/);
 });
+
+
+test('native resolution checkbox keeps visible contrast and an explicit state label', () => {
+  assert.match(read('viewer.css'), /input\[type="checkbox"\][^}]*accent-color: #2563eb/);
+  assert.match(read('index.html'), /id="resolution-follow"[^>]*checked[^>]*>[^<]*<span id="resolution-follow-state" aria-hidden="true">On<\/span>/);
+});

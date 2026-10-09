@@ -6,8 +6,8 @@
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws:; img-src 'self'; media-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>DiPlay · Browser CarPlay preview</title>
-  <link rel="stylesheet" href="viewer.css?v=automatic-viewer-v1">
-  <script type="module" src="viewer.mjs?v=automatic-viewer-v1"></script>
+  <link rel="stylesheet" href="viewer.css?v=fullscreen-state-v1">
+  <script type="module" src="viewer.mjs?v=fullscreen-state-v1"></script>
 </head>
 <body>
 <main id="viewer-shell">
@@ -23,7 +23,7 @@
           <button id="settings-close" class="secondary" type="button">Close settings</button>
           <section id="resolution-settings" hidden aria-label="Browser resolution">
             <h2>Browser resolution</h2>
-            <label class="check"><input id="resolution-follow" type="checkbox" disabled> Automatically follow this browser’s size</label>
+            <label class="check"><input id="resolution-follow" type="checkbox" checked disabled> Automatically follow this browser’s size <span id="resolution-follow-state" aria-hidden="true">On</span></label>
             <p>目标尺寸（Android 输出目标）：<output id="resolution-target">等待 Android 确认</output></p>
             <p>实际视频（当前解码画面）：<output id="resolution-actual">等待视频</output></p>
             <p id="resolution-status" role="status" aria-live="polite">After Android approval, a stable browser size is saved automatically. DiPlay’s resolution percentage still applies. A different output size briefly reconnects CarPlay.</p>

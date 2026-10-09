@@ -26,6 +26,7 @@ class BrowserResolutionCoordinatorTest {
     private var active: BrowserResolutionPolicy.Size? = BrowserResolutionPolicy.Size(1280, 720)
     private var restarts = 0
     private var generation = 1
+    private var allowed = true
 
     @After fun cleanup() {
         coordinator.uninstall(this)
@@ -39,7 +40,7 @@ class BrowserResolutionCoordinatorTest {
             val scaled = com.shilapi.xcertplay.airplay.CarPlayDisplayScale.applyPercent(
                 com.shilapi.xcertplay.airplay.AirPlayDisplayConfig(selected.width, selected.height), percent)
             BrowserResolutionCoordinator.Evaluation(
-                BrowserResolutionPolicy.Size(scaled.widthPixels, scaled.heightPixels), active, true, generation)
+                BrowserResolutionPolicy.Size(scaled.widthPixels, scaled.heightPixels), active, allowed, generation)
         }, { restarts++; generation++; true })
     }
 
@@ -319,7 +320,7 @@ class BrowserResolutionCoordinatorTest {
         val replacementOwner = Any()
         coordinator.install(replacementOwner, { baseline ->
             BrowserResolutionCoordinator.Evaluation(baseline ?: BrowserResolutionPolicy.Size(1280, 720),
-                active, true, generation)
+                active, allowed, generation)
         }, { restarts++; generation++; true })
         active = BrowserResolutionPolicy.Size(1920, 1080)
         val count = replies.size
@@ -329,6 +330,127 @@ class BrowserResolutionCoordinatorTest {
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
         assertEquals(1, restarts)
         coordinator.uninstall(replacementOwner)
+    }
+
+    @Test fun initiallyIneligibleViewportAppliesWhenEligibleWithoutAnotherBrowserRequest() {
+        allowed = false
+        install()
+        request()
+        assertEquals("nextConnection", replies.last().getString("applies"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+        assertEquals(0, restarts)
+        allowed = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+        assertEquals(1, restarts)
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        coordinator.complete(true)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(1, restarts)
+        assertEquals("unchanged", replies.last().getString("applies"))
+    }
+
+    @Test fun initialRequestDuringStartupIsRetainedUntilActiveSizeExists() {
+        active = null
+        install()
+        request()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+        active = BrowserResolutionPolicy.Size(1280, 720)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+        assertEquals(1, restarts)
+    }
+
+    @Test fun deferredRequestAlreadyAppliedByStartupNeedsNoReconnect() {
+        active = null
+        install()
+        request()
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+        assertEquals(0, restarts)
+        assertEquals("unchanged", replies.last().getString("applies"))
+    }
+
+    @Test fun newerDeferredTargetSupersedesOriginalBeforeAnyReconnect() {
+        allowed = false
+        install()
+        request()
+        request(2, 1600, 900)
+        allowed = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+        assertEquals(1, restarts)
+        assertEquals(2, replies.last().getInt("requestId"))
+        assertEquals(1600, replies.last().getInt("effectiveWidth"))
+    }
+
+    @Test fun deferredRequestCannotRestartADifferentGeneration() {
+        allowed = false
+        install()
+        request()
+        generation++
+        allowed = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(0, restarts)
+    }
+
+    @Test fun deferredRequestExpiresWithoutFailureOrDelayedSurpriseReconnect() {
+        allowed = false
+        install()
+        request()
+        val count = replies.size
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(31))
+        allowed = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(0, restarts)
+        assertEquals(count, replies.size)
+        assertFalse(replies.last().has("code"))
+    }
+
+    @Test fun disposedOwnerCancelsDeferredRequest() {
+        allowed = false
+        install()
+        request()
+        coordinator.uninstall(this)
+        allowed = true
+        install()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(0, restarts)
+    }
+
+    @Test fun replacementOwnerCancelsDeferredRequestWithoutUninstall() {
+        allowed = false
+        install()
+        request()
+        val replacementOwner = Any()
+        coordinator.install(replacementOwner, { baseline ->
+            BrowserResolutionCoordinator.Evaluation(baseline!!, active, true, generation)
+        }, { restarts++; generation++; true })
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(0, restarts)
+        coordinator.uninstall(replacementOwner)
+    }
+
+    @Test fun staleViewerCancelsDeferredRequest() {
+        allowed = false
+        install()
+        var current = true
+        coordinator.request(JSONObject().put("requestId", 1).put("enabled", true)
+            .put("units", BrowserResolutionPolicy.UNITS).put("width", 1920).put("height", 1080),
+            { replies.add(it) }, { current })
+        shadowOf(Looper.getMainLooper()).idle()
+        current = false
+        allowed = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(0, restarts)
+    }
+
+    @Test fun changedSavedBaselineCancelsDeferredRequest() {
+        allowed = false
+        install()
+        request()
+        assertTrue(coordinator.save(BrowserResolutionPolicy.Size(1600, 900)))
+        allowed = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(0, restarts)
+        assertEquals(BrowserResolutionPolicy.Size(1600, 900), coordinator.load())
     }
 
 }

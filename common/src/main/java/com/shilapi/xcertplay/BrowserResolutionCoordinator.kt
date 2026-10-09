@@ -13,6 +13,7 @@ import java.io.File
 /** Main-thread owner of saved browser baseline and bounded automatic CarPlay renegotiation. */
 class BrowserResolutionCoordinator(context: Context) {
     companion object {
+        private const val DEFER_MILLIS = 30_000L
         @Volatile private var instance: BrowserResolutionCoordinator? = null
         fun get(context: Context): BrowserResolutionCoordinator = instance ?: synchronized(this) {
             instance ?: BrowserResolutionCoordinator(context.applicationContext).also { instance = it }
@@ -32,6 +33,8 @@ class BrowserResolutionCoordinator(context: Context) {
     private var evaluate: ((BrowserResolutionPolicy.Size?) -> Evaluation)? = null
     private var reconnect: (() -> Boolean)? = null
     private var pending: Pending? = null
+    private data class Deferred(val owner: Any, val generation: Int, val expiresAt: Long)
+    private var deferred: Deferred? = null
     private var attempt: Pending? = null
     private var attemptEffective: BrowserResolutionPolicy.Size? = null
     private var attemptGeneration: Int? = null
@@ -80,7 +83,14 @@ class BrowserResolutionCoordinator(context: Context) {
     fun install(owner: Any, evaluate: (BrowserResolutionPolicy.Size?) -> Evaluation,
                 reconnect: () -> Boolean) {
         check(Looper.myLooper() == Looper.getMainLooper())
-        if (this.owner !== owner) timedOut = null
+        if (this.owner !== owner) {
+            timedOut = null
+            if (deferred != null) {
+                pending = null
+                deferred = null
+                handler.removeCallbacks(poll)
+            }
+        }
         this.owner = owner
         this.evaluate = evaluate
         this.reconnect = reconnect
@@ -93,6 +103,7 @@ class BrowserResolutionCoordinator(context: Context) {
         evaluate = null
         reconnect = null
         pending = null
+        deferred = null
         attempt = null
         attemptEffective = null
         attemptGeneration = null
@@ -129,6 +140,7 @@ class BrowserResolutionCoordinator(context: Context) {
                 return@post
             }
             timedOut = null // A new authenticated request supersedes any late timeout acknowledgement.
+            deferred = null
             pending = next
             handler.removeCallbacks(poll)
             evaluatePending()
@@ -137,7 +149,7 @@ class BrowserResolutionCoordinator(context: Context) {
 
     private fun evaluatePending() {
         val next = pending ?: return
-        if (!next.isCurrent()) { pending = null; return }
+        if (!next.isCurrent()) { pending = null; deferred = null; return }
         val evaluation = try { evaluate?.invoke(next.baseline) } catch (_: Exception) { null }
         if (gate.inFlight) {
             respond(next, evaluation?.effective, "nextConnection")
@@ -150,20 +162,39 @@ class BrowserResolutionCoordinator(context: Context) {
         if (evaluation == null || owner == null) {
             respond(next, null, "nextConnection")
             pending = null
+            deferred = null
             return
+        }
+        val waiting = deferred
+        if (waiting != null && (waiting.owner !== owner || waiting.generation != evaluation.generation ||
+                load() != next.baseline || SystemClock.elapsedRealtime() >= waiting.expiresAt)) {
+            pending = null
+            deferred = null
+            return // Saved for a future connection; never restart an unrelated or much later session.
         }
         if (evaluation.active == evaluation.effective) {
             respond(next, evaluation.effective, "unchanged")
             pending = null
+            deferred = null
             return
         }
-        if (evaluation.active == null || !evaluation.allowed || gate.failureBlocked) {
-            respond(next, evaluation.effective, "nextConnection", if (gate.failureBlocked) "reconnectFailed" else null)
+        if (gate.failureBlocked) {
+            respond(next, evaluation.effective, "nextConnection", "reconnectFailed")
             pending = null
+            deferred = null
             return
         }
-        if (!next.isCurrent()) { pending = null; return }
+        if (evaluation.active == null || !evaluation.allowed) {
+            if (deferred == null) {
+                deferred = Deferred(owner!!, evaluation.generation, SystemClock.elapsedRealtime() + DEFER_MILLIS)
+                respond(next, evaluation.effective, "nextConnection")
+            }
+            handler.postDelayed(poll, BrowserResolutionReconnectGate.STABLE_MILLIS)
+            return // Keep the latest request while startup/menu/audio briefly prevents safe negotiation.
+        }
+        if (!next.isCurrent()) { pending = null; deferred = null; return }
         if (gate.shouldReconnect(evaluation.effective, evaluation.active, SystemClock.elapsedRealtime())) {
+            deferred = null
             attempt = next
             attemptEffective = evaluation.effective
             attemptGeneration = null
@@ -177,6 +208,7 @@ class BrowserResolutionCoordinator(context: Context) {
             if (gate.hasAttempted(evaluation.effective)) {
                 respond(next, evaluation.effective, "nextConnection", "reconnectFailed")
                 pending = null
+                deferred = null
             } else {
                 respond(next, evaluation.effective, "nextConnection")
                 handler.postDelayed(poll, BrowserResolutionReconnectGate.STABLE_MILLIS)

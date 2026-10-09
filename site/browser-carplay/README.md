@@ -51,9 +51,11 @@ browser is not guaranteed to support them.
 3. DiPlay's configured approval mode applies. In manual mode, tap **Accept** on
    Android within 30 seconds. The protocol-v2 approval handshake is required in
    either mode; TLS alone does not authorize media or controls.
-4. After approval, tap **Enter fullscreen** if wanted. This real browser gesture
-   requests fullscreen. If fullscreen is not supported or allowed, the display
-   still fills the page. Fullscreen failures remain visible for a manual retry.
+4. After the first approval, the viewer tries fullscreen once. Browsers can reject
+   this automatic request when a real user gesture is required; the display
+   quietly keeps filling the page. Tap **Enter fullscreen** to retry manually.
+   Exiting fullscreen or reconnecting does not trigger another automatic attempt.
+   A failed manual attempt shows the browser fallback message.
 5. Touch is requested automatically once video is ready. It stays inactive until
    Android acknowledges ownership. Up to two contacts match the existing CarPlay HID mapper.
 
@@ -352,8 +354,9 @@ APIs cannot return, and obsolete audio messages and packets fail closed.
 Both embedded TLS and external LAN UI flows exercise approval, touch ownership,
 repeated connection triggers, hide/return, cancellation, and automatic reconnect. Entry
 tests cover exactly one embedded opening attempt, hidden openings/BFCache,
-preapproval gesture gating, synchronous fullscreen invocation, repeated
-clicks, rejected/unsupported fullscreen, stale async results,
+preapproval gating, one quiet automatic fullscreen attempt, synchronous manual
+fullscreen retries, explicit exits without re-entry, rejected/unsupported fullscreen,
+stale async results, readable resolution On/Off state,
 visible connection errors, five-second retries, bounded connect timeouts, and
 rejection/supersession standby without retry loops. The Gradle source-contract checks do not replace building and inspecting a real APK.
 Tests use synthetic bytes and identifiers only. Real TLS certificate/hostname
