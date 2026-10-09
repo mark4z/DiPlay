@@ -113,16 +113,20 @@ class BrowserConnectionDiagnosticsTest {
                 assertTrue(client.getInputStream().readBytes().toString(Charsets.UTF_8).startsWith("HTTP/1.1 200 OK"))
             }
             h.connect().use { contender ->
-                contender.getOutputStream().write(upgrade().toByteArray())
-                assertEquals(-1, contender.getInputStream().read())
+                // An upgraded socket is only a candidate. Without its own valid
+                // approval request and decision, it cannot replace this viewer.
+                h.upgrade(contender)
             }
+            // Reading HTTP 101 can precede its diagnostic write. Waiting for all
+            // non-owner readers to retire synchronizes this check and proves cleanup.
+            h.awaitConnectionCount(1)
             assertEquals(1, h.approvals.get())
             assertEquals(1, h.authenticated.get())
             assertEquals(0, h.disconnected.get())
             assertTrue(h.server.sendText("same viewer"))
             assertEquals("same viewer", h.readText(viewer))
-            assertTrue(h.server.diagnosticsSnapshot().any {
-                it.stage == BrowserConnectionStage.WEBSOCKET_REJECTED && it.reason == BrowserConnectionReason.BUSY
+            assertEquals(2, h.server.diagnosticsSnapshot().count {
+                it.stage == BrowserConnectionStage.WEBSOCKET_ACCEPTED
             })
         }
     }
@@ -203,7 +207,7 @@ class BrowserConnectionDiagnosticsTest {
                 }
                 // EOF precedes the reader's onFinished callback. Wait for its slot to
                 // retire so this sequential rate-limit test cannot hit the preflight cap.
-                h.awaitPreflightsIdle()
+                h.awaitConnectionCount()
             }
             h.connect().use { rejected -> assertEquals(-1, rejected.getInputStream().read()) }
             assertTrue(h.server.diagnosticsSnapshot().any { it.reason == BrowserConnectionReason.RATE_LIMIT })
@@ -361,13 +365,13 @@ class BrowserConnectionDiagnosticsTest {
             assertEquals("{\"type\":\"approvalPending\",\"version\":2}", readText(client))
         }
 
-        fun awaitPreflightsIdle() {
+        fun awaitConnectionCount(expected: Int = 0) {
             val lock = BrowserLanServer::class.java.getDeclaredField("lock").apply { isAccessible = true }.get(server)
-            val preflights = BrowserLanServer::class.java.getDeclaredField("preflights").apply { isAccessible = true }
-            fun pending(): Int = synchronized(lock) { (preflights.get(server) as Set<*>).size }
+            val connections = BrowserLanServer::class.java.getDeclaredField("connections").apply { isAccessible = true }
+            fun pending(): Int = synchronized(lock) { (connections.get(server) as Set<*>).size }
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
-            while (pending() != 0 && System.nanoTime() < deadline) Thread.sleep(1)
-            assertEquals("Health probe cleanup did not finish: ${server.diagnosticsReport()}", 0, pending())
+            while (pending() != expected && System.nanoTime() < deadline) Thread.sleep(1)
+            assertEquals("Connection cleanup did not finish: ${server.diagnosticsReport()}", expected, pending())
         }
 
         fun awaitWriterIdle() {
@@ -395,3 +399,4 @@ class BrowserConnectionDiagnosticsTest {
         override fun close() { server.close(); clients.forEach { it.close() } }
     }
 }
+
