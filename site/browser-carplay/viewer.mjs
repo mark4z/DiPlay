@@ -169,7 +169,7 @@ function updateControls() {
   ip.disabled = port.disabled = embeddedViewer || active;
   audioButton.disabled = !session.authenticated || !active || !parkedUseAllowed();
   audioTestButton.disabled = audioButton.disabled || audioState.pending || audioState.enabled;
-  audioButton.textContent = audioState.pending ? 'Cancel audio start'
+  audioButton.textContent = audioState.needsGesture ? 'Play audio here' : audioState.pending ? 'Cancel audio start'
     : (audioState.enabled ? 'Return audio to Android' : 'Play audio here');
   touch.disabled = (!live && !session.touchRequested) || !parkedUseAllowed() || active === false || !window.PointerEvent;
 }
@@ -310,7 +310,8 @@ canvas.addEventListener('contextmenu', event => { if (session.touchOwned) event.
 
 audioButton.addEventListener('click', () => {
   if (!session.authenticated || session.closed || !parkedUseAllowed() || document.visibilityState !== 'visible') return;
-  if (audioState.enabled || audioState.pending) audioPlayer.disable();
+  if (audioState.needsGesture) audioPlayer.resumePlaybackFromGesture();
+  else if (audioState.enabled || audioState.pending) audioPlayer.disable();
   else void audioPlayer.enableFromGesture();
 });
 

@@ -296,7 +296,14 @@ instead of accumulating stale moves or dropping a release.
 
 Audio remains on Android by default. A click on **Play audio here** creates one
 `RTCPeerConnection` with `iceServers: []`, a receive-only audio transceiver, and an
-unmuted audio element. Its `play()` call starts synchronously inside the gesture.
+unmuted audio element. Its `play()` call starts synchronously inside the gesture. If this initial empty-stream
+request has not started, track arrival makes one additional playback attempt.
+A browser permission rejection keeps the same route pending and shows **Play audio
+here** for another real gesture on that populated stream. It does not extend the
+15-second setup deadline, create another peer, or weaken readiness checks.
+Other pending starts remain cancellable with the audio button; Stop always closes
+the session. Playback diagnostics distinguish pending/blocked playback, paused or
+muted output, track state, and recent RTP progress without recording raw errors.
 There is no browser microphone request, capture API, recording, AudioWorklet,
 WebSocket PCM transport, custom jitter buffer, or automatic audio reconnect.
 WebRTC supplies Opus decoding, packet-loss concealment, and jitter handling.
@@ -335,9 +342,16 @@ with at most 32 candidates in each direction and 64 incoming controls per attemp
 The browser sends `audioReady` only when it has answered the offer, ICE is connected,
 a live audio track exists, the audio element's playback promise succeeded, and
 inbound audio RTP packets increased across successive stats polls, and the selected
-ICE pair is verified as host-to-host with local literal or mDNS addresses. Missing
-or privacy-redacted addresses cannot establish this local-only proof; audio stays
-on Android with an explanation rather than weakening the check. Android keeps
+ICE pair is verified as host-to-host with local literal or mDNS addresses. A privacy-redacted browser-side address can establish proof only by an exact,
+unique correlation to a policy-valid candidate previously observed on this peer
+and ICE generation: selected transport/pair/candidate IDs, ICE username fragment,
+foundation, priority, UDP port/protocol, and the sole audio media ID must agree.
+All observed candidates, including rejected public ones, participate in the
+uniqueness check. Observation gaps, overflow, ambiguity, stale generation,
+missing correlation metadata, and hidden Android addresses still fail closed.
+Actual public/CGNAT addresses and non-host candidate types are never admitted by
+this fallback. Diagnostic labels show only fixed failure classes and candidate
+types, never candidate metadata or addresses. Android keeps
 native output on until its own peer is connected and this matching readiness is
 accepted, then confirms `audioState enabled:true`. A pre-readiness enabled ACK or
 legacy PCM audio request/response fails closed with APK/viewer upgrade guidance.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { audioEnvironment, audioSdp, flush } from './audio-fixtures.mjs';
+import { audioEnvironment, audioSdp, deferred, flush } from './audio-fixtures.mjs';
 
 // Minimal DOM/WebCodecs stubs exercise the actual page module's event wiring.
 // This supplements (not replaces) a real browser/hardware acceptance test.
@@ -65,7 +65,8 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
       this.output(frame); return frame;
     }
   }
-  const audioEnv = audioEnvironment(), audioPeers = audioEnv.peers;
+  const audioOptions = {};
+  const audioEnv = audioEnvironment(audioOptions), audioPeers = audioEnv.peers;
   const timers = new Map(); let nextTimer = 0;
   t.mock.method(globalThis, 'setTimeout', (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; });
   t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
@@ -166,7 +167,9 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   elements.audio.dispatch('click');
   assert.equal(socket.sent.at(-1).enabled, false);
   assert.equal(audioPeers[0].closed, true, 'cancelling a test releases its peer');
+  audioOptions.playback = deferred();
   elements.audio.dispatch('click'); await flush();
+  audioEnv.audios.at(-1).play = () => Promise.reject({ name: 'NotAllowedError' });
   const audioRequest = socket.sent.findLast(message => message.type === 'audioMode');
   assert.equal(audioRequest.enabled, true);
   assert.equal(audioRequest.transport, 'webrtc-opus');
@@ -176,6 +179,13 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   audioPeers.at(-1).emitTrack(); audioPeers.at(-1).connect();
   audioPeers.at(-1).packets = 1; await audioTick();
   audioPeers.at(-1).packets = 2; await audioTick();
+  assert.equal(elements.audio.textContent, 'Play audio here', 'gesture recovery stays actionable');
+  assert.equal(socket.sent.some(message => message.type === 'audioReady'), false);
+  const modesBeforeResume = socket.sent.filter(message => message.type === 'audioMode').length;
+  let inClick = true;
+  audioEnv.audios.at(-1).play = function () { assert.equal(inClick, true); this.paused = false; return Promise.resolve(); };
+  elements.audio.dispatch('click'); inClick = false; await flush();
+  assert.equal(socket.sent.filter(message => message.type === 'audioMode').length, modesBeforeResume, 'resume does not cancel or replace the route');
   assert.equal(socket.sent.at(-1).type, 'audioReady');
   assert.equal(elements.audio.textContent, 'Cancel audio start');
   socket.receive({ type: 'audioState', transport: 'webrtc-opus', enabled: true, epoch: 10, requestId: audioRequest.requestId });

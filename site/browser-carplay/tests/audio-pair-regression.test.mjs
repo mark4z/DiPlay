@@ -52,7 +52,7 @@ test('a checking pair never defers unsafe or unverifiable metadata and records a
     [stats => { stats.get('remote').address = '8.8.8.8'; }, /outside local policy/],
     [stats => { stats.get('remote').candidateType = 'prflx'; }, /type is not host/],
     [stats => { stats.get('local').candidateType = 'relay'; }, /type is not host/],
-    [stats => { delete stats.get('local').address; }, /address unavailable/],
+    [stats => { delete stats.get('local').address; }, /address hidden; proof=correlation-metadata-missing/],
     [stats => { delete stats.get('remote').protocol; }, /protocol is missing or mismatched/],
     [stats => { stats.get('remote').protocol = 'tcp'; }, /protocol is missing or mismatched/],
     [stats => { stats.delete('remote'); }, /candidate details missing/],

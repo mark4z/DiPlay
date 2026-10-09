@@ -85,3 +85,57 @@ export function preferOpusStereo(sdp) {
   }
   return lines.join('\r\n');
 }
+
+
+
+// These helpers retain only bounded, in-memory correlation metadata. They never
+// recover a hidden address or expose one in diagnostics. A redacted stats address
+// needs an exact, unique match to a candidate observed on this peer generation.
+export function localIceIdentity(sdp) {
+  if (typeof sdp !== 'string' || sdp.length > MAX_AUDIO_SDP) return null;
+  const lines = sdp.split(/\r?\n/);
+  const ufrags = lines.filter(line => line.startsWith('a=ice-ufrag:')).map(line => line.slice(12));
+  const mids = lines.filter(line => line.startsWith('a=mid:')).map(line => line.slice(6));
+  if (ufrags.length !== 1 || !/^[A-Za-z0-9+/]{4,256}$/.test(ufrags[0]) ||
+      mids.length !== 1 || !/^[A-Za-z0-9_-]{1,32}$/.test(mids[0])) return null;
+  return { ufrag: ufrags[0], mid: mids[0] };
+}
+
+export function observedLocalIceCandidate(candidate, identity) {
+  if (!identity || typeof candidate?.candidate !== 'string' || candidate.candidate.length > MAX_AUDIO_CANDIDATE ||
+      /[\r\n\0]/.test(candidate.candidate)) return null;
+  const fields = candidate.candidate.split(' ');
+  if (!/^candidate:[A-Za-z0-9+/]{1,64}$/.test(fields[0]) || fields[1] !== '1' ||
+      !/^(udp|tcp)$/i.test(fields[2]) || !/^\d{1,10}$/.test(fields[3]) ||
+      !/^[A-Za-z0-9.:-]{1,253}$/.test(fields[4]) || !/^\d{1,5}$/.test(fields[5]) ||
+      fields[6] !== 'typ' || !['host', 'srflx', 'prflx', 'relay'].includes(fields[7]) ||
+      candidate.sdpMid !== identity.mid || candidate.sdpMLineIndex !== 0) return null;
+  const port = Number(fields[5]), priority = Number(fields[3]);
+  if (port < 1 || port > 65535 || priority > 0xffffffff) return null;
+  const ufragIndex = fields.indexOf('ufrag', 8);
+  if (ufragIndex >= 0 && (fields[ufragIndex + 1] !== identity.ufrag || fields.indexOf('ufrag', ufragIndex + 1) >= 0)) return null;
+  const eventUfrag = candidate.usernameFragment ?? (ufragIndex < 0 ? identity.ufrag : fields[ufragIndex + 1]);
+  if (eventUfrag !== identity.ufrag) return null;
+  return { foundation: fields[0].slice(10), protocol: fields[2].toLowerCase(), priority,
+    address: fields[4], port, candidateType: fields[7], mid: candidate.sdpMid, ufrag: eventUfrag,
+    allowed: validAudioCandidate(candidate) };
+}
+
+export function redactedLocalCandidateProof({ local, pair, transport, identity, observed, incomplete }) {
+  if (incomplete) return 'observation-incomplete';
+  if (!identity || !local || !pair || !transport || local.type !== 'local-candidate' || pair.type !== 'candidate-pair' || transport.type !== 'transport' || local.candidateType !== 'host' ||
+      typeof local.id !== 'string' || local.id !== pair.localCandidateId ||
+      typeof pair.id !== 'string' || pair.id !== transport.selectedCandidatePairId ||
+      typeof transport.id !== 'string' || local.transportId !== transport.id || pair.transportId !== transport.id ||
+      local.protocol !== 'udp' || !Number.isInteger(local.port) || local.port < 1 || local.port > 65535 ||
+      typeof local.foundation !== 'string' || !local.foundation ||
+      !Number.isInteger(local.priority) || local.priority < 0 || local.priority > 0xffffffff ||
+      local.usernameFragment !== identity.ufrag) return 'correlation-metadata-missing';
+  // Include rejected candidates in this comparison. Matching only the allowed
+  // list could confuse a rejected public interface with an allowed local one.
+  const matches = observed.filter(candidate => candidate.foundation === local.foundation &&
+    candidate.protocol === local.protocol && candidate.port === local.port && candidate.priority === local.priority &&
+    candidate.ufrag === identity.ufrag && candidate.mid === identity.mid);
+  if (matches.length !== 1) return matches.length ? 'correlation-ambiguous' : 'correlation-unmatched';
+  return matches[0].allowed && matches[0].candidateType === 'host' ? 'verified-signaled-local' : 'correlation-disallowed';
+}

@@ -250,7 +250,9 @@ test('read-only diagnostics retain only bounded RTP numbers and candidate types,
   await env.tick(); const diagnostics = env.player.getDiagnostics();
   assert.deepEqual(diagnostics, { transport: 'webrtc-opus', state: 'starting',
     setup: { stage: 'offer', iceState: 'new', peerState: 'new', browserCandidates: 0, androidCandidates: 0,
-      answerSent: false, trackReceived: false, playbackReady: true, localPairVerified: true, rtpProgress: false },
+      answerSent: false, trackReceived: false, playbackReady: true, localPairVerified: true, rtpProgress: false,
+      playback: { state: 'playing', paused: false, readyState: null, muted: false, zeroVolume: false,
+        trackMuted: false, trackEnded: false, rtpFresh: false } },
     packetsReceived: 55, jitterMs: 13, concealedSamples: 480,
     selectedCandidatePair: { localType: 'host', remoteType: 'host', protocol: 'udp' } });
   diagnostics.selectedCandidatePair.protocol = 'secret'; assert.equal(env.player.getDiagnostics().selectedCandidatePair.protocol, 'udp');
