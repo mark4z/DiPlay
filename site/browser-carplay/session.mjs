@@ -171,12 +171,13 @@ export class BrowserSession {
     } else if (message.type === 'browserResolution') {
       // Accept only fixed schema fields, never arbitrary server text in the UI.
       if (!positiveId(message.requestId) || typeof message.enabled !== 'boolean' ||
+          message.units !== 'device-pixels' ||
           !['nextConnection', 'reconnecting', 'unchanged'].includes(message.applies) ||
           (message.code !== undefined && !['invalidDimensions', 'saveFailed', 'reconnectFailed'].includes(message.code)) ||
           ([message.effectiveWidth, message.effectiveHeight].some(value => value !== undefined) && ![message.effectiveWidth, message.effectiveHeight].every(value => Number.isSafeInteger(value) && value >= 2 && value <= 16384)) ||
           (message.enabled && (![message.width, message.height].every(value => Number.isSafeInteger(value) && value >= 2 && value <= 16384)))) return;
       this.onBrowserResolution({ requestId: message.requestId, enabled: message.enabled,
-        width: message.width, height: message.height, effectiveWidth: message.effectiveWidth, effectiveHeight: message.effectiveHeight, applies: message.applies, code: message.code });
+        units: message.units, width: message.width, height: message.height, effectiveWidth: message.effectiveWidth, effectiveHeight: message.effectiveHeight, applies: message.applies, code: message.code });
     } else if (message.type === 'touchOwnership') {
       if (typeof message.enabled !== 'boolean' || !Number.isSafeInteger(message.streamId) || message.streamId <= 0 ||
           !Number.isSafeInteger(message.requestId) || message.requestId <= 0) {
@@ -379,9 +380,9 @@ export class BrowserSession {
 
   setBrowserResolution(message) {
     if (!message || !positiveId(message.requestId) || typeof message.enabled !== 'boolean' ||
-        (message.enabled && ![message.width, message.height].every(value => Number.isSafeInteger(value) && value >= 320 && value <= 16384))) return false;
+        (message.enabled && (message.units !== 'device-pixels' || ![message.width, message.height].every(value => Number.isSafeInteger(value) && value >= 320 && value <= 16384)))) return false;
     return this.send({ type: 'setBrowserResolution', requestId: message.requestId, enabled: message.enabled,
-      ...(message.enabled ? { width: message.width, height: message.height } : {}) });
+      ...(message.enabled ? { width: message.width, height: message.height, units: message.units } : {}) });
   }
 
   setAudioEnabled(enabled, requestId, source) {
@@ -456,3 +457,4 @@ export class BrowserSession {
     this.onState(error ? 'error' : 'closed', message);
   }
 }
+

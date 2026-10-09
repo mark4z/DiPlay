@@ -45,6 +45,7 @@ class BrowserResolutionCoordinator(context: Context) {
             JSONObject(String(bytes, 0, count, Charsets.UTF_8))
         }
         if (!json.getBoolean("enabled")) null else {
+            require(json.opt("units") == BrowserResolutionPolicy.UNITS)
             val width = numericDimension(json, "width")
             val height = numericDimension(json, "height")
             BrowserResolutionPolicy.normalize(width, height)?.takeIf {
@@ -56,7 +57,7 @@ class BrowserResolutionCoordinator(context: Context) {
     /** AtomicFile is deliberately outside cloud/Android backup. Null explicitly restores normal sizing. */
     fun save(size: BrowserResolutionPolicy.Size?): Boolean {
         if (size != null && BrowserResolutionPolicy.normalize(size.width.toDouble(), size.height.toDouble()) != size) return false
-        val json = JSONObject().put("enabled", size != null)
+        val json = JSONObject().put("enabled", size != null).put("units", BrowserResolutionPolicy.UNITS)
         size?.let { json.put("width", it.width).put("height", it.height) }
         var output: java.io.FileOutputStream? = null
         return try {
@@ -104,9 +105,12 @@ class BrowserResolutionCoordinator(context: Context) {
             } catch (_: Exception) { return@post }
             val requested = try {
                 val enabled = json.get("enabled") as? Boolean ?: throw IllegalArgumentException()
-                if (!enabled) null else BrowserResolutionPolicy.normalize(
-                    numericDimension(json, "width"), numericDimension(json, "height"))
-                    ?: throw IllegalArgumentException()
+                if (!enabled) null else {
+                    // Never multiply by DPR here: width/height already contain browser device pixels.
+                    require(json.opt("units") == BrowserResolutionPolicy.UNITS && !json.has("dpr"))
+                    BrowserResolutionPolicy.normalize(numericDimension(json, "width"), numericDimension(json, "height"))
+                        ?: throw IllegalArgumentException()
+                }
             } catch (_: Exception) {
                 respond(Pending(id, load(), reply, isCurrent), null, "nextConnection", "invalidDimensions")
                 return@post
@@ -201,7 +205,7 @@ class BrowserResolutionCoordinator(context: Context) {
     private fun respond(request: Pending, effective: BrowserResolutionPolicy.Size?, applies: String, code: String? = null) {
         if (!request.isCurrent()) return
         val result = JSONObject().put("type", "browserResolution").put("requestId", request.id)
-            .put("enabled", request.baseline != null).put("applies", applies)
+            .put("enabled", request.baseline != null).put("applies", applies).put("units", BrowserResolutionPolicy.UNITS)
         request.baseline?.let { result.put("width", it.width).put("height", it.height) }
         effective?.let { result.put("effectiveWidth", it.width).put("effectiveHeight", it.height) }
         code?.let { result.put("code", it) }
@@ -211,3 +215,4 @@ class BrowserResolutionCoordinator(context: Context) {
     private fun numericDimension(json: JSONObject, key: String): Double =
         (json.get(key) as? Number)?.toDouble() ?: throw IllegalArgumentException("Numeric dimension required")
 }
+

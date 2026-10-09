@@ -43,9 +43,38 @@ class BrowserResolutionCoordinatorTest {
     }
 
     private fun request(id: Int = 1, width: Any = 1920, height: Any = 1080) {
-        coordinator.request(JSONObject().put("requestId", id).put("enabled", true)
+        coordinator.request(JSONObject().put("requestId", id).put("enabled", true).put("units", BrowserResolutionPolicy.UNITS)
             .put("width", width).put("height", height), { replies.add(it) }, { true })
         shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    @Test fun rejectsAmbiguousUnitsAndDprWithoutChangingSavedBaseline() {
+        val before = BrowserResolutionPolicy.Size(1600, 900)
+        assertTrue(coordinator.save(before))
+        for (unit in listOf(null, "css-pixels", "physical-panel")) {
+            val message = JSONObject().put("requestId", 1).put("enabled", true)
+                .put("width", 1920).put("height", 1080)
+            unit?.let { message.put("units", it) }
+            coordinator.request(message, { replies.add(it) }, { true })
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("invalidDimensions", replies.last().getString("code"))
+            assertEquals(before, coordinator.load())
+        }
+        coordinator.request(JSONObject().put("requestId", 2).put("enabled", true)
+            .put("width", 1920).put("height", 1080).put("units", BrowserResolutionPolicy.UNITS).put("dpr", 2),
+            { replies.add(it) }, { true })
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("invalidDimensions", replies.last().getString("code"))
+        assertEquals(before, coordinator.load())
+    }
+
+    @Test fun legacyCssBaselineIsNotMisreadAsDevicePixels() {
+        File(activity.noBackupFilesDir, "browser-resolution.json").writeText(
+            """{"enabled":true,"width":1280,"height":720}""")
+        assertNull(coordinator.load())
+        request(width = 1920, height = 1080)
+        assertEquals(BrowserResolutionPolicy.Size(1920, 1080), coordinator.load())
+        assertEquals("device-pixels", replies.last().getString("units"))
     }
 
     @Test fun persistsBoundedBaselineWithoutChangingPercentageAndReconnectsOnce() {
@@ -87,7 +116,7 @@ class BrowserResolutionCoordinatorTest {
 
     @Test fun ownerDisposalStillAllowsAuthenticatedSaveForNextConnection() {
         install()
-        coordinator.request(JSONObject().put("requestId", 1).put("enabled", true)
+        coordinator.request(JSONObject().put("requestId", 1).put("enabled", true).put("units", BrowserResolutionPolicy.UNITS)
             .put("width", 1920).put("height", 1080), { replies.add(it) }, { true })
         coordinator.uninstall(this)
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
@@ -107,7 +136,7 @@ class BrowserResolutionCoordinatorTest {
     @Test fun staleViewerCannotSaveOrTriggerQueuedReconnect() {
         install()
         var current = true
-        val message = JSONObject().put("requestId", 1).put("enabled", true)
+        val message = JSONObject().put("requestId", 1).put("enabled", true).put("units", BrowserResolutionPolicy.UNITS)
             .put("width", 1920).put("height", 1080)
         coordinator.request(message, { replies.add(it) }, { current })
         current = false
@@ -183,3 +212,4 @@ class BrowserResolutionCoordinatorTest {
         assertEquals(2, restarts)
     }
 }
+

@@ -22,6 +22,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
       this.classList = { remove: name => this.classes.delete(name),
         toggle: (name, enabled) => enabled ? this.classes.add(name) : this.classes.delete(name) };
     }
+    focus() {}
     contains(element) { return element === this || this.children.includes(element); }
     setAttribute(name, value) { this.attributes[name] = value; }
     removeAttribute(name) { delete this.attributes[name]; }
@@ -74,7 +75,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
     const [id, timer] = [...timers].find(([, value]) => value.delay === 250);
     timers.delete(id); timer.callback(); await flush();
   };
-  const window = Object.assign(new Events(), { VideoDecoder: Decoder, EncodedVideoChunk: class {}, PointerEvent: class {}, ResizeObserver: class { observe() {} } });
+  const window = Object.assign(new Events(), { devicePixelRatio: 2, getComputedStyle: () => ({ width: '1000px', height: '1000px', writingMode: 'horizontal-tb', boxSizing: 'content-box' }), VideoDecoder: Decoder, EncodedVideoChunk: class {}, PointerEvent: class {}, ResizeObserver: class { observe() {} } });
   window.top = window.self = window;
   const origin = embedded ? 'https://tesla.mark4z.asia:9999' : 'https://mark4z.github.io';
   Object.assign(globalThis, { document, window, location: { protocol: 'https:', origin,
@@ -145,6 +146,21 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.match(elements.status.textContent, /Tap Accept/);
   assert.equal(elements.touch.disabled, true);
   socket.receive({ type: 'authenticated', version: 2 });
+  if (embedded) {
+    const settleResolution = () => {
+      for (const [id, timer] of [...timers]) if (timer.delay === 2000) { timers.delete(id); timer.callback(); }
+    };
+    settleResolution();
+    const request = socket.sent.find(message => message.type === 'setBrowserResolution');
+    assert.deepEqual(request, { type: 'setBrowserResolution', requestId: 1, enabled: true, width: 2000, height: 2000, units: 'device-pixels' });
+    socket.receive({ ...request, type: 'browserResolution', width: 1080, height: 1080, applies: 'unchanged' });
+    elements['controls-grip'].dispatch('click');
+    elements['controls-reveal'].dispatch('click');
+    window.dispatch('resize');
+    settleResolution();
+    assert.equal(socket.sent.filter(message => message.type === 'setBrowserResolution').length, 1,
+      'unchanged video area and toolbar overlays must not restart CarPlay');
+  }
   socket.receive({ type: 'config', streamId: 1, codec: 'avc1.64001f', width: 1920, height: 1080 });
   await Promise.resolve();
   const superseded = decoders[0].emit();
@@ -320,3 +336,4 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
 });
 
 }
+

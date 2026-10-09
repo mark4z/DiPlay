@@ -71,11 +71,24 @@ not reconnect; no timer retries failed connections. Reloading the visible page
 is a new opening and makes one new attempt. The embedded browser has no parked
 checkbox: the explicitly enabled Android parked-use guard remains required.
 
-After approval, the embedded viewer reports its stable display viewport in CSS
-pixels after a two-second debounce. Android saves a bounded, even browser baseline,
+After approval, the embedded viewer reports its stable video container content box
+in rendering-device pixels after a two-second debounce. It uses
+`ResizeObserver.devicePixelContentBoxSize` when available, converting logical axes
+according to writing mode; the fallback is CSS content width/height ×
+`devicePixelRatio` ([Resize Observer specification](https://www.w3.org/TR/resize-observer/#resize-observer-interface)).
+This is the browser rendering area, not native panel resolution. Android saves a bounded, even browser baseline,
 then applies the existing resolution percentage and encoder alignment. A changed
 final output can reconnect CarPlay; matching output does not reconnect. Browser
-DPR, decoded video dimensions, and toolbar visibility never become the baseline.
+DPR is applied once in the browser fallback only; decoded video dimensions and
+overlay toolbar visibility never become the baseline. The browser does not apply
+a percentage: Android retains the user-selected percentage (including 80%) and
+applies it once. Requests use `units: "device-pixels"` with integer `width` and
+`height`, and no `dpr` field. Android rejects missing/unknown units and redundant
+DPR; acknowledgments and saved baselines carry the same units. Legacy unitless
+CSS baselines fall back to normal Android sizing until the updated viewer reports
+a fresh size. Reload the embedded viewer after updating the APK. Density changes
+are observed even when the CSS size is unchanged. Existing 1920×1080, 2,073,600
+pixel, 3:1 aspect, even-alignment, stability and reconnect limits remain in force.
 **Automatically follow this browser’s size** can disable the browser override.
 Settings shows Android's acknowledged baseline, effective output target, and
 whether CarPlay is reconnecting or waiting for its next connection. Requests are

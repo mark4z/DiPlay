@@ -5,8 +5,9 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-/** Untrusted CSS viewport dimensions, not devicePixelRatio-scaled backing pixels. */
+/** Untrusted browser content-box dimensions in rendering-device pixels; DPR is already applied. */
 object BrowserResolutionPolicy {
+    const val UNITS = "device-pixels"
     const val MIN_SIDE = 320
     const val MAX_INPUT_SIDE = 16_384
     const val MAX_LONG_SIDE = 1_920
@@ -93,3 +94,4 @@ class BrowserResolutionReconnectGate {
         failureBlocked = false
     }
 }
+

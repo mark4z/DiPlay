@@ -1,4 +1,4 @@
-import { followBrowserResolution } from './resolution.mjs?v=browser-resolution-v1';
+import { followBrowserResolution, observeRenderPixels } from './resolution.mjs?v=render-pixels-v2';
 import { floatingControls } from './controls.mjs?v=floating-controls-v1';
 import { Contacts, EMBEDDED_VIEWER_ORIGIN, EMBEDDED_VIEWER_ENDPOINT, fitRect, mapPointer } from './core.mjs?v=embedded-https-v1';
 import { BrowserSession } from './session.mjs?v=embedded-https-v1';
@@ -135,7 +135,9 @@ if (embeddedViewer) {
   });
   byId('resolution-settings').hidden = false;
   byId('resolution-follow').checked = true;
-  resolutionFollow = followBrowserResolution({ measure: () => viewport.getBoundingClientRect(),
+  const changed = () => resolutionFollow?.changed();
+  const measure = observeRenderPixels(viewport, changed);
+  resolutionFollow = followBrowserResolution({ measure,
     send: message => session.setBrowserResolution(message),
     onStatus: message => { byId('resolution-status').textContent = message; } });
   byId('resolution-follow').addEventListener('change', () => {
@@ -144,8 +146,6 @@ if (embeddedViewer) {
       byId('resolution-status').textContent = 'Wait for Android to confirm before changing this option.';
     }
   });
-  const changed = () => resolutionFollow.changed();
-  if (window.ResizeObserver) new window.ResizeObserver(changed).observe(viewport);
   window.addEventListener('resize', changed);
   document.addEventListener('fullscreenchange', changed);
 }
@@ -402,3 +402,4 @@ updateControls();
 // Exactly one attempt for a freshly opened, visible built-in page. Failure,
 // timeout, Stop, tab return, and BFCache restoration never schedule a retry.
 if (embeddedViewer) connectSession();
+
