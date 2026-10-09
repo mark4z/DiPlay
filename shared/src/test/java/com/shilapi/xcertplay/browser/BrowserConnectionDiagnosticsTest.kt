@@ -190,11 +190,20 @@ class BrowserConnectionDiagnosticsTest {
 
     @Test fun shortLivedHealthProbesAreRateLimitedWithoutOpeningApproval() {
         Harness().use { h ->
-            repeat(8) {
+            repeat(8) { index ->
                 h.connect().use { client ->
                     client.getOutputStream().write(health().toByteArray())
-                    assertTrue(client.getInputStream().readBytes().toString(Charsets.UTF_8).startsWith("HTTP/1.1 200 OK"))
+                    val response = try {
+                        client.getInputStream().readBytes().toString(Charsets.UTF_8)
+                    } catch (failure: java.io.IOException) {
+                        throw AssertionError("Health probe ${index + 1} transport failure: ${h.server.diagnosticsReport()}", failure)
+                    }
+                    assertTrue("Health probe ${index + 1}: response=${response.take(64)}; ${h.server.diagnosticsReport()}",
+                        response.startsWith("HTTP/1.1 200 OK"))
                 }
+                // EOF precedes the reader's onFinished callback. Wait for its slot to
+                // retire so this sequential rate-limit test cannot hit the preflight cap.
+                h.awaitPreflightsIdle()
             }
             h.connect().use { rejected -> assertEquals(-1, rejected.getInputStream().read()) }
             assertTrue(h.server.diagnosticsSnapshot().any { it.reason == BrowserConnectionReason.RATE_LIMIT })
@@ -350,6 +359,15 @@ class BrowserConnectionDiagnosticsTest {
         fun requestApproval(client: Socket) {
             client.getOutputStream().write(masked("{\"type\":\"requestApproval\",\"version\":2}"))
             assertEquals("{\"type\":\"approvalPending\",\"version\":2}", readText(client))
+        }
+
+        fun awaitPreflightsIdle() {
+            val lock = BrowserLanServer::class.java.getDeclaredField("lock").apply { isAccessible = true }.get(server)
+            val preflights = BrowserLanServer::class.java.getDeclaredField("preflights").apply { isAccessible = true }
+            fun pending(): Int = synchronized(lock) { (preflights.get(server) as Set<*>).size }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (pending() != 0 && System.nanoTime() < deadline) Thread.sleep(1)
+            assertEquals("Health probe cleanup did not finish: ${server.diagnosticsReport()}", 0, pending())
         }
 
         fun awaitWriterIdle() {
