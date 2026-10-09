@@ -3,22 +3,25 @@ package com.shilapi.xcertplay.browser
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
+import com.shilapi.xcertplay.airplay.AirPlayDisplayConfig
+import com.shilapi.xcertplay.airplay.CarPlayDisplayScale
+import com.shilapi.xcertplay.airplay.CarPlayUiScale
 
 /** Untrusted browser content-box dimensions in rendering-device pixels; DPR is already applied. */
 object BrowserResolutionPolicy {
     const val UNITS = "device-pixels"
     const val MIN_SIDE = 320
     const val MAX_INPUT_SIDE = 16_384
-    const val MAX_LONG_SIDE = 1_920
-    const val MAX_SHORT_SIDE = 1_080
-    const val MAX_PIXELS = 2_073_600
+    const val MAX_LONG_SIDE = 3_840
+    const val MAX_SHORT_SIDE = 2_160
+    const val MAX_PIXELS = 8_294_400
     const val MAX_ASPECT = 3.0
 
     data class Size(val width: Int, val height: Int)
 
     /**
-     * This is a bounded baseline. Existing resolution percentage and UI scale are applied afterward.
+     * Validate and even-align the browser rendering pixels without a quality cap.
+     * Resolution percentage and UI scale apply before the final transport resource ceiling.
      * Callers must compare the final negotiated output with the active stream, not this baseline.
      * A cap is a resource bound, not a promise that every iPhone/decoder supports the resulting size.
      */
@@ -26,14 +29,32 @@ object BrowserResolutionPolicy {
         if (!width.isFinite() || !height.isFinite() || width != floor(width) || height != floor(height)) return null
         if (width < MIN_SIDE || height < MIN_SIDE || width > MAX_INPUT_SIDE || height > MAX_INPUT_SIDE) return null
         if (max(width, height) / min(width, height) > MAX_ASPECT) return null
-        val scale = minOf(1.0, MAX_LONG_SIDE / max(width, height),
-            MAX_SHORT_SIDE / min(width, height), sqrt(MAX_PIXELS / (width * height)))
-        var w = (width * scale).toInt() and -2
-        var h = (height * scale).toInt() and -2
+        var w = width.toInt() and -2
+        var h = height.toInt() and -2
         // Even rounding near 3:1 must not produce a result rejected on its next normalization.
         if (w > h * MAX_ASPECT) w = (h * MAX_ASPECT).toInt() and -2
         if (h > w * MAX_ASPECT) h = (w * MAX_ASPECT).toInt() and -2
         if (w < MIN_SIDE || h < MIN_SIDE) return null
+        return Size(w, h)
+    }
+
+    /** Keep saved preferences intact: only the final even canvas is proportionally bounded. */
+    fun outputSize(baseline: Size, resolutionPercent: Int, uiScalePercent: Int): Size {
+        require(normalize(baseline.width.toDouble(), baseline.height.toDouble()) == baseline)
+        val resolution = CarPlayDisplayScale.applyPercent(
+            AirPlayDisplayConfig(baseline.width, baseline.height), resolutionPercent)
+        val ui = CarPlayUiScale.sanitize(uiScalePercent)
+        // CarPlayUiScale.apply intentionally refuses an oversized native canvas. For a browser,
+        // apply the requested UI scale first, then fit the result to the shared final ceiling.
+        fun uiPixels(value: Int) = ((value.toLong() * 100 / ui + 1) / 2 * 2).toInt()
+        val width = uiPixels(resolution.widthPixels)
+        val height = uiPixels(resolution.heightPixels)
+        val fit = minOf(1.0, MAX_LONG_SIDE.toDouble() / max(width, height),
+            MAX_SHORT_SIDE.toDouble() / min(width, height))
+        var w = ((width * fit).toInt() and -2).coerceAtLeast(2)
+        var h = ((height * fit).toInt() and -2).coerceAtLeast(2)
+        if (w > h * MAX_ASPECT) w = (h * MAX_ASPECT).toInt() and -2
+        if (h > w * MAX_ASPECT) h = (w * MAX_ASPECT).toInt() and -2
         return Size(w, h)
     }
 }

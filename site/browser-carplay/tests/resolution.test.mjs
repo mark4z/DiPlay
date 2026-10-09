@@ -161,3 +161,11 @@ test('missing effective dimensions or failed save never labels raw browser dimen
   p.ack({ effectiveWidth: 1120, effectiveHeight: 640, code: 'saveFailed' });
   assert.equal(p.targets.at(-1), null);
 });
+
+
+test('high-DPR browser measurement sends full rendering pixels without a client quality cap', () => {
+  assert.deepEqual(renderPixelSize({ width: 1600, height: 1068 }, 2), { width: 3200, height: 2136 });
+  assert.deepEqual(renderPixelSize({ width: 1068, height: 1600 }, 2), { width: 2136, height: 3200 });
+  const p = fixture(); p.resize(3200, 2136); p.follow.connected(true); p.tick(2000);
+  assert.deepEqual(p.sent[0], { requestId: 1, enabled: true, width: 3200, height: 2136, units: 'device-pixels' });
+});

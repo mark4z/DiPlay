@@ -150,7 +150,12 @@ class BrowserResolutionCoordinator(context: Context) {
     private fun evaluatePending() {
         val next = pending ?: return
         if (!next.isCurrent()) { pending = null; deferred = null; return }
-        val evaluation = try { evaluate?.invoke(next.baseline) } catch (_: Exception) { null }
+        val evaluation = try { evaluate?.invoke(next.baseline) } catch (_: Exception) {
+            respond(next, null, "nextConnection", "reconnectFailed")
+            pending = null
+            deferred = null
+            return // Unsupported browser output is explicit; never switch to Android's aspect ratio.
+        }
         if (gate.inFlight) {
             respond(next, evaluation?.effective, "nextConnection")
             return // Retain resets/resizes through temporary teardown ineligibility.

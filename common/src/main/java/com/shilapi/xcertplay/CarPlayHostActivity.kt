@@ -2172,6 +2172,8 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun restoreSettingsBaseline() {
         val baseline = settingsBaseline ?: return
+        val previewChangedSystemBars = hideTopBar != AirPlayPersistence.loadHideTopBar(this) ||
+            hideBottomBar != AirPlayPersistence.loadHideBottomBar(this)
         loadPersistedSettings()
         baseline.safeAreaRects.forEach { (size, savedRect) ->
             savedRect?.let { rect ->
@@ -2206,8 +2208,12 @@ class CarPlayHostActivity : ComponentActivity() {
         updateHotspotStatusBlock()
         updateResolutionMenu()
         updateDebugOverlays()
-        applyFullscreenMode()
-        refreshDisplaySizeAfterLayout()
+        // Closing an unchanged menu must not schedule a display renegotiation. Real bar
+        // previews still need to restore the window and re-measure after cancellation.
+        if (previewChangedSystemBars) {
+            applyFullscreenMode()
+            refreshDisplaySizeAfterLayout()
+        }
     }
 
     private fun buildMfiTargetSection(): View {
@@ -3427,15 +3433,20 @@ class CarPlayHostActivity : ComponentActivity() {
             "Decoder capability query failed error=${error.javaClass.simpleName}")
     }
 
-    private fun browserDisplay(baseline: BrowserResolutionPolicy.Size): AirPlayDisplayConfig? {
-        val size = DisplaySize(baseline.width, baseline.height)
-        val physical = resolvePhysicalSize(size)
-        val base = AirPlayDisplayConfig(widthPixels = size.width, heightPixels = size.height,
+    private class BrowserDisplayUnsupported(message: String) : IllegalStateException(message)
+
+    private fun browserDisplay(baseline: BrowserResolutionPolicy.Size): AirPlayDisplayConfig {
+        val physical = AirPlayDisplaySettings.resolveBrowserPhysicalSizeMm(
+            baseline.width, baseline.height, widthPhysicalMm, physicalSizeBasis)
+        val target = BrowserResolutionPolicy.outputSize(baseline, displayScalePercent, uiScalePercent)
+        val display = AirPlayDisplayConfig(widthPixels = target.width, heightPixels = target.height,
             widthPhysicalMm = physical.widthMm, heightPhysicalMm = physical.heightMm, fps = fps, primaryInputDevice = 1)
-        val scaled = CarPlayUiScale.apply(CarPlayDisplayScale.applyPercent(base, displayScalePercent), uiScalePercent)
-        if (maxOf(scaled.widthPixels, scaled.heightPixels) > 3840 || minOf(scaled.widthPixels, scaled.heightPixels) > 2160) return null
-        if (!backendMode && !decoderCanvasSupport(scaled).supported) return null
-        return scaled
+        if (!backendMode) {
+            val support = decoderCanvasSupport(display)
+            if (!support.supported) throw BrowserDisplayUnsupported(
+                "Browser display ${target.width}x${target.height} unavailable (${support.reason}). Lower DiPlay resolution or change the codec.")
+        }
+        return display
     }
 
     private fun createAirPlayConfig(size: DisplaySize): AirPlayConfig =
@@ -3447,13 +3458,11 @@ class CarPlayHostActivity : ComponentActivity() {
         var resolutionPercent = displayScalePercent
         var uiPercent = uiScalePercent
         browserBaseline?.let { baseline ->
-            browserDisplay(baseline)?.let { display ->
-                if (!preview) pendingViewAreas = null
-                if (!preview) sessionDock = CarPlayDock.load(this)
-                log("Browser display baseline=${baseline.width}x${baseline.height} resolution=${resolutionPercent}% effective=${display.widthPixels}x${display.heightPixels}")
-                return display
-            }
-            log("Browser display unsupported by local decoder; keeping Android display settings")
+            val display = browserDisplay(baseline)
+            if (!preview) pendingViewAreas = null
+            if (!preview) sessionDock = CarPlayDock.load(this)
+            log("Browser display baseline=${baseline.width}x${baseline.height} resolution=${resolutionPercent}% ui=${uiPercent}% effective=${display.widthPixels}x${display.heightPixels} physical=${display.widthPhysicalMm}x${display.heightPhysicalMm}mm")
+            return display
         }
         // The home settings page can change the name while this host stays alive.
         if (!preview && !menuOpen) oemLabel = AirPlayPersistence.loadOemLabel(this)
@@ -4030,7 +4039,12 @@ class CarPlayHostActivity : ComponentActivity() {
         } else {
             size
         }
-        val airPlayConfig = createAirPlayConfig(effectiveSize)
+        val airPlayConfig = try { createAirPlayConfig(effectiveSize) } catch (error: BrowserDisplayUnsupported) {
+            appendLog(error.message ?: "Browser display is unsupported")
+            setConnectionStage(error.message ?: "Browser display is unsupported; lower DiPlay resolution")
+            browserResolution.complete(false)
+            return
+        }
         val locationProvider: Iap2LocationProvider? =
             when {
                 !config.locationReportingEnabled -> null
@@ -4314,8 +4328,11 @@ class CarPlayHostActivity : ComponentActivity() {
         val display = sessionDisplay ?: return false
         if (display.rotation != displayRotation()) return true
         if (display.hideTopBar != hideTopBar || display.hideBottomBar != hideBottomBar) return true
-        if (newSize != null && newSize.width > 0 && newSize.height > 0) {
-            val baseAspect = display.width.toDouble() / display.height
+        if (newSize != null && newSize.width > 0 && newSize.height > 0 &&
+            display.windowWidth > 0 && display.windowHeight > 0) {
+            // The negotiated canvas may be square to support screen rotation; compare the
+            // actual startup window instead, or every return to a landscape window looks like PiP.
+            val baseAspect = display.windowWidth.toDouble() / display.windowHeight
             val currentAspect = newSize.width.toDouble() / newSize.height
             val aspectDiff = kotlin.math.abs(currentAspect / baseAspect - 1.0)
             if (aspectDiff > 0.08 && AirPlayPersistence.loadAdaptPipResolution(this)) {

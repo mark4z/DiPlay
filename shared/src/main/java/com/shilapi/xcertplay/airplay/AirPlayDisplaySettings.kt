@@ -78,6 +78,25 @@ object AirPlayDisplaySettings {
         )
     }
 
+    /**
+     * Browser mode treats the configured reference as the viewport's width or height in mm,
+     * in its current orientation. It is a user calibration, not measured physical screen size.
+     * Pixel density, quality caps and the Android host's pixel dimensions cannot change it.
+     */
+    fun resolveBrowserPhysicalSizeMm(
+        widthPixels: Int,
+        heightPixels: Int,
+        referenceMillimeters: Int,
+        basis: AirPlayPhysicalSizeBasis,
+    ): AirPlayPhysicalSizeMm = resolvePhysicalSizeMm(
+        currentWidthPixels = widthPixels,
+        currentHeightPixels = heightPixels,
+        maximumWidthPixels = widthPixels,
+        maximumHeightPixels = heightPixels,
+        referenceMillimeters = referenceMillimeters,
+        basis = basis,
+    )
+
     fun fpsProgress(value: Int): Int =
         (sanitizeFps(value) - MIN_FPS) / FPS_STEP
 

@@ -2,6 +2,9 @@ package com.shilapi.xcertplay.browser
 
 import com.shilapi.xcertplay.airplay.AirPlayDisplayConfig
 import com.shilapi.xcertplay.airplay.CarPlayDisplayScale
+import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
+import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis
+import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeMm
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -19,18 +22,25 @@ class BrowserResolutionPolicyTest {
     @Test fun alignsWithoutUpscalingAndPreservesOrientation() {
         assertEquals(size(1280, 720), BrowserResolutionPolicy.normalize(1281.0, 721.0))
         assertEquals(size(320, 480), BrowserResolutionPolicy.normalize(320.0, 480.0))
-        assertEquals(size(1920, 1080), BrowserResolutionPolicy.normalize(3840.0, 2160.0))
-        assertEquals(size(1080, 1920), BrowserResolutionPolicy.normalize(2160.0, 3840.0))
-        assertEquals(size(1920, 640), BrowserResolutionPolicy.normalize(5760.0, 1920.0))
+        assertEquals(size(3840, 2160), BrowserResolutionPolicy.normalize(3840.0, 2160.0))
+        assertEquals(size(2160, 3840), BrowserResolutionPolicy.normalize(2160.0, 3840.0))
+        assertEquals(size(5760, 1920), BrowserResolutionPolicy.normalize(5760.0, 1920.0))
     }
 
-    @Test fun everyAcceptedSizeRespectsResourceBounds() {
+    @Test fun everyAcceptedBaselinePreservesRawPixelsAndEveryOutputRespectsResourceBounds() {
         for (w in 320..16384 step 197) for (h in 320..16384 step 211) {
             val result = BrowserResolutionPolicy.normalize(w.toDouble(), h.toDouble()) ?: continue
             assertTrue(result.width >= 320 && result.height >= 320)
-            assertTrue(maxOf(result.width, result.height) <= 1920)
-            assertTrue(minOf(result.width, result.height) <= 1080)
-            assertTrue(result.width.toLong() * result.height <= 2_073_600L)
+            assertTrue(maxOf(result.width, result.height) <= 16384)
+            for (percent in listOf(30, 80, 100, 160)) for (ui in listOf(75, 85, 100, 115)) {
+                val output = BrowserResolutionPolicy.outputSize(result, percent, ui)
+                assertTrue(maxOf(output.width, output.height) <= 3840)
+                assertTrue(minOf(output.width, output.height) <= 2160)
+                assertTrue(output.width.toLong() * output.height <= 8_294_400L)
+                assertEquals(0, output.width % 2)
+                assertEquals(0, output.height % 2)
+                assertTrue(output.width > 0 && output.height > 0)
+            }
             assertEquals(0, result.width % 2)
             assertEquals(0, result.height % 2)
             assertEquals(result, BrowserResolutionPolicy.normalize(result.width.toDouble(), result.height.toDouble()))
@@ -65,10 +75,13 @@ class BrowserResolutionPolicyTest {
     @Test fun distinctRawViewportsWithSameClampedEffectiveOutputDoNotReconnect() {
         val a = BrowserResolutionPolicy.normalize(3840.0, 2160.0)!!
         val b = BrowserResolutionPolicy.normalize(7680.0, 4320.0)!!
-        assertEquals(a, b)
+        assertNotEquals(a, b)
+        val outputA = BrowserResolutionPolicy.outputSize(a, 100, 100)
+        val outputB = BrowserResolutionPolicy.outputSize(b, 100, 100)
+        assertEquals(outputA, outputB)
         val gate = BrowserResolutionReconnectGate()
-        assertFalse(gate.shouldReconnect(a, b, 0))
-        assertFalse(gate.shouldReconnect(b, a, 100000))
+        assertFalse(gate.shouldReconnect(outputA, outputB, 0))
+        assertFalse(gate.shouldReconnect(outputB, outputA, 100000))
     }
 
     @Test fun resizeRestartsStabilityAndCooldownIsGlobal() {
@@ -109,4 +122,51 @@ class BrowserResolutionPolicyTest {
         assertFalse(gate.shouldReconnect(target, null, 20000, false))
         assertTrue(gate.shouldReconnect(target, null, 20000))
     }
+    @Test fun highDpiTabletBaselineKeepsDetailAndAppliesPercentageBeforeFinalCap() {
+        val baseline = BrowserResolutionPolicy.normalize(3200.0, 2136.0)!!
+        assertEquals(size(3200, 2136), baseline)
+        assertEquals(size(2560, 1710), BrowserResolutionPolicy.outputSize(baseline, 80, 100))
+        assertEquals(size(3200, 2136), BrowserResolutionPolicy.outputSize(baseline, 100, 100))
+        assertEquals(size(3234, 2160), BrowserResolutionPolicy.outputSize(baseline, 160, 100))
+        // No mutation of the baseline or user percentage occurs when the output hits its ceiling.
+        assertEquals(size(3200, 2136), baseline)
+        assertEquals(size(3200, 2136), BrowserResolutionPolicy.outputSize(baseline, 100, 100))
+    }
+
+    @Test fun finalCapKeepsPortraitAndNarrowBrowserShape() {
+        assertEquals(size(2160, 3234), BrowserResolutionPolicy.outputSize(size(2136, 3200), 160, 100))
+        assertEquals(size(3840, 1280), BrowserResolutionPolicy.outputSize(size(5760, 1920), 100, 100))
+        assertEquals(size(1280, 3840), BrowserResolutionPolicy.outputSize(size(1920, 5760), 100, 100))
+        assertEquals(size(96, 288), BrowserResolutionPolicy.outputSize(size(320, 960), 30, 100))
+    }
+
+    @Test fun uiScaleAppliesBeforeCapWithoutFallingBackToAndroidShape() {
+        assertEquals(size(2134, 1600), BrowserResolutionPolicy.outputSize(size(1600, 1200), 100, 75))
+        assertEquals(size(2878, 2160), BrowserResolutionPolicy.outputSize(size(3200, 2400), 160, 75))
+    }
+
+    @Test fun browserPhysicalReferenceIsIndependentOfDensityAndQuality() {
+        for (basis in AirPlayPhysicalSizeBasis.values()) {
+            val full = AirPlayDisplaySettings.resolveBrowserPhysicalSizeMm(3200, 2136, 200, basis)
+            val lowerDensity = AirPlayDisplaySettings.resolveBrowserPhysicalSizeMm(1600, 1068, 200, basis)
+            assertEquals(full, lowerDensity)
+            for (percent in listOf(80, 100, 160)) {
+                val target = BrowserResolutionPolicy.outputSize(size(3200, 2136), percent, 100)
+                val config = AirPlayDisplayConfig(target.width, target.height,
+                    widthPhysicalMm = full.widthMm, heightPhysicalMm = full.heightMm)
+                assertEquals(full.widthMm, requireNotNull(config.widthPhysicalMm))
+                assertEquals(full.heightMm, requireNotNull(config.heightPhysicalMm))
+            }
+        }
+        assertEquals(AirPlayPhysicalSizeMm(200, 300),
+            AirPlayDisplaySettings.resolveBrowserPhysicalSizeMm(2136, 3200, 200, AirPlayPhysicalSizeBasis.WIDTH))
+        assertEquals(AirPlayPhysicalSizeMm(134, 200),
+            AirPlayDisplaySettings.resolveBrowserPhysicalSizeMm(2136, 3200, 200, AirPlayPhysicalSizeBasis.HEIGHT))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun outputRejectsUnvalidatedBaseline() {
+        BrowserResolutionPolicy.outputSize(size(16386, 16386), 100, 100)
+    }
+
 }

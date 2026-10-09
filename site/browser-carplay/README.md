@@ -94,8 +94,9 @@ in rendering-device pixels after a two-second debounce. It uses
 `ResizeObserver.devicePixelContentBoxSize` when available, converting logical axes
 according to writing mode; the fallback is CSS content width/height ×
 `devicePixelRatio` ([Resize Observer specification](https://www.w3.org/TR/resize-observer/#resize-observer-interface)).
-This is the browser rendering area, not native panel resolution. Android saves a bounded, even browser baseline,
-then applies the existing resolution percentage and encoder alignment. A changed
+This is the browser rendering area, not native panel resolution. Android saves the validated, even-aligned rendering-pixel baseline without a 1080p quality cap,
+then applies the existing resolution percentage, UI scale and encoder alignment.
+Only the final output is proportionally bounded to 3840 pixels on the long side and 2160 on the short side. A changed
 final output can reconnect CarPlay; matching output does not reconnect. Browser
 DPR is applied once in the browser fallback only; decoded video dimensions and
 overlay toolbar visibility never become the baseline. The browser does not apply
@@ -105,8 +106,17 @@ applies it once. Requests use `units: "device-pixels"` with integer `width` and
 DPR; acknowledgments and saved baselines carry the same units. Legacy unitless
 CSS baselines fall back to normal Android sizing until the updated viewer reports
 a fresh size. Reload the embedded viewer after updating the APK. Density changes
-are observed even when the CSS size is unchanged. Existing 1920×1080, 2,073,600
-pixel, 3:1 aspect, even-alignment, stability and reconnect limits remain in force.
+are observed even when the CSS size is unchanged. Inputs remain limited to 320–16384 pixels per axis and 3:1 aspect; even-alignment, stability and reconnect limits remain in force.
+In browser mode, the configured physical-size reference calibrates the current
+browser viewport's width or height (according to the chosen basis), with the
+other dimension derived from its aspect ratio. It is not a measurement of the
+browser device. Android host pixels, DPR and resolution quality do not change
+this physical calibration. Saved resolution/UI percentages are never rewritten
+when the final canvas reaches the 4K ceiling. The existing local hardware decoder
+check still applies outside relay-only mode; an unsupported output is reported
+as a failure instead of silently switching to Android's dimensions. The browser
+also checks its WebCodecs configuration. These checks do not guarantee iPhone
+negotiation or real-time performance.
 **Automatically follow this browser’s size** can disable the browser override.
 Settings shows Android's acknowledged baseline, effective output target, and
 whether CarPlay is reconnecting or waiting for its next connection. Requests are

@@ -453,5 +453,20 @@ class BrowserResolutionCoordinatorTest {
         assertEquals(BrowserResolutionPolicy.Size(1600, 900), coordinator.load())
     }
 
+    @Test fun highResolutionRawBaselinePersistsWithoutA1080QualityCap() {
+        request(width = 3200, height = 2136)
+        assertEquals(BrowserResolutionPolicy.Size(3200, 2136), coordinator.load())
+    }
+
+    @Test fun unsupportedBrowserEvaluationReportsFailureWithoutAndroidAspectFallback() {
+        coordinator.install(this, { throw IllegalStateException("unsupported browser display") }, { restarts++; true })
+        request(width = 3200, height = 2136)
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+        assertFalse(replies.last().has("effectiveWidth"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(0, restarts)
+        assertEquals(BrowserResolutionPolicy.Size(3200, 2136), coordinator.load())
+    }
+
 }
 

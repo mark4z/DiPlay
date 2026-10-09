@@ -102,6 +102,33 @@ class CarPlayHostDisplaySizeTest {
         assertNull(getField("sessionDisplay"))
     }
 
+    @Test fun resumingASquareCanvasInTheSameWindowDoesNotReconnect() {
+        AirPlayPersistence.saveAdaptPipResolution(activity, true)
+        val display = startSession(windowHeight = 1080, canvasHeight = 1920)
+        val video = object : TextureView(activity) {
+            override fun post(action: Runnable): Boolean = Handler(Looper.getMainLooper()).post(action)
+        }.apply { layout(0, 0, 1920, 1080) }
+        setField("videoView", video)
+
+        invoke("onResume")
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+
+        assertSame(display, getField("sessionDisplay"))
+        assertEquals(size(1920, 1080), getField("activeDisplaySize"))
+        assertEquals(0, getField("restartGeneration"))
+        assertNull(getField("pendingDisplaySize"))
+    }
+
+    @Test fun aRealPipAspectChangeStillReconnectsWithASquareCanvas() {
+        AirPlayPersistence.saveAdaptPipResolution(activity, true)
+        startSession(windowHeight = 1080, canvasHeight = 1920)
+
+        applySize(700, 1080)
+
+        assertEquals(1, getField("restartGeneration"))
+        assertNull(getField("sessionDisplay"))
+    }
+
     @Test fun connectingInANarrowWindowRebuildsWhenTheCameraCloses() {
         startSession(windowWidth = 700)
         applySize(1920, 990)
@@ -230,6 +257,95 @@ class CarPlayHostDisplaySizeTest {
         assertEquals(true, getField("hideBottomBar"))
         assertWindowBars(true, true)
         assertTrue(AirPlayPersistence.loadHideBottomBar(activity))
+    }
+
+    @Test fun cancellingUnchangedMenuDoesNotPostAnotherDisplayMeasurement() {
+        val display = startSession()
+        invoke("loadPersistedSettings")
+        setField("settingsBaseline", invoke("captureSettingsBaseline"))
+        setField("menuOpen", true)
+        var measurements = 0
+        val video = object : TextureView(activity) {
+            override fun post(action: Runnable): Boolean {
+                measurements++
+                return Handler(Looper.getMainLooper()).post(action)
+            }
+        }.apply { layout(0, 0, 1920, 990) }
+        setField("videoView", video)
+
+        invoke("cancelSettingsEdits")
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+
+        assertEquals(0, measurements)
+        assertEquals(false, getField("menuOpen"))
+        assertNull(getField("settingsBaseline"))
+        assertNull(getField("pendingDisplaySize"))
+        assertSame(display, getField("sessionDisplay"))
+        assertEquals(0, getField("restartGeneration"))
+    }
+
+    @Test fun cancellingChangedBarPreviewsRestoresFullscreenAndRemeasuresOnce() {
+        val display = startSession()
+        invoke("loadPersistedSettings")
+        setField("settingsBaseline", invoke("captureSettingsBaseline"))
+        setField("menuOpen", true)
+        var measurements = 0
+        val video = object : TextureView(activity) {
+            override fun post(action: Runnable): Boolean {
+                measurements++
+                return Handler(Looper.getMainLooper()).post(action)
+            }
+        }.apply { layout(0, 0, 1920, 990) }
+        setField("videoView", video)
+        val controls = invoke("buildFullscreenSection") as ViewGroup
+        menuBarSwitch(controls, R.string.hide_the_status_bar).performClick()
+        menuBarSwitch(controls, R.string.hide_the_navigation_bar).performClick()
+        assertWindowBars(false, false)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+        val beforeCancel = measurements
+
+        invoke("cancelSettingsEdits")
+
+        assertEquals(beforeCancel + 1, measurements)
+        assertWindowBars(true, true)
+        assertTrue(AirPlayPersistence.loadHideTopBar(activity))
+        assertTrue(AirPlayPersistence.loadHideBottomBar(activity))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+        assertSame(display, getField("sessionDisplay"))
+        assertEquals(0, getField("restartGeneration"))
+        assertNull(getField("pendingDisplaySize"))
+        invoke("cancelSettingsEdits") // Repeated dismissal cannot schedule another measurement.
+        assertEquals(beforeCancel + 1, measurements)
+    }
+
+    @Test fun cancellingPreviewAlreadyRestoredToSavedBarsDoesNotRemeasure() {
+        val display = startSession()
+        invoke("loadPersistedSettings")
+        setField("settingsBaseline", invoke("captureSettingsBaseline"))
+        setField("menuOpen", true)
+        var measurements = 0
+        val video = object : TextureView(activity) {
+            override fun post(action: Runnable): Boolean {
+                measurements++
+                return Handler(Looper.getMainLooper()).post(action)
+            }
+        }.apply { layout(0, 0, 1920, 990) }
+        setField("videoView", video)
+        val controls = invoke("buildFullscreenSection") as ViewGroup
+        val bottom = menuBarSwitch(controls, R.string.hide_the_navigation_bar)
+        bottom.performClick()
+        bottom.performClick()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+        val beforeCancel = measurements
+
+        invoke("cancelSettingsEdits")
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+
+        assertEquals(beforeCancel, measurements)
+        assertWindowBars(true, true)
+        assertSame(display, getField("sessionDisplay"))
+        assertEquals(0, getField("restartGeneration"))
+        assertNull(getField("pendingDisplaySize"))
     }
 
     @Test fun savingMenuBarsPreservesAnIndependentCombination() {
