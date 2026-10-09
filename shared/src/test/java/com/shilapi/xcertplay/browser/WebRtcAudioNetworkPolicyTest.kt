@@ -9,13 +9,13 @@ class WebRtcAudioNetworkPolicyTest {
         assertNull(WebRtcAudioNetworkPolicy.factoryOptions(false))
     }
 
-    @Test fun embeddedHttpsUsesPhysicalInterfacesWithoutDisablingEncryption() {
+    @Test fun embeddedHttpsSkipsSyntheticVpnWithoutOtherTopologyFilters() {
         val options = requireNotNull(WebRtcAudioNetworkPolicy.factoryOptions(true))
         assertTrue(options.disableNetworkMonitor)
         assertFalse(options.disableEncryption)
-        assertEquals(PeerConnectionFactory.Options.ADAPTER_TYPE_VPN or
-            PeerConnectionFactory.Options.ADAPTER_TYPE_CELLULAR or
-            PeerConnectionFactory.Options.ADAPTER_TYPE_LOOPBACK, options.networkIgnoreMask)
+        assertEquals(PeerConnectionFactory.Options.ADAPTER_TYPE_VPN, options.networkIgnoreMask)
+        assertEquals(0, options.networkIgnoreMask and PeerConnectionFactory.Options.ADAPTER_TYPE_CELLULAR)
+        assertEquals(0, options.networkIgnoreMask and PeerConnectionFactory.Options.ADAPTER_TYPE_LOOPBACK)
         assertEquals(0, options.networkIgnoreMask and PeerConnectionFactory.Options.ADAPTER_TYPE_WIFI)
         assertEquals(0, options.networkIgnoreMask and PeerConnectionFactory.Options.ADAPTER_TYPE_ETHERNET)
     }
@@ -26,3 +26,4 @@ class WebRtcAudioNetworkPolicyTest {
         assertFalse(requireNotNull(WebRtcAudioNetworkPolicy.factoryOptions(true)).disableEncryption)
     }
 }
+

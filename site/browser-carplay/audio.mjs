@@ -1,4 +1,4 @@
-import { AUDIO_TRANSPORT, MAX_AUDIO_CANDIDATES, positiveId, validAudioSdp, validAudioCandidate, preferOpusStereo, localIceAddress, iceAddressClass, localIceIdentity, observedLocalIceCandidate, redactedLocalCandidateProof } from './audio-protocol.mjs?v=webrtc-audio-v1';
+import { AUDIO_TRANSPORT, MAX_AUDIO_CANDIDATES, positiveId, validAudioSdp, validAudioCandidate, preferOpusStereo } from './audio-protocol.mjs?v=webrtc-audio-v1';
 
 const UPGRADE = 'Browser audio needs the WebRTC/Opus APK and viewer. Update both, or keep audio on Android.';
 const FAILED = 'Browser audio stopped; Android audio restored.';
@@ -7,11 +7,10 @@ const STALL_TIMEOUT = 3000;
 const SETUP_LABELS = Object.freeze({
   offer: 'Android did not send an audio offer',
   answer: 'the audio offer could not be answered',
-  ice: 'the direct local ICE connection did not connect',
+  ice: 'the ICE connection did not connect',
   dtls: 'the encrypted audio connection did not finish',
   track: 'the browser did not receive an audio track',
   rtp: 'audio packets did not begin arriving',
-  pair: 'the browser could not verify the selected local ICE pair',
   playback: 'the browser did not start playback; tap Audio again',
   acknowledgment: 'Android did not acknowledge playback readiness',
   active: 'audio had started',
@@ -19,9 +18,9 @@ const SETUP_LABELS = Object.freeze({
 const ANDROID_ERRORS = Object.freeze({
   'audio-offer-timeout': 'Android could not prepare its audio offer',
   'audio-answer-timeout': 'Android did not receive the browser audio answer',
-  'audio-ice-timeout': 'Android could not establish the direct local audio connection',
+  'audio-ice-timeout': 'Android could not establish the audio connection',
   'audio-capture-timeout': 'the Android application-audio callback did not start',
-  'audio-no-local-candidates': 'Android found no usable local audio network interface',
+  'audio-no-local-candidates': 'Android found no usable audio network interface',
   'audio-pcm-init-failed': 'Android could not initialize application-audio export',
   'audio-pcm-start-failed': 'Android could not start application-audio export',
   'audio-unsupported-capture-format': 'Android supplied an unsupported application-audio format',
@@ -44,9 +43,8 @@ export class BrowserAudioPlayer {
     this.handoffTimer = this.statsTimer = null;
     this.lastSetup = null;
     this.needsGesture = false; this.playAttempt = 0; this.playbackState = 'idle';
-    this.observedLocalCandidates = []; this.localObservationIncomplete = false;
     this.remoteCandidates = []; this.remoteCandidateCount = this.localCandidateCount = this.remoteMessageCount = 0;
-    this.addingCandidates = false; this.remoteSet = this.answered = this.playing = this.rtpProgress = this.localPairVerified = false;
+    this.addingCandidates = false; this.remoteSet = this.answered = this.playing = this.rtpProgress = false;
     this.lastPackets = null; this.lastProgressAt = this.lastAliveAt = this.alivePackets = 0;
   }
 
@@ -58,15 +56,15 @@ export class BrowserAudioPlayer {
   }
   setupDiagnostics() {
     const stage = this.enabled ? 'active' : this.ready ? 'acknowledgment' : !this.epoch ? 'offer' : !this.answered ? 'answer' :
-      !this.connected() ? 'ice' : this.peer?.connectionState && this.peer.connectionState !== 'connected' ? 'dtls' :
-      !this.track ? 'track' : !this.rtpProgress ? 'rtp' : !this.localPairVerified ? 'pair' : 'playback';
+      !['connected', 'completed'].includes(this.peer?.iceConnectionState) ? 'ice' : !this.connected() ? 'dtls' :
+      !this.track ? 'track' : !this.rtpProgress ? 'rtp' : 'playback';
     const states = ['new', 'checking', 'connecting', 'connected', 'completed', 'disconnected', 'failed', 'closed'];
     return { stage, iceState: states.includes(this.peer?.iceConnectionState) ? this.peer.iceConnectionState : 'unknown',
       peerState: states.includes(this.peer?.connectionState) ? this.peer.connectionState : 'unknown',
       browserCandidates: Math.min(this.localCandidateCount, MAX_AUDIO_CANDIDATES),
       androidCandidates: Math.min(this.remoteCandidateCount, MAX_AUDIO_CANDIDATES),
       answerSent: this.answered, trackReceived: Boolean(this.track), playbackReady: this.playing,
-      localPairVerified: this.localPairVerified, rtpProgress: this.rtpProgress,
+      rtpProgress: this.rtpProgress,
       playback: { state: this.playbackState, paused: this.audio?.paused === true,
         readyState: Number.isInteger(this.audio?.readyState) ? this.audio.readyState : null,
         muted: this.audio?.muted === true, zeroVolume: this.audio?.volume === 0,
@@ -85,7 +83,10 @@ export class BrowserAudioPlayer {
     return `Audio setup ${outcome}: ${reason}. ICE candidates: browser ${setup.browserCandidates}, Android ${setup.androidCandidates}. Audio stays on Android.`;
   }
   current(generation) { return generation === this.generation && !this.disposed && Boolean(this.peer); }
-  connected() { return ['connected', 'completed'].includes(this.peer?.iceConnectionState); }
+  connected() {
+    return ['connected', 'completed'].includes(this.peer?.iceConnectionState) &&
+      (!this.peer?.connectionState || this.peer.connectionState === 'connected');
+  }
   signal(type, fields = {}) {
     return this.sendSignal({ type, requestId: this.activeRequestId, epoch: this.epoch, transport: AUDIO_TRANSPORT, ...fields });
   }
@@ -127,18 +128,10 @@ export class BrowserAudioPlayer {
       };
       peer.onicecandidate = ({ candidate }) => {
         if (!this.current(generation) || !candidate || !this.epoch) return;
-        // A non-null empty candidate is the standard end-of-generation marker,
-        // not an unobserved interface. It carries no candidate to correlate.
+        // A non-null empty candidate is the standard end-of-generation marker.
         if (candidate.candidate === '') return;
         const data = { candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex };
-        const observed = observedLocalIceCandidate(candidate, localIceIdentity(peer.localDescription?.sdp));
-        if (!observed) this.localObservationIncomplete = true;
-        else if (!this.observedLocalCandidates.some(value => JSON.stringify(value) === JSON.stringify(observed))) {
-          if (this.observedLocalCandidates.length >= MAX_AUDIO_CANDIDATES) this.localObservationIncomplete = true;
-          else this.observedLocalCandidates.push(observed);
-        }
-        // A machine can have unrelated public interfaces. Do not signal those
-        // candidates and do not turn their discovery into an audio failure.
+        // Validate signaling syntax; ICE and DTLS authenticate the selected path.
         if (!validAudioCandidate(data)) return;
         if (++this.localCandidateCount > MAX_AUDIO_CANDIDATES || !this.signal('audioIce', data)) this.disable(FAILED, true);
       };
@@ -292,7 +285,7 @@ export class BrowserAudioPlayer {
     try {
       const stats = await peer.getStats();
       if (!this.current(generation)) return;
-      let packets = 0, found = false, jitterMs = null, concealedSamples = null, selectedPair = null, selectedTransport = null;
+      let packets = 0, found = false, jitterMs = null, concealedSamples = null, selectedPair = null;
       stats.forEach(report => {
         if (report.type === 'inbound-rtp' && (report.kind === 'audio' || report.mediaType === 'audio') && !report.isRemote &&
             Number.isSafeInteger(report.packetsReceived) && report.packetsReceived >= 0) {
@@ -302,44 +295,15 @@ export class BrowserAudioPlayer {
         }
         if (report.type === 'transport' && typeof report.selectedCandidatePairId === 'string') {
           const pair = stats.get(report.selectedCandidatePairId);
-          if (pair) { selectedPair = pair; selectedTransport = report; }
+          if (pair) selectedPair = pair;
         }
         else if (!selectedPair && report.type === 'candidate-pair' && report.nominated && report.state === 'succeeded') selectedPair = report;
       });
       const local = selectedPair && stats.get(selectedPair.localCandidateId), remote = selectedPair && stats.get(selectedPair.remoteCandidateId);
-      const localRedacted = local && (local.address === '' || local.address == null);
-      const localProof = localRedacted ? redactedLocalCandidateProof({ local, pair: selectedPair, transport: selectedTransport,
-        identity: localIceIdentity(peer.localDescription?.sdp), observed: this.observedLocalCandidates,
-        incomplete: this.localObservationIncomplete }) : null;
-      const localAddressVerified = Boolean(typeof local?.address === 'string' && localIceAddress(local.address)) ||
-        localProof === 'verified-signaled-local';
-      const localPairMetadataVerified = Boolean(local?.candidateType === 'host' && remote?.candidateType === 'host' &&
-        ['udp', 'tcp'].includes(local?.protocol) && local.protocol === remote?.protocol &&
-        localAddressVerified && typeof remote.address === 'string' && localIceAddress(remote.address));
-      this.localPairVerified = selectedPair?.state === 'succeeded' && localPairMetadataVerified;
-      // A transport can reference a pair before connectivity checks finish. Wait
-      // only during setup and only when every host/local/protocol check passes.
-      // The original setup deadline remains in force; this never grants readiness.
-      const pairChecking = !this.ready && localPairMetadataVerified &&
-        ['frozen', 'waiting', 'in-progress'].includes(selectedPair?.state);
       const candidateType = value => ['host', 'srflx', 'prflx', 'relay'].includes(value) ? value : null;
       this.diagnostics = { packetsReceived: found && Number.isSafeInteger(packets) ? packets : null, jitterMs, concealedSamples,
         selectedCandidatePair: selectedPair ? { localType: candidateType(local?.candidateType), remoteType: candidateType(remote?.candidateType),
           protocol: ['udp', 'tcp'].includes(local?.protocol) ? local.protocol : null } : null };
-      if ((selectedPair || this.ready) && !this.localPairVerified && !pairChecking) {
-        // Fixed labels preserve the cause without exposing addresses, SDP, or raw stats.
-        const reason = !selectedPair ? 'selected pair missing' : !local || !remote ? 'candidate details missing' :
-          local.candidateType !== 'host' || remote.candidateType !== 'host' ?
-            `candidate type is not host; browser=${candidateType(local.candidateType) || 'unavailable'}, Android=${candidateType(remote.candidateType) || 'unavailable'}` :
-          !['udp', 'tcp'].includes(local.protocol) || local.protocol !== remote.protocol ? 'candidate protocol is missing or mismatched' :
-          localRedacted && !localAddressVerified ?
-            `browser candidate address hidden; proof=${localProof}; browser=unavailable, Android=${iceAddressClass(remote.address)}` :
-          typeof remote.address !== 'string' || (!localRedacted && typeof local.address !== 'string') ? 'candidate address unavailable' :
-          !localAddressVerified || !localIceAddress(remote.address) ?
-            `candidate address is outside local policy; browser=${iceAddressClass(local.address)}, Android=${iceAddressClass(remote.address)}` :
-          'selected pair has not succeeded';
-        this.disable(`Could not verify a local-only WebRTC audio connection (${reason}). Audio stays on Android.`, true); return;
-      }
       const now = this.now();
       if (found && Number.isSafeInteger(packets)) {
         if (this.lastPackets !== null && packets > this.lastPackets) { this.rtpProgress = true; this.lastProgressAt = now; }
@@ -350,7 +314,7 @@ export class BrowserAudioPlayer {
         this.disable('Browser audio stalled; Android audio restored.', true); return;
       }
       this.maybeReady();
-      if (this.enabled && this.connected() && this.localPairVerified && this.playing && now - this.lastAliveAt >= 1000 && this.lastPackets > this.alivePackets) {
+      if (this.enabled && this.connected() && this.playing && now - this.lastAliveAt >= 1000 && this.lastPackets > this.alivePackets) {
         if (!this.signal('audioAlive')) { this.disable(FAILED, true); return; }
         this.lastAliveAt = now; this.alivePackets = this.lastPackets;
       }
@@ -360,7 +324,7 @@ export class BrowserAudioPlayer {
 
   maybeReady() {
     if (!this.pending || this.ready || !this.answered || !this.connected() || !this.track || this.track.readyState === 'ended' ||
-        !this.localPairVerified || !this.playing || this.audio?.paused || this.audio?.muted || this.audio?.volume === 0 || !this.rtpProgress || this.now() - this.lastProgressAt >= STALL_TIMEOUT) return;
+        !this.playing || this.audio?.paused || this.audio?.muted || this.audio?.volume === 0 || !this.rtpProgress || this.now() - this.lastProgressAt >= STALL_TIMEOUT) return;
     this.ready = true;
     if (!this.signal('audioReady')) { this.disable(FAILED, true); return; }
     this.cancelHandoffTimer();
@@ -397,9 +361,8 @@ export class BrowserAudioPlayer {
     this.enabled = this.pending = this.ready = false; this.epoch = 0;
     const peer = this.peer, audio = this.audio, track = this.track;
     this.peer = this.audio = this.stream = this.track = null;
-    this.observedLocalCandidates = []; this.localObservationIncomplete = false;
     this.remoteCandidates = []; this.remoteCandidateCount = this.localCandidateCount = this.remoteMessageCount = 0;
-    this.addingCandidates = false; this.remoteSet = this.answered = this.playing = this.rtpProgress = this.localPairVerified = false;
+    this.addingCandidates = false; this.remoteSet = this.answered = this.playing = this.rtpProgress = false;
     this.lastPackets = null; this.lastProgressAt = this.lastAliveAt = this.alivePackets = 0;
     if (track) { track.onended = null; track.stop(); }
     if (audio) { audio.onpause = audio.onerror = audio.onended = null; audio.pause(); audio.srcObject = null; }
@@ -407,3 +370,4 @@ export class BrowserAudioPlayer {
   }
   dispose() { this.disable(); this.disposed = true; }
 }
+

@@ -7,47 +7,98 @@ import java.nio.ByteOrder
 
 class WebRtcAudioRulesTest {
     private val candidate = "candidate:123 1 udp 2122260223 192.168.1.3 51234 typ host generation 0"
+    private val fingerprint = List(32) { "AB" }.joinToString(":")
     private val answer = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n" +
-        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=recvonly\r\na=rtpmap:111 opus/48000/2\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=recvonly\r\n" +
+        "a=rtcp-mux\r\na=ice-ufrag:test\r\na=ice-pwd:testpasswordtestpassword\r\na=setup:active\r\n" +
+        "a=fingerprint:sha-256 $fingerprint\r\na=rtpmap:111 opus/48000/2\r\n"
 
-    @Test fun onlyHostCandidatesAreAllowed() {
-        assertTrue(WebRtcAudioRules.isHostCandidate(candidate))
-        assertTrue(WebRtcAudioRules.isHostCandidate(candidate.replace("192.168.1.3", "abc-123.local")))
-        assertTrue(WebRtcAudioRules.isHostCandidate(candidate.replace("192.168.1.3", "fe80::1")))
-        assertTrue(WebRtcAudioRules.isHostCandidate(candidate.replace("192.168.1.3", "fd00::1")))
-        for (address in listOf("8.8.8.8", "172.15.1.2", "172.32.1.2", "100.64.1.2",
-            "2606:4700:4700::1111", "example.com", "a.local.example.com", "192.168.1.256", "010.1.1.1")) {
-            assertFalse(address, WebRtcAudioRules.isHostCandidate(candidate.replace("192.168.1.3", address)))
+    @Test fun standardCandidateTypesAndAddressRangesDoNotGateConnectivity() {
+        for (kind in listOf("host", "srflx", "prflx", "relay")) {
+            for (address in listOf("192.168.1.3", "10.0.0.1", "172.16.0.1", "127.0.0.1", "169.254.1.2",
+                "8.8.8.8", "172.15.1.2", "172.32.1.2", "100.64.1.2", "0.0.0.0", "255.255.255.255",
+                "abc-123.local", "ABC.local", "fe80::1", "fd00::1", "::1", "::", "2606:4700:4700::1111",
+                "::ffff:192.0.2.1")) {
+                val value = candidate.replace("typ host", "typ $kind").replace("192.168.1.3", address)
+                assertTrue("$kind $address", WebRtcAudioRules.isValidCandidate(value))
+            }
         }
-        for (kind in listOf("srflx", "prflx", "relay")) {
-            assertFalse(WebRtcAudioRules.isHostCandidate(candidate.replace("typ host", "typ $kind")))
-        }
-        assertFalse(WebRtcAudioRules.isHostCandidate(candidate.replace(" 1 udp", " 2 udp")))
-        assertFalse(WebRtcAudioRules.isHostCandidate("$candidate\r\na=sendrecv"))
-        assertFalse(WebRtcAudioRules.isHostCandidate("$candidate " + "x".repeat(1024)))
+        assertTrue(WebRtcAudioRules.isValidCandidate(candidate.replace(" udp ", " TCP ") + " tcptype passive"))
+        assertTrue(WebRtcAudioRules.isValidCandidate(candidate.replace("2122260223", "4294967295")))
+        assertTrue(WebRtcAudioRules.isValidCandidate(candidate.replace("2122260223", "0")))
+        assertTrue(WebRtcAudioRules.isValidCandidate(candidate.replace("51234", "65535")))
+        assertTrue(WebRtcAudioRules.isValidCandidate(candidate + " raddr 100.64.1.2 rport 4000"))
     }
 
-    @Test fun answersAreBoundedSingleAudioReceiveOnlyWithoutRelayCandidates() {
+    @Test fun candidateMediaIdMatchesTheBrowserSignalingEnvelope() {
+        for (mid in listOf("0", "audio_1-2", "a".repeat(32))) {
+            assertTrue(WebRtcAudioRules.isValidCandidateMid(mid))
+        }
+        for (mid in listOf(null, "", "a".repeat(33), "audio track", "0\r\na=sendrecv", "0!")) {
+            assertFalse(WebRtcAudioRules.isValidCandidateMid(mid))
+        }
+    }
+
+    @Test fun malformedCandidatesAndAddressesRemainRejected() {
+        for (address in listOf("example.com", "a.local.example.com", "-a.local", "a-.local", "a..local",
+            "192.168.1.256", "010.1.1.1", "192.168.1", "192.168.-1.1", "fe80::1%wlan0", "2001:::1",
+            "gggg::1", "::ffff:999.1.1.1", "a".repeat(64) + ".local")) {
+            assertFalse(address, WebRtcAudioRules.isValidCandidate(candidate.replace("192.168.1.3", address)))
+        }
+        for (value in listOf("", candidate.replace("candidate:123", "candidate:"),
+            candidate.replace("candidate:123", "candidate:bad!"),
+            candidate.replace(" 1 udp", " 2 udp"), candidate.replace(" udp ", " sctp "),
+            candidate.replace("typ host", "typ unknown"), candidate.replace("2122260223", "4294967296"),
+            candidate.replace("2122260223", "-1"), candidate.replace("2122260223", "priority"),
+            candidate.replace("51234", "0"), candidate.replace("51234", "65536"),
+            candidate.replace("51234", "-1"), candidate + " unpaired-extension", candidate + "\u0000",
+            "$candidate\r\na=sendrecv", "$candidate " + "x".repeat(1024))) {
+            assertFalse(value, WebRtcAudioRules.isValidCandidate(value))
+        }
+    }
+
+    @Test fun boundedSingleAudioAnswerAllowsAllStandardCandidateTypes() {
         assertTrue(WebRtcAudioRules.isReceiveOnlyAnswer(answer))
-        assertTrue(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "a=$candidate\r\n"))
+        for (kind in listOf("host", "srflx", "prflx", "relay")) {
+            val value = candidate.replace("typ host", "typ $kind").replace("192.168.1.3", "8.8.8.8")
+            assertTrue(kind, WebRtcAudioRules.isReceiveOnlyAnswer(answer + "a=$value\r\n"))
+        }
+        assertTrue(WebRtcAudioRules.isReceiveOnlyAnswer(answer + ("a=$candidate\r\n").repeat(32)))
         for (direction in listOf("sendrecv", "sendonly", "inactive")) {
             assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer.replace("recvonly", direction)))
         }
+        assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "a=recvonly\r\n"))
         assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"))
         assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"))
-        assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "a=" + candidate.replace("host", "relay") + "\r\n"))
         assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer.replace("m=audio 9 ", "m=audio 0 ")))
-        assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "a=" + candidate.replace("192.168.1.3", "8.8.8.8") + "\r\n"))
+        assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "a=" + candidate.replace("host", "unknown") + "\r\n"))
+        assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "a=x:" + "x".repeat(1024)))
         assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "a=x:" + "x".repeat(6000)))
         assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + "\u0000"))
         assertFalse(WebRtcAudioRules.isReceiveOnlyAnswer(answer + ("a=$candidate\r\n").repeat(33)))
     }
 
-    @Test fun generatedOfferAlsoRejectsEmbeddedPublicCandidatesAndExtraMedia() {
-        val offer = answer.replace("recvonly", "sendonly")
+    @Test fun dtlsFingerprintRtcpMuxAndNegotiatedStereoOpusRemainRequired() {
+        for (sdp in listOf(answer.replace("UDP/TLS/RTP/SAVPF", "RTP/AVP"),
+            answer.replace("a=rtcp-mux\r\n", ""),
+            answer.replace("a=fingerprint:sha-256 $fingerprint\r\n", ""),
+            answer.replace("a=fingerprint:sha-256", "a=fingerprint:sha-1"),
+            answer.replace(fingerprint, "AB:CD"), answer.replace(fingerprint, "GG:" + fingerprint.drop(3)),
+            answer.replace("opus/48000/2", "PCMU/8000"), answer.replace("opus/48000/2", "opus/48000/1"),
+            answer.replace("a=rtpmap:111", "a=rtpmap:112"), answer + "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:invalid\r\n")) {
+            assertFalse(sdp, WebRtcAudioRules.isReceiveOnlyAnswer(sdp))
+            assertFalse(sdp, WebRtcAudioRules.isSendOnlyOffer(sdp.replace("recvonly", "sendonly")))
+        }
+    }
+
+    @Test fun generatedOfferUsesTheSameSecurityAndCandidateValidation() {
+        val offer = answer.replace("recvonly", "sendonly").replace("setup:active", "setup:actpass")
         assertTrue(WebRtcAudioRules.isSendOnlyOffer(offer))
         assertFalse(WebRtcAudioRules.isSendOnlyOffer(answer))
-        assertFalse(WebRtcAudioRules.isSendOnlyOffer(offer + "a=" + candidate.replace("192.168.1.3", "8.8.8.8") + "\r\n"))
+        for (kind in listOf("host", "srflx", "prflx", "relay")) {
+            val value = candidate.replace("typ host", "typ $kind").replace("192.168.1.3", "100.64.1.2")
+            assertTrue(kind, WebRtcAudioRules.isSendOnlyOffer(offer + "a=$value\r\n"))
+        }
         assertFalse(WebRtcAudioRules.isSendOnlyOffer(offer + "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"))
     }
 
@@ -117,3 +168,4 @@ class WebRtcAudioRulesTest {
         assertThrows(InterruptedException::class.java) { interrupted.awaitTick() }
     }
 }
+

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BrowserAudioPlayer } from '../audio.mjs';
-import { validAudioSdp, validAudioCandidate, preferOpusStereo, localIceAddress } from '../audio-protocol.mjs';
+import { validAudioSdp, validAudioCandidate, preferOpusStereo, validIceAddress } from '../audio-protocol.mjs';
 import { audioEnvironment, audioSdp, candidate, deferred, flush } from './audio-fixtures.mjs';
 
 const count = (env, type) => env.signals.filter(signal => signal.type === type).length;
@@ -65,14 +65,14 @@ test('premature and legacy route acknowledgments fail closed with no PCM fallbac
   assert.equal(pcm.player.peer, null); assert.equal(pcm.modes.at(-1).enabled, false);
 });
 
-test('signaling admits exactly one audio-only DTLS Opus section and bounded host candidates', () => {
+test('signaling admits exactly one audio-only DTLS Opus section and bounded ICE candidates', () => {
   assert.equal(validAudioSdp(audioSdp('sendonly'), 'sendonly'), true);
   for (const bad of [audioSdp('sendrecv'), audioSdp('sendonly') + 'm=video 9 UDP/TLS/RTP/SAVPF 96\r\n',
     audioSdp('sendonly').replace('opus/48000/2', 'PCMU/8000'), audioSdp('sendonly').replace('UDP/TLS/RTP/SAVPF', 'RTP/AVP'),
-    audioSdp('sendonly').replace('a=fingerprint:sha-256', 'a=ignored:sha-256'), audioSdp('sendonly') + 'x'.repeat(6001),
-    audioSdp('sendonly') + 'a=candidate:1 1 udp 1 8.8.8.8 4000 typ relay\r\n']) assert.equal(validAudioSdp(bad, 'sendonly'), false);
+    audioSdp('sendonly').replace('a=fingerprint:sha-256', 'a=ignored:sha-256'), audioSdp('sendonly') + 'x'.repeat(6001)]) assert.equal(validAudioSdp(bad, 'sendonly'), false);
   assert.equal(validAudioCandidate(candidate), true); assert.equal(validAudioCandidate({ ...candidate, candidate: '' }), false);
-  for (const bad of [{ ...candidate, candidate: candidate.candidate.replace('typ host', 'typ relay') },
+  for (const bad of [{ ...candidate, candidate: candidate.candidate.replace('typ host', 'typ unknown') },
+    ...['2122260223', '4444', 'generation 0'].map((value, index) => ({ ...candidate, candidate: candidate.candidate.replace(value, ['4294967296', '65536', 'generation'][index]) })),
     { ...candidate, candidate: 'x'.repeat(1025) }, { ...candidate, sdpMLineIndex: 1 }, { ...candidate, sdpMid: null },
     { ...candidate, candidate: candidate.candidate + '\r\na=sendrecv' }]) assert.equal(validAudioCandidate(bad), false);
 });
@@ -206,19 +206,25 @@ test('Opus stereo preference preserves existing fmtp, replaces only stereo and i
 });
 
 
-test('ICE addresses allow only local literals or bounded mDNS labels, never public hosts', () => {
-  for (const address of ['10.1.2.3', '172.16.0.1', '192.168.1.2', '127.0.0.1', '169.254.1.1', '::1', 'fe80::1', 'febf::1', 'fc00::1', 'fdff::1', '::ffff:192.168.1.2', 'abc-123.local'])
-    assert.equal(localIceAddress(address), true, address);
-  for (const address of ['8.8.8.8', '172.32.0.1', '0.0.0.0', '192.168.01.2', 'example.com', '-a.local', 'a..local', '::', '2001:4860:4860::8888', 'fec0::1', 'fe80::1%eth0', '::ffff:8.8.8.8'])
-    assert.equal(localIceAddress(address), false, address);
+test('ICE accepts IP literals and bounded mDNS without classifying network topology', () => {
+  for (const address of ['10.1.2.3', '172.16.0.1', '192.168.1.2', '127.0.0.1', '169.254.1.1', '::1', 'fe80::1', 'fdff::1', '::ffff:192.168.1.2', 'abc-123.local', '8.8.8.8', '100.99.0.1', '2001:4860:4860::8888', '::ffff:8.8.8.8'])
+    assert.equal(validIceAddress(address), true, address);
+  for (const address of ['192.168.01.2', '256.1.1.1', 'example.com', '-a.local', 'a..local', 'fe80::1%eth0', '::bad::'])
+    assert.equal(validIceAddress(address), false, address);
 });
 
-test('unrelated public and empty local ICE candidates are skipped without failing the route', async () => {
+test('normal ICE topology is accepted in trickle signaling and embedded SDP; empty markers are skipped', async () => {
   const env = audioEnvironment(); await env.player.enableFromGesture(); await env.offer();
-  env.peers[0].onicecandidate({ candidate: { ...candidate, candidate: candidate.candidate.replace('192.168.1.20', '8.8.8.8') } });
+  for (const type of ['host', 'srflx', 'prflx', 'relay']) {
+    const value = { ...candidate, candidate: candidate.candidate.replace('192.168.1.20', '100.99.0.1').replace('typ host', `typ ${type}`) };
+    assert.equal(validAudioCandidate(value), true);
+    assert.equal(validAudioSdp(audioSdp('sendonly') + `a=${value.candidate}\r\n`, 'sendonly'), true);
+    env.peers[0].onicecandidate({ candidate: value }); env.message('audioIce', value);
+  }
+  await flush(); assert.equal(env.peers[0].candidates.length, 4);
   env.peers[0].onicecandidate({ candidate: { ...candidate, candidate: '' } });
-  assert.equal(env.player.pending, true); assert.equal(count(env, 'audioIce'), 0);
-  env.peers[0].onicecandidate({ candidate }); assert.equal(count(env, 'audioIce'), 1); env.player.dispose();
+  env.peers[0].onicecandidate({ candidate: null });
+  assert.equal(env.player.pending, true); assert.equal(count(env, 'audioIce'), 4); env.player.dispose();
 });
 
 test('disable identifies its exact route; only a new user gesture advances request ID', async () => {
@@ -250,7 +256,7 @@ test('read-only diagnostics retain only bounded RTP numbers and candidate types,
   await env.tick(); const diagnostics = env.player.getDiagnostics();
   assert.deepEqual(diagnostics, { transport: 'webrtc-opus', state: 'starting',
     setup: { stage: 'offer', iceState: 'new', peerState: 'new', browserCandidates: 0, androidCandidates: 0,
-      answerSent: false, trackReceived: false, playbackReady: true, localPairVerified: true, rtpProgress: false,
+      answerSent: false, trackReceived: false, playbackReady: true, rtpProgress: false,
       playback: { state: 'playing', paused: false, readyState: null, muted: false, zeroVolume: false,
         trackMuted: false, trackEnded: false, rtpFresh: false } },
     packetsReceived: 55, jitterMs: 13, concealedSamples: 480,
@@ -261,40 +267,8 @@ test('read-only diagnostics retain only bounded RTP numbers and candidate types,
 });
 
 
-test('readiness needs a verifiable selected local host ICE pair, not only packet counters', async () => {
-  const env = audioEnvironment(); await env.player.enableFromGesture(); await env.offer();
-  const peer = env.peers[0]; peer.emitTrack(); peer.connect(); let packets = 1;
-  peer.getStats = async () => new Map([['in', { type: 'inbound-rtp', kind: 'audio', packetsReceived: packets++ }]]);
-  await env.tick(); await env.tick();
-  assert.equal(env.player.pending, true); assert.equal(count(env, 'audioReady'), 0); env.player.dispose();
-});
-
-test('public, relay, peer-reflexive, unverified or missing selected ICE addresses cannot activate or retain audio', async () => {
-  const changes = [stats => { stats.get('remote').address = '8.8.8.8'; }, stats => { stats.get('local').candidateType = 'relay'; },
-    stats => { stats.get('remote').candidateType = 'prflx'; }, stats => { delete stats.get('local').address; },
-    stats => { stats.get('remote').address = 'example.com'; }, stats => { stats.get('remote').protocol = 'other'; },
-    stats => { stats.delete('remote'); }];
-  for (const active of [false, true]) for (const change of changes) {
-    const env = audioEnvironment(); if (active) await env.enable(); else { await env.player.enableFromGesture(); await env.offer(); }
-    const peer = env.peers[0], original = peer.getStats.bind(peer); peer.packets = 20;
-    peer.getStats = async () => { const stats = await original(); change(stats); return stats; };
-    await env.tick(); assert.equal(env.player.enabled, false); assert.equal(env.player.pending, false);
-    assert.match(env.states.at(-1).message, /local-only/); assert.equal(env.modes.at(-1).enabled, false);
-  }
-});
-
-test('selected mDNS and local IPv6 candidates can establish verified receive-only audio', async () => {
-  const env = audioEnvironment(); await env.player.enableFromGesture(); await env.offer();
-  const peer = env.peers[0], original = peer.getStats.bind(peer);
-  peer.getStats = async () => { const stats = await original(); if (stats.has('local')) {
-    stats.get('local').address = 'receiver-test.local'; stats.get('remote').address = 'fd00::1234'; } return stats; };
-  peer.emitTrack(); peer.connect(); peer.packets = 1; await env.tick(); peer.packets = 2; await env.tick();
-  assert.equal(count(env, 'audioReady'), 1); env.player.dispose();
-});
-
-
 test('setup deadlines identify the failed stage and retain bounded diagnostics after teardown', async () => {
-  for (const stage of ['offer', 'answer', 'ice', 'dtls', 'track', 'rtp', 'pair', 'playback', 'acknowledgment']) {
+  for (const stage of ['offer', 'answer', 'ice', 'dtls', 'track', 'rtp', 'playback', 'acknowledgment']) {
     const playback = deferred();
     const env = audioEnvironment(stage === 'playback' ? { playback } : {});
     await env.player.enableFromGesture();
@@ -307,8 +281,7 @@ test('setup deadlines identify the failed stage and retain bounded diagnostics a
     if (!['offer', 'answer', 'ice'].includes(stage)) peer.connect();
     if (stage === 'dtls') peer.connectionState = 'connecting';
     if (!['offer', 'answer', 'ice', 'dtls', 'track'].includes(stage)) peer.emitTrack();
-    if (['pair', 'playback', 'acknowledgment'].includes(stage)) {
-      if (stage === 'pair') peer.getStats = async () => new Map([['in', { type: 'inbound-rtp', kind: 'audio', packetsReceived: peer.packets }]]);
+    if (['playback', 'acknowledgment'].includes(stage)) {
       peer.packets = 1; await env.tick(); peer.packets = 2; await env.tick();
     }
     assert.equal(env.player.getDiagnostics().setup.stage, stage);
@@ -328,11 +301,11 @@ test('setup deadlines identify the failed stage and retain bounded diagnostics a
 
 test('Android candidate, capture and ICE failures show fixed actionable stages without reflecting network text', async () => {
   for (const [code, expected] of [
-    ['audio-no-local-candidates', /no usable local audio network interface/],
+    ['audio-no-local-candidates', /no usable audio network interface/],
     ['audio-capture-timeout', /application-audio callback did not start/],
-    ['audio-ice-timeout', /direct local audio connection/],
+    ['audio-ice-timeout', /audio connection/],
     ['audio-pcm-start-failed', /start application-audio export/],
-    ['audio-readiness-timeout', /direct local ICE/],
+    ['audio-readiness-timeout', /ICE/],
     ['secret SDP 192.168.2.3', /WebRTC audio is unavailable/],
     ['__proto__', /WebRTC audio is unavailable/],
   ]) {
@@ -344,3 +317,4 @@ test('Android candidate, capture and ICE failures show fixed actionable stages w
     assert.equal(env.player.getDiagnostics().setup.stage, 'ice');
   }
 });
+

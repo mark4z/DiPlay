@@ -73,17 +73,24 @@ No video or data-channel transport is added.
 ## LAN signaling and lifecycle
 
 Both sides use an empty ICE-server list. There are no public STUN/TURN services.
-The Android sender accepts/emits only host candidates with RFC1918, loopback,
-link-local, IPv6 ULA, or `.local` mDNS addresses. It rejects public host addresses
-and server-reflexive/peer-reflexive/relay candidates in SDP and trickle messages.
-The Java API does not pin ICE to one physical interface: this is a restriction
-on signaled endpoints, not a claim of interface binding. mDNS is resolved by the
-WebRTC stack, never by this candidate validator.
+Both sides accept standard host, server-reflexive, peer-reflexive and relay
+candidates in SDP and trickle messages, with no private-address or host-only
+topology gate. Valid IPv4/IPv6 literals (including public and CGNAT ranges) and
+bounded `.local` mDNS names are accepted. Candidate syntax, priority, port,
+media ID, size and count remain bounded. Arbitrary DNS names and scoped interface
+strings are not accepted; mDNS is resolved by WebRTC, never by this validator.
+Accepting standard candidate types does not configure a STUN/TURN server or
+create a relay. ICE selects a working pair without application address-range
+classification; normal TCP candidate gathering is no longer explicitly disabled.
+
+Both SDP directions retain one audio-only DTLS-SRTP media section, SHA-256
+fingerprint, RTCP mux, negotiated stereo Opus and the appropriate send/receive
+direction. Plain RTP, SDES keys, video and data-channel media are rejected.
 
 ### Embedded HTTPS / application-owned VPN
 
 The embedded HTTPS listener uses this app's synthetic, non-forwarding TUN. Audio
-must still use the physical hotspot/LAN. The default Android WebRTC monitor is
+needs a working network path rather than that synthetic interface. The default Android WebRTC monitor is
 unsuitable for that combination: it considers an interface unavailable when it
 cannot find a ConnectivityManager network handle, and binds ICE sockets on
 known interfaces to that network. A hotspot downstream interface may not have
@@ -91,15 +98,18 @@ such a handle, while a socket bound to the synthetic TUN cannot carry the audio
 datagrams to the browser.
 
 For an active embedded HTTPS session only, `WebRtcAudioNetworkPolicy` supplies
-factory-local `disableNetworkMonitor = true` and ignores VPN, cellular and
-loopback adapters. The pinned WebRTC implementation then enumerates running
-native interfaces (including hotspot interfaces without Android network
+factory-local `disableNetworkMonitor = true` and ignores VPN adapters because
+that session's synthetic TUN does not forward media. Cellular and loopback
+adapters are no longer excluded by this policy. The pinned WebRTC implementation
+then enumerates running native interfaces (including hotspot interfaces without Android network
 handles) and binds candidate sockets to their local addresses using normal OS
 routing. This neither binds the process nor changes Android network/VPN
 settings. Ordinary LAN-viewer audio retains the default Android network policy.
-DTLS encryption, private-host-only signaling, receive-only browser media,
-selected-pair verification, RTP progression and browser playback proof remain
-required. No public STUN/TURN service or alternate audio transport is added.
+DTLS encryption, receive-only browser media, connected ICE/peer state, RTP
+progression and browser playback proof remain required. Selected-pair metadata
+is diagnostic only; missing/redacted stats, candidate type or address range do
+not block an otherwise connected and playing session. No public STUN/TURN service
+or alternate audio transport is added.
 
 Pinned implementation evidence:
 
@@ -110,23 +120,23 @@ Pinned implementation evidence:
 
 This corrects a source-level incompatibility with the embedded-HTTPS topology;
 it is not proof that the user's timeout had this sole cause. Hardware validation
-must verify the selected direct path and audible playback with the actual
+must verify the selected path and audible playback with the actual
 Android hotspot, synthetic TUN and Tesla browser.
 
 ### Bounded handoff diagnostics
 
 Setup still has a 15-second deadline, followed by at most five seconds awaiting
 the Android handoff acknowledgment. Native audio remains enabled until the
-browser's existing playback/RTP/local-ICE proof has arrived and the acknowledgment
-has been queued successfully. Failure, disconnect, teardown or missing playback
+browser's existing playback/RTP/connected-ICE proof has arrived and the
+acknowledgment has been queued successfully. Failure, disconnect, teardown or missing playback
 heartbeats restores native output.
 
 Android timeout codes now distinguish offer, answer, ICE, application-PCM capture
-and browser-readiness stalls. ICE gathering with no eligible local candidates
+and browser-readiness stalls. ICE gathering with no well-formed local candidates
 fails explicitly. The browser reports the failed stage and bounded counts of
 signaled browser/Android candidates rather than suggesting a generic APK update.
 Its in-memory diagnostic snapshot also distinguishes DTLS, missing track, RTP,
-local-pair verification, playback and acknowledgment. The last setup snapshot
+selected-pair visibility, playback and acknowledgment. The last setup snapshot
 survives teardown for inspection and resets on the next audio request. It contains
 only fixed state names, booleans and counts, never addresses, SDP, credentials,
 raw error text or media. Diagnostics do not weaken any handoff prerequisite.
@@ -159,9 +169,11 @@ source, so the notice files accompany every APK under `assets/dependencies/`.
 The artifact manifest, ABI contents, API signatures, and Java no-AudioRecord
 branches were inspected without running a local Gradle build. Pure unit tests
 cover PCM ownership/silence/endianness, monotonic scheduling, interruption and
-stall recovery, bounded answers, candidate types and local-address filtering.
+stall recovery, bounded audio-only DTLS/Opus descriptions, standard candidate
+types/address ranges, malformed signaling and the embedded-HTTPS factory scope.
 The user-requested full compilation, Android tests, lint and APK validation run
 in GitHub Actions. Physical Android-to-browser sound, permission behavior,
 stereo fidelity, native route restoration, and long-session timing still require
 device testing; source/bytecode inspection is not a hardware test.
+
 

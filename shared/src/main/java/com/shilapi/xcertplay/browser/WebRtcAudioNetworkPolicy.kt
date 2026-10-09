@@ -12,11 +12,12 @@ internal object WebRtcAudioNetworkPolicy {
             // Native interface enumeration includes the actual hotspot/LAN instead. This is
             // factory-local: it does not bind the process, modify routes, or stop the VPN.
             disableNetworkMonitor = true
-            networkIgnoreMask = PeerConnectionFactory.Options.ADAPTER_TYPE_VPN or
-                PeerConnectionFactory.Options.ADAPTER_TYPE_CELLULAR or
-                PeerConnectionFactory.Options.ADAPTER_TYPE_LOOPBACK
-            // Host-only private-address signaling and selected-pair proof still apply.
+            // This session's synthetic TUN cannot forward media. Exclude VPN adapters only
+            // in this factory; let ICE consider every other adapter and address normally.
+            networkIgnoreMask = PeerConnectionFactory.Options.ADAPTER_TYPE_VPN
+            // Network reachability is negotiated by ICE; DTLS encryption remains mandatory.
             disableEncryption = false
         }
     }
 }
+

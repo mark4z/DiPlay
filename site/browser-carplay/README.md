@@ -325,11 +325,13 @@ Audio signaling travels only over the approved protocol-v2 WebSocket:
 
 Android offers exactly one send-only DTLS/Opus audio section. The browser answers
 receive-only, requests Opus `stereo=1`, and never creates a video/data/microphone
-track. ICE is host-only: RFC1918 IPv4, loopback/link-local, IPv6 ULA/link-local, or
-bounded `.local` mDNS names. Public-interface candidates are not signaled. No
-STUN/TURN server or internet relay is configured. Both endpoints need a mutually
-reachable trusted local network; client isolation, firewalls, mDNS, and browser
-policy can prevent ICE connectivity. There is no insecure transport fallback.
+track. ICE accepts standard host, server-reflexive, peer-reflexive and relay
+candidate types with bounded valid IP literals or `.local` mDNS names, without
+private-address or candidate-type topology restrictions. No STUN/TURN server or
+internet relay is configured. Peers still need a mutually reachable network;
+client isolation, firewalls, mDNS, and browser policy can prevent connectivity.
+The approved secure signaling session carries the DTLS fingerprint; WebRTC
+verifies the peer and encrypts media. There is no insecure transport fallback.
 
 `requestId` advances on each user-initiated audio attempt. A disable refers to that
 same attempt. Android assigns a positive route `epoch`; offer/answer, trickle ICE,
@@ -339,19 +341,13 @@ old callbacks, and stale acknowledgments cannot revive or stop a newer route.
 SDP is ASCII and at most 6,000 characters; candidates are at most 1,024 characters,
 with at most 32 candidates in each direction and 64 incoming controls per attempt.
 
-The browser sends `audioReady` only when it has answered the offer, ICE is connected,
-a live audio track exists, the audio element's playback promise succeeded, and
-inbound audio RTP packets increased across successive stats polls, and the selected
-ICE pair is verified as host-to-host with local literal or mDNS addresses. A privacy-redacted browser-side address can establish proof only by an exact,
-unique correlation to a policy-valid candidate previously observed on this peer
-and ICE generation: selected transport/pair/candidate IDs, ICE username fragment,
-foundation, priority, UDP port/protocol, and the sole audio media ID must agree.
-All observed candidates, including rejected public ones, participate in the
-uniqueness check. Observation gaps, overflow, ambiguity, stale generation,
-missing correlation metadata, and hidden Android addresses still fail closed.
-Actual public/CGNAT addresses and non-host candidate types are never admitted by
-this fallback. Diagnostic labels show only fixed failure classes and candidate
-types, never candidate metadata or addresses. Android keeps
+The browser sends `audioReady` only when it has answered the offer, ICE and the
+peer connection are connected, a live audio track exists, the audio element's
+playback promise succeeded, and inbound audio RTP packets increased across
+successive stats polls. Candidate-pair stats are diagnostic only: hidden addresses,
+missing pair metadata, and ordinary non-host paths do not block playback.
+Diagnostics retain bounded packet counts and candidate types, never addresses,
+SDP or candidate correlation metadata. Android keeps
 native output on until its own peer is connected and this matching readiness is
 accepted, then confirms `audioState enabled:true`. A pre-readiness enabled ACK or
 legacy PCM audio request/response fails closed with APK/viewer upgrade guidance.
@@ -431,3 +427,4 @@ Tests use synthetic bytes and identifiers only. Real TLS certificate/hostname
 validation, DNS routing, HTTPS-to-LAN browser permission,
 hardware AVC/HEVC decoding, physical two-finger gestures, background suspension,
 and CarPlay hardware integration still require a parked-device test.
+

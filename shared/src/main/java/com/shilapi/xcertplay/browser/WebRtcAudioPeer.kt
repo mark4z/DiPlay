@@ -39,7 +39,8 @@ internal interface BrowserAudioPeerCallbacks {
 }
 
 /**
- * One host-only, send-only Opus connection. Captures decoded application PCM, NEVER a microphone.
+ * One send-only Opus connection with normal ICE path selection.
+ * Captures decoded application PCM, NEVER a microphone.
  * Native operations and signaling callbacks have one bounded serial owner. PCM runs on WebRTC's
  * capture thread and must not block on signaling, native rendering, or network writes.
  */
@@ -98,8 +99,8 @@ internal class WebRtcAudioPeer(
     }
 
     override fun addIce(candidate: String, mid: String?, index: Int) {
-        if (!WebRtcAudioRules.isHostCandidate(candidate) || index != 0 ||
-            (mid != null && (mid.length !in 1..64 || mid.any { it.code !in 33..126 }))) {
+        if (!WebRtcAudioRules.isValidCandidate(candidate) || index != 0 ||
+            !WebRtcAudioRules.isValidCandidateMid(mid)) {
             terminate("audio-invalid-candidate")
             return
         }
@@ -149,7 +150,6 @@ internal class WebRtcAudioPeer(
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.DISABLED
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
             iceCandidatePoolSize = 0
         }
@@ -180,7 +180,7 @@ internal class WebRtcAudioPeer(
         connection.createOffer(object : DescriptionObserver() {
             override fun onCreateSuccess(description: SessionDescription) = dispatch {
                 // createOffer normally precedes gathering, but also fail closed if a future
-                // dependency ever embeds an ineligible candidate into that returned SDP.
+                // dependency ever embeds malformed signaling into that returned SDP.
                 if (!WebRtcAudioRules.isSendOnlyOffer(description.description)) {
                     terminate("audio-invalid-offer")
                 } else {
@@ -230,7 +230,8 @@ internal class WebRtcAudioPeer(
             }
         }
         override fun onIceCandidate(candidate: IceCandidate) = dispatch {
-            if (WebRtcAudioRules.isHostCandidate(candidate.sdp) &&
+            if (WebRtcAudioRules.isValidCandidate(candidate.sdp) && candidate.sdpMLineIndex == 0 &&
+                WebRtcAudioRules.isValidCandidateMid(candidate.sdpMid) &&
                 localCandidates < WebRtcAudioRules.MAX_CANDIDATES) {
                 localCandidates++
                 callbacks.ice(candidate.sdp, candidate.sdpMid, candidate.sdpMLineIndex)
@@ -306,4 +307,5 @@ internal class WebRtcAudioPeer(
         }
     }
 }
+
 

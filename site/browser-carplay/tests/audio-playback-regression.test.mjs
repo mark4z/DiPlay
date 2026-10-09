@@ -54,11 +54,11 @@ test('timeout snapshot distinguishes pending playback from stale RTP and muted/e
   assert.match(env.player.timeoutMessage(), /audio packets stopped/); env.player.dispose();
 });
 
-test('a gesture resume never bypasses local pair, RTP or live-track readiness gates', async () => {
-  for (const gate of ['pair', 'rtp', 'track']) {
+test('a gesture resume never bypasses connected DTLS peer, RTP or live-track readiness gates', async () => {
+  for (const gate of ['dtls', 'rtp', 'track']) {
     const first = deferred(), env = audioEnvironment({ playback: first }); await env.player.enableFromGesture(); await receive(env);
     env.player.requirePlaybackGesture();
-    if (gate === 'pair') env.player.localPairVerified = false;
+    if (gate === 'dtls') env.peers[0].connectionState = 'connecting';
     if (gate === 'rtp') env.advance(3000);
     if (gate === 'track') env.player.track.readyState = 'ended';
     env.audios[0].play = function () { this.paused = false; return Promise.resolve(); };
@@ -81,3 +81,4 @@ test('synchronous play failures cannot resume setup, signal enable, leak timers 
   assert.equal(resume.player.peer, null); assert.equal(resume.timers.size, 0);
   assert.match(resume.states.at(-1).message, /Playback was blocked/);
 });
+
