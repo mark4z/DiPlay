@@ -234,6 +234,9 @@ class DiPlayActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (page != "home") { page = "home"; render() }
+                // The retained backend host sits below home. Finishing home would reveal it and
+                // immediately reopen home, trapping Back in a loop. Background the task instead.
+                else if (backendSession() && CarPlayBackgroundSession.hasSession()) moveTaskToBack(true)
                 else { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true }
             }
         })
@@ -420,7 +423,7 @@ class DiPlayActivity : ComponentActivity() {
             }
             card.addView(status)
             connectButton = button(getString(R.string.connect_phone), true) {
-                if (CarPlayBackgroundSession.hasSession()) openProjection()
+                if (CarPlayBackgroundSession.hasSession()) openCurrentSession()
                 else connect(true)
             }
             card.addView(connectButton, matchButton(0, 44))
@@ -458,7 +461,7 @@ class DiPlayActivity : ComponentActivity() {
         status = label(getString(R.string.ready_when_you_are), 24, TEXT, true).apply { setPadding(0, dp(10), 0, dp(16)) }
         card.addView(status)
         connectButton = button(getString(R.string.connect_phone), true) {
-            if (CarPlayBackgroundSession.hasSession()) openProjection()
+            if (CarPlayBackgroundSession.hasSession()) openCurrentSession()
             else connect(true)
         }
         card.addView(connectButton, matchButton())
@@ -3084,6 +3087,14 @@ class DiPlayActivity : ComponentActivity() {
         if (CarPlayBackgroundSession.hasSession()) CarPlayBackgroundSession.stop { runOnUiThread { open() } }
         else open()
     }
+    private fun backendSession(): Boolean =
+        CarPlayBackgroundSession.snapshot()?.sink?.relayOnly ?: BrowserHttpsPreferences(this).load().relayOnly
+
+    private fun openCurrentSession() {
+        if (backendSession()) connect(AirPlayPersistence.loadWirelessEnabled(this))
+        else openProjection()
+    }
+
     private fun openProjection() {
         startActivity(Intent(this, CarPlayHostActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
     }
@@ -3175,15 +3186,21 @@ class DiPlayActivity : ComponentActivity() {
 
     private fun refreshStatus() {
         val running = CarPlayBackgroundSession.hasSession()
+        val backend = backendSession()
         status?.text = when {
             setupError != null -> getString(R.string.setup_needs_attention)
             CarPlayBackgroundSession.active -> getString(R.string.carplay_connected)
+            running && backend -> CarPlayBackgroundSession.connectionStage ?: getString(R.string.connecting_to_your_iphone)
             running -> getString(R.string.connecting_to_your_iphone)
             DiPlayPreferences.phoneAddress(this) != null -> "${getString(R.string.status_ready_for_prefix)}${DiPlayPreferences.phoneName(this)}"
             else -> getString(R.string.ready_when_you_are)
         }
+        connectButton?.text = getString(when {
+            !running -> R.string.connect_phone
+            backend -> R.string.retry_carplay_connection
+            else -> R.string.open_carplay
+        })
         if (lastRunning != running) {
-            connectButton?.text = if (running) getString(R.string.open_carplay) else getString(R.string.connect_phone)
             disconnectButton?.visibility = if (running) View.VISIBLE else View.GONE
             disconnectButton?.isEnabled = true
             lastRunning = running

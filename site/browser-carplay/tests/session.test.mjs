@@ -779,3 +779,27 @@ test('former audio packet kind is rejected before and after Android approval', a
     assert.match(h.states.at(-1).message, approved ? /invalid video packet/ : /before Android approval/);
   }
 });
+
+test('superseded close disables retries but stale old-socket close cannot block a new session', () => {
+  const h = harness();
+  const old = h.connect(); const staleClose = old.onclose;
+  old.end(4001, 'superseded');
+  assert.equal(h.session.closed, true);
+  assert.equal(h.session.retryBlocked, true);
+  assert.match(h.states.at(-1).message, /Another browser/);
+  const next = h.connect();
+  staleClose({ code: 4001, reason: 'superseded' });
+  assert.equal(h.session.closed, false);
+  assert.equal(h.session.retryBlocked, false);
+  approve(next);
+  assert.equal(h.session.authenticated, true);
+  h.session.close();
+});
+
+test('only the exact superseded close code and reason suppress retry', () => {
+  for (const [code, reason] of [[4001, 'arbitrary'], [1000, 'superseded'], [1006, 'superseded']]) {
+    const h = harness(); const socket = h.connect(); socket.end(code, reason);
+    assert.equal(h.session.retryBlocked, false);
+    assert.doesNotMatch(h.states.at(-1).message, /Another browser/);
+  }
+});

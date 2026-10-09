@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // Minimal DOM/WebCodecs stubs exercise the actual page module's event wiring.
 // This supplements (not replaces) a real browser/hardware acceptance test.
 for (const embedded of [false, true]) {
-test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection policy, explicit touch and releases frames/contacts on interrupted flows`, async t => {
+test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection policy, automatic touch and releases frames/contacts on interrupted flows`, async t => {
   class Events {
     constructor() { this.listeners = new Map(); }
     addEventListener(name, handler) { const handlers = this.listeners.get(name) || []; handlers.push(handler); this.listeners.set(name, handlers); }
@@ -33,7 +33,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
     hasPointerCapture(id) { return captured.has(id); }
     releasePointerCapture(id) { captured.delete(id); this.dispatch('lostpointercapture', { pointerId: id }); }
   }
-  const elements = Object.fromEntries(['settings-close', 'resolution-settings', 'resolution-follow', 'resolution-status', 'controls-grip', 'controls-reveal', 'controls-safe-area', 'connection', 'ip', 'port', 'parked', 'touch', 'connect', 'disconnect',
+  const elements = Object.fromEntries(['resolution-target', 'resolution-actual', 'settings-close', 'resolution-settings', 'resolution-follow', 'resolution-status', 'controls-grip', 'controls-reveal', 'controls-safe-area', 'connection', 'ip', 'port', 'parked', 'touch', 'connect', 'disconnect',
     'video', 'viewport', 'placeholder', 'status', 'indicator', 'origin', 'touch-status',
     'connection-timeline', 'connection-attempt', 'connection-transport', 'manual-endpoint', 'local-endpoint',
     'local-endpoint-value', 'connection-instructions', 'transport-warning', 'browser-requirements', 'lan-diagnostics',
@@ -82,10 +82,8 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   const pointer = (pointerId, clientX = 500, clientY = 500) => ({ pointerId, clientX, clientY, pointerType: 'touch', buttons: 1 });
   await import(`../viewer.mjs?ui-test-${embedded}`);
 
-  assert.equal(sockets.length, embedded ? 1 : 0, 'only the built-in page connects once on load');
+  assert.equal(sockets.length, embedded ? 1 : 0, 'only the built-in page connects on load without fresh parked confirmation');
   assert.equal(elements.parked.checked, false, 'restored parked state is not fresh consent');
-  assert.equal(elements.touch.checked, false);
-  assert.equal(elements.connect.disabled, true);
   assert.equal(elements.origin.textContent, origin);
   assert.equal(elements['manual-endpoint'].hidden, embedded);
   assert.equal(elements['local-endpoint'].hidden, !embedded);
@@ -134,7 +132,6 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
   socket.receive({ type: 'approvalPending', version: 2 });
   assert.match(elements.status.textContent, /Tap Accept/);
-  assert.equal(elements.touch.disabled, true);
   socket.receive({ type: 'authenticated', version: 2 });
   if (embedded) {
     const settleResolution = () => {
@@ -143,7 +140,8 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
     settleResolution();
     const request = socket.sent.find(message => message.type === 'setBrowserResolution');
     assert.deepEqual(request, { type: 'setBrowserResolution', requestId: 1, enabled: true, width: 2000, height: 2000, units: 'device-pixels' });
-    socket.receive({ ...request, type: 'browserResolution', width: 1080, height: 1080, applies: 'unchanged' });
+    socket.receive({ ...request, type: 'browserResolution', width: 1080, height: 1080, effectiveWidth: 864, effectiveHeight: 864, applies: 'unchanged' });
+    assert.equal(elements['resolution-target'].textContent, '864 × 864 px');
     elements['controls-grip'].dispatch('click');
     elements['controls-reveal'].dispatch('click');
     window.dispatch('resize');
@@ -151,7 +149,7 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
     assert.equal(socket.sent.filter(message => message.type === 'setBrowserResolution').length, 1,
       'unchanged video area and toolbar overlays must not restart CarPlay');
   }
-  socket.receive({ type: 'config', streamId: 1, codec: 'avc1.64001f', width: 1920, height: 1080 });
+  socket.receive({ type: 'config', streamId: 1, codec: 'avc1.64001f', width: 1280, height: 720 });
   await Promise.resolve();
   const superseded = decoders[0].emit();
   const rendered = decoders[0].emit();
@@ -160,18 +158,16 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   paint();
   assert.equal(rendered.closes, 1);
   assert.equal(draws.length, 1);
+  assert.equal(elements['resolution-actual'].textContent, '1920 × 1080 px', 'actual size comes from the decoded frame, not config, target, or canvas');
   assert.equal(elements.placeholder.hidden, true);
   assert.deepEqual(elements['connection-timeline'].children.map(item => item.textContent.replace(/^\+\d+\.\ds · /, '')),
     ['Connect requested', 'WebSocket opened', 'Android approval pending', 'Approved on Android', 'First video decoded']);
-  assert.equal(elements.touch.checked, false);
   elements.video.dispatch('pointerdown', pointer(100));
-  assert.equal(socket.sent.some(m => m.type === 'touch'), false, 'video must not implicitly enable touch');
+  assert.equal(socket.sent.some(m => m.type === 'touch'), false, 'automatic touch still requires Android ownership acknowledgment');
 
-  elements.touch.checked = true;
-  elements.touch.dispatch('change');
   assert.deepEqual(socket.sent.at(-1), { type: 'setTouchOwnership', enabled: true, streamId: 1, requestId: 1 });
   elements.video.dispatch('pointerdown', pointer(100));
-  assert.equal(socket.sent.some(m => m.type === 'touch'), false, 'checkbox alone does not grant touch ownership');
+  assert.equal(socket.sent.some(m => m.type === 'touch'), false, 'automatic request alone does not grant touch ownership');
   assert.equal(elements.video.classes.has('touch-enabled'), false);
   assert.match(elements['touch-status'].textContent, /Waiting for Android/);
   socket.receive({ type: 'touchOwnership', enabled: true, streamId: 1, requestId: 1 });
@@ -210,83 +206,61 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.equal(captured.size, 0);
   elements.video.dispatch('pointerdown', pointer(450));
   assert.equal(captured.size, 1);
-  elements.touch.checked = false;
-  elements.touch.dispatch('change');
-  assert.equal(captured.size, 0);
-  assert.deepEqual(socket.sent.at(-2), { type: 'touch', streamId: 1, contacts: [] });
-  assert.deepEqual(socket.sent.at(-1), { type: 'setTouchOwnership', enabled: false, streamId: 1, requestId: 2 });
-  assert.equal(elements.video.classes.has('touch-enabled'), false);
-  socket.receive({ type: 'touchOwnership', enabled: false, streamId: 1, requestId: 2 });
-  assert.equal(elements['touch-status'].textContent, 'Touch control off');
-  elements.touch.checked = true;
-  elements.touch.dispatch('change');
-  socket.receive({ type: 'touchOwnership', enabled: true, streamId: 1, requestId: 1 });
-  assert.equal(elements.video.classes.has('touch-enabled'), false, 'old acknowledgment cannot enable new opt-in');
-  socket.receive({ type: 'touchOwnership', enabled: true, streamId: 1, requestId: 3 });
-  assert.equal(elements.video.classes.has('touch-enabled'), true);
+  elements['viewer-settings'].dispatch('toggle');
+  assert.equal(captured.size, 0, 'opening settings releases held contacts');
+  assert.deepEqual(socket.sent.at(-1).contacts, []);
 
   elements.video.dispatch('pointerdown', pointer(451));
   socket.receive({ type: 'config', streamId: 2, codec: 'avc1.64001f', width: 1920, height: 1080 });
   assert.equal(captured.size, 0, 'reconfiguration releases held gestures');
-  assert.equal(elements.touch.checked, true);
-  assert.equal(elements.touch.disabled, false, 'saved intent can still be cancelled');
   assert.equal(elements.video.classes.has('touch-enabled'), false);
-  socket.receive({ type: 'touchOwnership', enabled: true, streamId: 1, requestId: 3 });
+  socket.receive({ type: 'touchOwnership', enabled: true, streamId: 1, requestId: 1 });
   await Promise.resolve();
   decoders.at(-1).emit();
   paint();
-  assert.equal(elements.touch.checked, true, 'same approved socket retains explicit opt-in');
   assert.equal(elements.video.classes.has('touch-enabled'), false, 'new generation still needs a matching ACK');
   const resumedTouch = socket.sent.at(-1);
   assert.equal(resumedTouch.enabled, true);
   assert.equal(resumedTouch.streamId, 2);
-  assert.equal(resumedTouch.requestId, 5);
+  assert.equal(resumedTouch.requestId, 3);
   socket.receive({ ...resumedTouch, type: 'touchOwnership' });
   assert.equal(elements.video.classes.has('touch-enabled'), true);
   const cancelled = decoders.at(-1).emit();
   document.visibilityState = 'hidden';
   document.dispatch('visibilitychange');
   assert.equal(cancelled.closes, 1, 'pending frame is closed on hide');
+  assert.equal(elements['resolution-actual'].textContent, '等待视频');
+  if (embedded) assert.equal(elements['resolution-target'].textContent, '等待 Android 确认');
   assert.equal(socket.readyState, 3);
   assert.equal(elements.placeholder.hidden, false);
   assert.equal(elements.parked.checked, false);
-  assert.equal(elements.touch.checked, false);
-  assert.equal(elements.touch.disabled, true);
   document.visibilityState = 'visible';
   document.dispatch('visibilitychange');
   window.dispatch('pageshow', { persisted: true });
-  assert.equal(sockets.length, 1, 'returning to the page must never reconnect');
-
+  assert.equal(sockets.length, embedded ? 2 : 1, 'only embedded viewer resumes automatically without new parked confirmation');
   if (!embedded) { elements.parked.checked = true; elements.parked.dispatch('change'); }
-  elements.connection.dispatch('submit');
   assert.equal(sockets.length, 2);
-  assert.equal(elements.touch.checked, false);
-  sockets[1].open();
-  sockets[1].receive({ type: 'approvalPending', version: 2 });
-  elements.disconnect.dispatch('click');
-  elements.disconnect.dispatch('click');
-  assert.equal(sockets[1].readyState, 3);
-  assert.match(elements['connection-attempt'].textContent, /Attempt 2/);
-  assert.equal(elements['connection-timeline'].children.length, 4, 'reconnect replaces the earlier timeline');
-  assert.match(elements['connection-timeline'].children.at(-1).textContent, /Connection ended \(no close event code observed\)/);
-  assert.equal(elements.touch.disabled, true);
-  assert.equal(sockets.length, 2, 'cancelling pending approval must never reconnect');
-
-  elements.connection.dispatch('submit');
-  const rejected = sockets[2];
-  rejected.open();
-  rejected.receive({ type: 'approvalPending', version: 2 });
-  rejected.receive({ type: 'error', code: 'approvalRejected', version: 2 });
-  assert.equal(rejected.readyState, 3);
-  assert.match(elements.status.textContent, /rejected on Android/);
-  assert.equal(elements.ip.disabled, embedded);
-  assert.equal(elements.port.disabled, embedded);
-  assert.equal(elements.connect.disabled, false);
-  assert.equal(elements.touch.checked, false);
-  assert.equal(elements.touch.disabled, true);
+  const current = sockets[1];
+  current.open();
+  current.receive({ type: 'approvalPending', version: 2 });
+  current.onclose({ code: 1006, reason: '' });
+  assert.equal(current.readyState, 3);
+  const retryTimers = [...timers].filter(([, timer]) => timer.delay === 5000);
+  assert.equal(retryTimers.length, 1, 'one retry is pending after network loss');
+  const [retryId, retryTimer] = retryTimers[0]; timers.delete(retryId); retryTimer.callback();
   assert.equal(sockets.length, 3);
+  const replacement = sockets[2];
+  replacement.open();
+  replacement.receive({ type: 'approvalPending', version: 2 });
+  replacement.onclose({ code: 4001, reason: 'superseded' });
+  assert.match(elements.status.textContent, /Another browser/);
+  assert.equal([...timers.values()].some(timer => timer.delay === 5000), false, 'superseded viewer never retries');
+  document.visibilityState = 'hidden'; document.dispatch('visibilitychange');
+  document.visibilityState = 'visible'; document.dispatch('visibilitychange');
+  window.dispatch('pageshow', { persisted: true });
+  assert.equal(sockets.length, 3, 'focus and BFCache cannot reclaim a superseded session');
+  window.dispatch('pagehide');
+  assert.equal([...timers.values()].some(timer => timer.delay === 5000), false);
   assert.equal(fetches, 0, 'HTTPS viewer never automatically requests the HTTP health endpoint');
 });
-
 }
-

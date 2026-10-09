@@ -6,8 +6,8 @@ const positiveId = value => Number.isSafeInteger(value) && value > 0;
 const UPGRADE_ADVICE = 'Install the latest DiPlay APK and reload the updated browser viewer; both must support Android approval (protocol v2).';
 
 const APPROVAL_ERRORS = {
-  approvalRejected: 'The connection was rejected on Android. Click Connect to request approval again.',
-  approvalTimeout: 'Approval timed out. Click Connect to try again and accept the prompt on Android.',
+  approvalRejected: 'The connection was rejected on Android. Reload this page to request approval again.',
+  approvalTimeout: 'Approval timed out. Accept the next connection prompt on Android.',
   upgradeRequired: UPGRADE_ADVICE,
 };
 
@@ -15,13 +15,14 @@ const APPROVAL_ERRORS = {
 // backpressure are tested without a network, browser, or real accessory identity.
 export class BrowserSession {
   constructor({ WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame,
-    onBrowserResolution = () => {}, onTouchOwnership = () => {}, onDiagnostics = () => {},
+    autoTouch = false, onBrowserResolution = () => {}, onTouchOwnership = () => {}, onDiagnostics = () => {},
     now = () => performance.now(),
     // Window timers require their host receiver, not this BrowserSession.
     setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
     clearTimer = id => globalThis.clearTimeout(id) }) {
-    Object.assign(this, { WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame, onBrowserResolution, onTouchOwnership, now, setTimer, clearTimer });
+    Object.assign(this, { autoTouch, WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame, onBrowserResolution, onTouchOwnership, now, setTimer, clearTimer });
     this.diagnostics = new ConnectionDiagnostics({ now, onUpdate: onDiagnostics });
+    this.retryBlocked = false;
     this.socket = null;
     this.decoder = null;
     this.config = null;
@@ -50,6 +51,7 @@ export class BrowserSession {
     const endpoint = parseEndpoint(ip, port, pageOrigin);
     const tls = endpoint.startsWith('wss:');
     this.closed = false;
+    this.retryBlocked = false;
     this.authenticated = false;
     this.approvalPending = false;
     this.streaming = false;
@@ -74,7 +76,7 @@ export class BrowserSession {
     socket.binaryType = 'arraybuffer';
     const current = () => !this.closed && this.socket === socket;
     // This includes time for the browser's user-mediated LAN permission prompt.
-    this.armTimeout(60000, tls
+    this.armTimeout(tls ? 5000 : 60000, tls
       ? 'Connection timed out. Check DiPlay, this trusted LAN, and that the embedded HTTPS page still loads.'
       : 'Connection timed out. Check local-network permission and the bridge IP and port.');
     socket.onopen = () => {
@@ -88,7 +90,7 @@ export class BrowserSession {
         return;
       }
       this.reportState('requestingApproval', 'Requesting approval. Look for the connection prompt in DiPlay on Android…');
-      this.armTimeout(30000, `Approval timed out. Click Connect to try again and accept the prompt on Android. If no prompt appears, ${UPGRADE_ADVICE}`);
+      this.armTimeout(30000, `Approval timed out. Accept the next connection prompt on Android. If no prompt appears, ${UPGRADE_ADVICE}`);
     };
     socket.onmessage = event => {
       if (!current()) return;
@@ -105,9 +107,15 @@ export class BrowserSession {
     };
     socket.onclose = event => {
       if (!current()) return;
+      if (event.code === 4001 && event.reason === 'superseded') {
+        this.retryBlocked = true;
+        this.close('Another browser is now connected. Reload this page to take over again.', false, event.code);
+        return;
+      }
+      if (event.code === 1008 && event.reason === 'approvalRejected') this.retryBlocked = true;
       let message = event.code === 1008
         ? 'The bridge rejected this session. Check the Android approval prompt, allowed origin, and parked-use settings.'
-        : 'The bridge disconnected. Click Connect when you are ready to request approval again.';
+        : 'The bridge disconnected. This page will retry while visible.';
       // Only map exact protocol constants; never interpolate arbitrary reasons.
       if (event.code === 1008 && typeof event.reason === 'string' && Object.hasOwn(APPROVAL_ERRORS, event.reason)) message = APPROVAL_ERRORS[event.reason];
       else if (!this.authenticated) message += ` ${UPGRADE_ADVICE}`;
@@ -141,6 +149,7 @@ export class BrowserSession {
     try { message = JSON.parse(text); } catch { this.close('The bridge sent an invalid control message.', true); return; }
     if (!message || typeof message !== 'object') { this.close('The bridge sent an invalid control message.', true); return; }
     if (message.type === 'error') {
+      if (message.code === 'approvalRejected') this.retryBlocked = true;
       const messageText = message.version !== PROTOCOL_VERSION ? UPGRADE_ADVICE
         : (typeof message.code === 'string' && Object.hasOwn(APPROVAL_ERRORS, message.code) ? APPROVAL_ERRORS[message.code]
           : (!this.authenticated ? UPGRADE_ADVICE : 'The bridge could not continue this session. Check its status in DiPlay.'));
@@ -240,8 +249,8 @@ export class BrowserSession {
         if (!this.streaming) {
           this.streaming = true;
           this.diagnostics.mark('firstVideo');
-          this.reportState('live', 'Live display. Touch control is optional.');
-          if (this.touchRequested && !this.touchOwned && !this.touchPending) this.setTouchOwnership(true);
+          this.reportState('live', this.autoTouch ? 'Live display. Touch control is enabled automatically.' : 'Live display.');
+          if ((this.autoTouch || this.touchRequested) && !this.touchOwned && !this.touchPending) this.setTouchOwnership(true);
         }
         if (this.closed || version !== this.decoderVersion) { frame.close(); return; }
         try { this.onFrame(frame); } catch { frame.close(); this.close('The browser could not draw the video frame.', true); }
@@ -415,7 +424,7 @@ export class BrowserSession {
     this.decoder = null;
   }
 
-  close(message = 'Disconnected. Click Connect to request approval again.', error = false, closeCode = null) {
+  close(message = 'Disconnected. This page will retry while visible.', error = false, closeCode = null) {
     if (this.closed) return;
     // Closing the WebSocket also releases all contacts server-side, including if a
     // final empty contact message cannot get through a failing connection.
@@ -436,3 +445,40 @@ export class BrowserSession {
   }
 }
 
+
+// A single retry timer, active only for a visible, eligible, disconnected page.
+// Superseded/rejected clients stay idle until a fresh page load: focus alone must
+// never let two viewers steal the display from each other every five seconds.
+export class AutoReconnect {
+  constructor({ connect, eligible, closed, blocked, delay = 5000,
+    setTimer = (callback, ms) => globalThis.setTimeout(callback, ms),
+    clearTimer = id => globalThis.clearTimeout(id) }) {
+    Object.assign(this, { connect, eligible, closed, blocked, delay, setTimer, clearTimer });
+    this.timer = null;
+    this.suspended = false;
+  }
+  cancel() { if (this.timer !== null) this.clearTimer(this.timer); this.timer = null; }
+  suspend() { this.suspended = true; this.cancel(); }
+  resume() { this.suspended = false; this.update(true); }
+  update(immediate = false) {
+    if (this.suspended || !this.eligible() || !this.closed() || this.blocked()) { this.cancel(); return; }
+    if (this.timer !== null) {
+      if (!immediate) return;
+      this.cancel();
+    }
+    if (immediate) {
+      this.connect();
+      // Synchronous constructor/validation failures must also be bounded.
+      this.update();
+      return;
+    }
+    const timer = this.setTimer(() => {
+      if (this.timer !== timer) return;
+      this.timer = null;
+      if (this.suspended || !this.eligible() || !this.closed() || this.blocked()) return;
+      this.connect();
+      this.update();
+    }, this.delay);
+    this.timer = timer;
+  }
+}

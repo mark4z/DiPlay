@@ -1,25 +1,20 @@
-import { followBrowserResolution, observeRenderPixels } from './resolution.mjs?v=render-pixels-v2';
+import { followBrowserResolution, observeRenderPixels } from './resolution.mjs?v=automatic-viewer-v1';
 import { floatingControls } from './controls.mjs?v=floating-controls-v1';
 import { Contacts, EMBEDDED_VIEWER_ORIGIN, EMBEDDED_VIEWER_ENDPOINT, fitRect, mapPointer } from './core.mjs?v=embedded-https-v1';
-import { BrowserSession } from './session.mjs?v=video-touch-v1';
+import { BrowserSession, AutoReconnect } from './session.mjs?v=automatic-viewer-v1';
 import { milestoneText, transportCaption } from './diagnostics.mjs?v=embedded-https-v1';
 
 const byId = id => document.getElementById(id);
 const form = byId('connection');
 const shell = byId('viewer-shell');
 const enter = byId('enter');
-const retry = byId('retry');
-const stop = byId('stop');
 const entryStatus = byId('entry-status');
 let entryGeneration = 0;
 let fullscreenPending = false;
 const ip = byId('ip');
 const port = byId('port');
 const parked = byId('parked');
-const touch = byId('touch');
 const touchStatus = byId('touch-status');
-const connect = byId('connect');
-const disconnect = byId('disconnect');
 const canvas = byId('video');
 const viewport = byId('viewport');
 const placeholder = byId('placeholder');
@@ -38,6 +33,7 @@ let videoHeight = 0;
 let live = false;
 let displayControls = null;
 let resolutionFollow = null;
+let reconnect = null;
 
 // The browser's actual origin is the only selector. URL parameters, fragments,
 // persisted input and server-provided config can never override the destination.
@@ -62,7 +58,7 @@ if (embeddedViewer) {
   byId('parking-explanation').textContent = 'Use only while safely parked. DiPlay’s Android parked-use guard must be enabled; this page does not detect vehicle speed.';
   byId('local-approval-help').textContent = 'No IP address is needed. DiPlay’s configured approval mode applies. Manual approval requires Accept on Android within 30 seconds.';
   byId('local-endpoint-value').textContent = EMBEDDED_VIEWER_ENDPOINT;
-  byId('connection-instructions').textContent = 'This viewer connects automatically to this DiPlay device once when opened. In manual approval mode, tap Accept in DiPlay on Android. Stop or reconnect from the display controls.';
+  byId('connection-instructions').textContent = 'This viewer connects automatically and retries every five seconds while disconnected and visible. In manual approval mode, tap Accept in DiPlay on Android. A newly approved browser replaces the previous viewer; reload a replaced page to take over again.';
   byId('transport-warning').textContent = 'HTTPS and WSS protect page delivery, video, and touch controls with TLS. Keep both devices on your trusted private LAN. DiPlay controls connection approval. Do not bypass certificate warnings.';
   byId('browser-requirements').textContent = 'The built-in HTTPS viewer needs WebCodecs video decoding and a valid TLS connection. No Chrome 147 Local Network Access exemption is needed for the same-origin WSS link. In-car browser and H.265 support still depend on the browser and device. Install the latest DiPlay APK and reload this viewer together; both must support Android approval (protocol v2).';
   byId('connection-troubleshooting').textContent = 'If a connection is blocked, check that DiPlay is enabled, both devices share a trusted private LAN, and the built-in HTTPS page loads with a valid certificate. Do not disable browser security, ignore certificate warnings, or expose the bridge to the internet.';
@@ -72,8 +68,8 @@ if (embeddedViewer) {
   displayControls = floatingControls({ panel: byId('embedded-controls'), grip: byId('controls-grip'),
     reveal: byId('controls-reveal'), settings: byId('viewer-settings'), safeArea: byId('controls-safe-area'), document, window });
 }
-// Restored form state must never count as a fresh safety/control choice.
-parked.checked = touch.checked = false;
+// Restored form state must never count as fresh parked-use consent.
+parked.checked = false;
 
 function compatibilityError() {
   if (!isSecureContext || location.protocol !== 'https:') return 'Open this viewer over HTTPS. Insecure pages cannot connect.';
@@ -89,7 +85,7 @@ function compatibilityError() {
 const blocked = compatibilityError();
 function showDiagnostics({ attempt, transport, events }) {
   connectionTransport.textContent = transportCaption({ protocol: location.protocol, secureContext: isSecureContext, transport });
-  connectionAttempt.textContent = attempt ? `Attempt ${attempt}. Times are since Connect; latest attempt only.` : 'No connection attempted.';
+  connectionAttempt.textContent = attempt ? `Attempt ${attempt}. Times are since connection started; latest attempt only.` : 'No connection attempted.';
   // Fixed stage labels and numeric times/codes only. Never render network text.
   const items = events.map(event => {
     const item = document.createElement('li');
@@ -99,7 +95,7 @@ function showDiagnostics({ attempt, transport, events }) {
   connectionTimeline.replaceChildren(...items);
 }
 showDiagnostics({ attempt: 0, transport: null, events: [] });
-const session = new BrowserSession({ WebSocket, VideoDecoder: window.VideoDecoder,
+const session = new BrowserSession({ autoTouch: Boolean(window.PointerEvent), WebSocket, VideoDecoder: window.VideoDecoder,
   EncodedVideoChunk: window.EncodedVideoChunk, onState: setState, onFrame: queueFrame, onTouchOwnership: setTouchState,
   onDiagnostics: showDiagnostics,
   onBrowserResolution: message => resolutionFollow?.acknowledged(message) });
@@ -119,7 +115,8 @@ if (embeddedViewer) {
   const measure = observeRenderPixels(viewport, changed);
   resolutionFollow = followBrowserResolution({ measure,
     send: message => session.setBrowserResolution(message),
-    onStatus: message => { byId('resolution-status').textContent = message; } });
+    onStatus: message => { byId('resolution-status').textContent = message; },
+    onTarget: size => { byId('resolution-target').textContent = size ? `${size.width} × ${size.height} px` : '等待 Android 确认'; } });
   byId('resolution-follow').addEventListener('change', () => {
     if (!resolutionFollow.enable(byId('resolution-follow').checked)) {
       byId('resolution-follow').checked = !byId('resolution-follow').checked;
@@ -135,25 +132,18 @@ function updateControls() {
   const active = !session.closed;
   resolutionFollow?.connected(session.authenticated && active && document.visibilityState === 'visible');
   if (embeddedViewer) byId('resolution-follow').disabled = !session.authenticated || !active;
-  connect.disabled = Boolean(blocked) || active || !parkedUseAllowed();
-  disconnect.disabled = stop.disabled = !active;
-  retry.hidden = active || Boolean(blocked);
-  retry.disabled = connect.disabled;
   enter.disabled = Boolean(blocked) || !session.authenticated || !active || fullscreenPending;
   const fullscreen = document.fullscreenElement === shell;
   enter.hidden = fullscreen;
   enter.textContent = 'Enter fullscreen';
   ip.disabled = port.disabled = embeddedViewer || active;
-  touch.disabled = (!live && !session.touchRequested) || !parkedUseAllowed() || active === false || !window.PointerEvent;
+  reconnect?.update();
 }
 
 function setState(state, text) {
   live = state === 'live';
   if (!live) {
     releaseContacts();
-    // The session releases native ownership and invalidates ACKs. Keep the
-    // explicit checkbox intent while video recovers in this approved socket.
-    touch.checked = session.touchRequested;
     canvas.classList.remove('touch-enabled');
     clearPicture();
   }
@@ -171,12 +161,11 @@ function setState(state, text) {
 
 function setTouchState({ enabled, requested, pending }) {
   if (!enabled) releaseContacts();
-  touch.checked = requested;
   canvas.classList.toggle('touch-enabled', enabled && live && parkedUseAllowed());
-  touchStatus.textContent = pending
+  touchStatus.textContent = !window.PointerEvent ? 'This browser does not support touch input.' : pending
     ? (requested ? 'Waiting for Android to enable touch…' : 'Releasing touch control…')
-    : (enabled ? 'Touch control active' : (requested ? 'Touch paused while video recovers…' : 'Touch control off'));
-  byId('compact-touch-state').textContent = pending ? 'Touch pending' : enabled ? 'Touch on' : requested ? 'Touch paused' : 'Touch off';
+    : (enabled ? 'Touch control active' : (requested ? 'Touch paused while video recovers…' : 'Waiting for live video…'));
+  byId('compact-touch-state').textContent = pending ? 'Touch pending' : enabled ? 'Touch on' : requested ? 'Touch paused' : 'Touch waiting';
   updateControls();
 }
 
@@ -186,6 +175,7 @@ function clearPicture() {
   if (pendingFrame) pendingFrame.close();
   pendingFrame = null;
   videoWidth = videoHeight = 0;
+  byId('resolution-actual').textContent = '等待视频';
   context?.clearRect(0, 0, canvas.width, canvas.height);
   placeholder.hidden = false;
 }
@@ -219,6 +209,8 @@ function drawFrame() {
     context.fillRect(0, 0, width, height);
     context.drawImage(frame, rect.x, rect.y, rect.width, rect.height);
     placeholder.hidden = true;
+    const actualSize = `${frame.displayWidth} × ${frame.displayHeight} px`;
+    if (byId('resolution-actual').textContent !== actualSize) byId('resolution-actual').textContent = actualSize;
   } catch {
     session.close('This browser could not display the video.', true);
   } finally {
@@ -254,7 +246,7 @@ function point(event, clamp = false) {
 }
 
 canvas.addEventListener('pointerdown', event => {
-  if (!session.touchOwned || !touch.checked || !live || !parkedUseAllowed() || (event.pointerType === 'mouse' && event.button !== 0)) return;
+  if (!session.touchOwned || !live || !parkedUseAllowed() || (event.pointerType === 'mouse' && event.button !== 0)) return;
   const coordinate = point(event);
   if (!coordinate || !contacts.down(event.pointerId, coordinate)) return;
   event.preventDefault();
@@ -281,23 +273,14 @@ function finishPointer(event) {
 for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) canvas.addEventListener(name, finishPointer);
 canvas.addEventListener('contextmenu', event => { if (session.touchOwned) event.preventDefault(); });
 
-touch.addEventListener('change', () => {
-  if (!parkedUseAllowed() || (!live && touch.checked)) touch.checked = false;
-  releaseContacts();
-  if (!session.setTouchOwnership(touch.checked)) touch.checked = false;
-  canvas.classList.toggle('touch-enabled', session.touchOwned);
-});
 parked.addEventListener('change', () => {
   if (!embeddedViewer && !parked.checked) { releaseContacts(); session.close('Disconnected. Park safely before connecting again.'); }
   updateControls();
+  reconnect?.update(true);
 });
-function stopSession() { releaseContacts(); session.close(); }
-disconnect.addEventListener('click', stopSession);
-stop.addEventListener('click', stopSession);
 function connectSession() {
-  if (blocked || !parkedUseAllowed() || !session.closed || document.visibilityState !== 'visible') return;
+  if (blocked || session.retryBlocked || !parkedUseAllowed() || !session.closed || document.visibilityState !== 'visible') return;
   try {
-    touch.checked = false;
     if (embeddedViewer) session.connect(undefined, undefined, location.origin);
     else session.connect(ip.value, port.value);
   } catch (error) {
@@ -308,7 +291,10 @@ function connectSession() {
   }
 }
 form.addEventListener('submit', event => { event.preventDefault(); connectSession(); });
-retry.addEventListener('click', connectSession);
+for (const input of [ip, port]) input.addEventListener('change', () => reconnect?.update(true));
+reconnect = new AutoReconnect({ connect: connectSession,
+  eligible: () => !blocked && parkedUseAllowed() && document.visibilityState === 'visible' && (embeddedViewer || Boolean(ip.value && port.value)),
+  closed: () => session.closed, blocked: () => session.retryBlocked });
 
 enter.addEventListener('click', () => {
   if (!embeddedViewer || blocked || !session.authenticated || session.closed || fullscreenPending || document.visibilityState !== 'visible') return;
@@ -338,15 +324,19 @@ document.addEventListener('fullscreenchange', () => { releaseContacts(); updateC
 byId('viewer-settings').addEventListener('toggle', releaseContacts);
 
 function leavePage() {
+  reconnect.suspend();
   releaseContacts();
-  session.close('Disconnected because this page is no longer visible. Click Connect to request approval again.');
-  parked.checked = touch.checked = false;
+  session.close('Connection paused while this page is hidden.');
+  parked.checked = false;
   updateControls();
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'visible') leavePage(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') leavePage();
+  else reconnect.resume();
+});
 window.addEventListener('pagehide', leavePage);
 window.addEventListener('blur', releaseContacts);
-window.addEventListener('pageshow', event => { if (event.persisted) leavePage(); });
+window.addEventListener('pageshow', () => { if (document.visibilityState === 'visible') reconnect.resume(); });
 // Changing the picture bounds mid-gesture must not leave pressed contacts behind.
 if (window.ResizeObserver) new ResizeObserver(releaseContacts).observe(viewport);
 else window.addEventListener('resize', releaseContacts);
@@ -357,7 +347,6 @@ status.textContent = blocked || (embeddedViewer
 indicator.dataset.state = byId('display-toolbar').dataset.state = blocked ? 'error' : 'closed';
 if (blocked && embeddedViewer) byId('placeholder-note').textContent = blocked;
 updateControls();
-// Exactly one attempt for a freshly opened, visible built-in page. Failure,
-// timeout, Stop, tab return, and BFCache restoration never schedule a retry.
-if (embeddedViewer) connectSession();
+// Connection attempts are serialized and never run in a hidden page.
+reconnect.update(true);
 

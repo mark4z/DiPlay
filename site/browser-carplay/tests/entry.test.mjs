@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { deferred, flush } from './async-fixtures.mjs';
 
 let testId = 0;
-async function page(t, { hidden = false, fullscreen = 'resolve' } = {}) {
+async function page(t, { hidden = false, fullscreen = 'resolve', socketFailure = false } = {}) {
   class Events {
     constructor() { this.listeners = new Map(); }
     addEventListener(name, handler) {
@@ -43,7 +43,7 @@ async function page(t, { hidden = false, fullscreen = 'resolve' } = {}) {
   t.mock.method(globalThis, 'setTimeout', (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; });
   t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
   class Socket {
-    constructor(url) { this.url = url; this.sent = []; this.readyState = 0; this.bufferedAmount = 0; sockets.push(this); }
+    constructor(url) { if (socketFailure) throw new Error('TLS blocked'); this.url = url; this.sent = []; this.readyState = 0; this.bufferedAmount = 0; sockets.push(this); }
     open() { this.readyState = 1; this.onopen?.(); }
     receive(message) { this.onmessage?.({ data: JSON.stringify(message) }); }
     send(message) { this.sent.push(JSON.parse(message)); }
@@ -82,18 +82,17 @@ test('embedded entry starts exactly once, keeps approval gates, and requests ful
   p.element('retry').dispatch('click');
   assert.equal(p.fullscreenCalls(), 1, 'pending fullscreen cannot duplicate requests');
   assert.equal(p.sockets.length, 1);
-  p.element('stop').dispatch('click');
+  p.window.dispatch('pagehide');
   p.full.reject(new Error('late failure'));
   await flush();
   assert.equal(p.element('entry-status').hidden, true, 'stale fullscreen result cannot restore an old error');
-  assert.equal(p.element('retry').hidden, false);
-  assert.equal(p.sockets.length, 1, 'Stop never causes a retry');
-  p.element('retry').dispatch('click');
-  p.element('retry').dispatch('click');
-  assert.equal(p.sockets.length, 2, 'one explicit retry makes one fresh attempt');
+  assert.equal(p.sockets.length, 1, 'pagehide clears automatic retry');
+  p.window.dispatch('pageshow', { persisted: true });
+  p.window.dispatch('pageshow', { persisted: true });
+  assert.equal(p.sockets.length, 2, 'page return starts exactly one fresh attempt');
   p.sockets[1].open();
   assert.deepEqual(p.sockets[1].sent, [{ type: 'requestApproval', version: 2 }]);
-  p.element('stop').dispatch('click');
+  p.window.dispatch('pagehide');
 });
 
 test('successful fullscreen hides Enter until fullscreen exits without changing the session', async t => {
@@ -113,7 +112,7 @@ test('successful fullscreen hides Enter until fullscreen exits without changing 
   assert.equal(p.element('enter').textContent, 'Enter fullscreen');
   assert.equal(socket.readyState, 1);
   assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
-  p.element('stop').dispatch('click');
+  p.window.dispatch('pagehide');
 });
 
 for (const fullscreen of ['unavailable', 'reject', 'throw']) {
@@ -126,39 +125,81 @@ for (const fullscreen of ['unavailable', 'reject', 'throw']) {
     assert.match(p.element('entry-status').textContent, /fullscreen is unavailable.*fills this page/);
     assert.equal(socket.readyState, 1);
     assert.equal(p.sockets.length, 1);
-    p.element('stop').dispatch('click');
+    p.window.dispatch('pagehide');
   });
 }
 
-test('hidden opening, tab restoration, and BFCache restoration never trigger automatic retries', async t => {
+test('hidden opening pauses attempts and visible tab or BFCache return connects only once', async t => {
   const p = await page(t, { hidden: true });
-  assert.equal(p.sockets.length, 0, 'background page cannot open a socket');
-  p.document.visibilityState = 'visible'; p.document.dispatch('visibilitychange');
-  p.window.dispatch('pageshow', { persisted: true });
-  p.window.dispatch('pageshow', { persisted: true });
   assert.equal(p.sockets.length, 0);
-  p.element('retry').dispatch('click'); p.approve();
-  p.document.visibilityState = 'hidden'; p.document.dispatch('visibilitychange');
+  assert.equal([...p.timers.values()].some(timer => timer.delay === 5000), false);
   p.document.visibilityState = 'visible'; p.document.dispatch('visibilitychange');
+  p.window.dispatch('pageshow', { persisted: true });
   p.window.dispatch('pageshow', { persisted: true });
   assert.equal(p.sockets.length, 1);
+  p.approve();
+  p.document.visibilityState = 'hidden'; p.document.dispatch('visibilitychange');
   assert.equal(p.sockets[0].readyState, 3);
+  assert.equal([...p.timers.values()].some(timer => timer.delay === 5000), false);
+  p.document.visibilityState = 'visible'; p.document.dispatch('visibilitychange');
+  p.window.dispatch('pageshow', { persisted: true });
+  assert.equal(p.sockets.length, 2);
+  p.window.dispatch('pagehide');
 });
 
-test('approval rejection and connection timeout stay visible with explicit retry only', async t => {
+test('Android rejection remains visible and cannot reopen through focus or form submission', async t => {
   const p = await page(t);
   p.sockets[0].open();
   p.sockets[0].receive({ type: 'approvalPending', version: 2 });
   p.sockets[0].receive({ type: 'error', version: 2, code: 'approvalRejected' });
   assert.equal(p.element('display-toolbar').dataset.state, 'error');
   assert.match(p.element('status').textContent, /rejected on Android/);
-  assert.equal(p.element('retry').hidden, false);
+  p.element('connection').dispatch('submit');
+  p.window.dispatch('pageshow', { persisted: true });
   assert.equal(p.sockets.length, 1);
-  p.element('retry').dispatch('click');
-  const timer = [...p.timers.values()].find(value => value.delay === 60000);
-  assert.ok(timer); timer.callback();
-  assert.match(p.element('status').textContent, /Connection timed out/);
-  assert.equal(p.element('retry').hidden, false);
-  assert.equal(p.sockets.length, 2);
-  assert.equal(p.sockets[1].readyState, 3);
+  assert.equal([...p.timers.values()].some(timer => timer.delay === 5000), false);
+});
+
+test('TLS connect timeout is bounded, retries after five seconds and never overlaps sockets', async t => {
+  const p = await page(t);
+  const fire = delay => {
+    const entry = [...p.timers].find(([, timer]) => timer.delay === delay);
+    assert.ok(entry); p.timers.delete(entry[0]); entry[1].callback();
+  };
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    assert.equal(p.sockets.length, attempt);
+    assert.equal(p.sockets.filter(socket => socket.readyState < 2).length, 1);
+    assert.equal([...p.timers.values()].filter(timer => timer.delay === 5000).length, 1);
+    fire(5000);
+    assert.equal(p.sockets.at(-1).readyState, 3);
+    assert.match(p.element('status').textContent, /Connection timed out/);
+    assert.equal([...p.timers.values()].filter(timer => timer.delay === 5000).length, 1);
+    if (attempt < 4) fire(5000);
+  }
+  p.window.dispatch('pagehide');
+  assert.equal([...p.timers.values()].some(timer => timer.delay === 5000), false);
+});
+
+test('approval wait keeps the original thirty-second deadline without duplicate sockets', async t => {
+  const p = await page(t);
+  p.sockets[0].open();
+  p.sockets[0].receive({ type: 'approvalPending', version: 2 });
+  assert.equal([...p.timers.values()].some(timer => timer.delay === 5000), false);
+  assert.equal([...p.timers.values()].filter(timer => timer.delay === 30000).length, 1);
+  p.window.dispatch('pageshow', { persisted: true });
+  assert.equal(p.sockets.length, 1);
+  p.window.dispatch('pagehide');
+});
+
+test('synchronous WebSocket constructor failure keeps a single five-second retry without recursion', async t => {
+  const p = await page(t, { socketFailure: true });
+  assert.match(p.element('status').textContent, /browser blocked the TLS connection/);
+  for (let i = 0; i < 3; i++) {
+    const retries = [...p.timers].filter(([, timer]) => timer.delay === 5000);
+    assert.equal(retries.length, 1);
+    p.timers.delete(retries[0][0]); retries[0][1].callback();
+    assert.equal(p.sockets.length, 0);
+  }
+  p.window.dispatch('pagehide');
+  assert.equal([...p.timers.values()].some(timer => timer.delay === 5000), false);
 });

@@ -1,8 +1,9 @@
 # Experimental browser CarPlay viewer
 
 Static HTML/CSS/ES modules; no dependencies, telemetry, or browser storage.
-The built-in HTTPS origin makes one automatic connection attempt on a fresh,
-visible page open; external origins always require an explicit Connect. This is a
+The built-in HTTPS origin connects on visible page open and retries every five
+seconds while disconnected. External origins start after a private address/port
+and fresh parked confirmation are supplied. This is a
 video and touch companion to the Android bridge, not a standalone CarPlay
 receiver. Use the phone’s direct connection to the car for sound. Android’s normal
 audio playback remains unchanged; no audio is forwarded to the browser.
@@ -45,31 +46,46 @@ browser is not guaranteed to support them.
    [home-screen HTTPS setup guide](../../docs/BROWSER_HTTPS_SETUP.md) for the
    Android VPN/local-network prompts and certificate deletion controls.
 2. Manually open the built-in HTTPS URL shown above. All viewer assets come from
-   the APK on that connection. The page fills the viewport and makes one WSS
-   connection attempt to this device, with no IP address entry.
+   the APK on that connection. The page fills the viewport and starts a WSS
+   connection to this device, with no IP address entry.
 3. DiPlay's configured approval mode applies. In manual mode, tap **Accept** on
    Android within 30 seconds. The protocol-v2 approval handshake is required in
    either mode; TLS alone does not authorize media or controls.
 4. After approval, tap **Enter fullscreen** if wanted. This real browser gesture
    requests fullscreen. If fullscreen is not supported or allowed, the display
    still fills the page. Fullscreen failures remain visible for a manual retry.
-5. Open **Settings** to enable touch separately if wanted. It stays inactive until Android
-   acknowledges ownership. Up to two contacts match the existing CarPlay HID mapper.
+5. Touch is requested automatically once video is ready. It stays inactive until
+   Android acknowledges ownership. Up to two contacts match the existing CarPlay HID mapper.
 
 The built-in viewer keeps setup, transport explanations, diagnostics, and
-touch controls in **Settings**. Drag the dedicated grip to move the compact bar;
+touch status in **Settings**. Drag the dedicated grip to move the compact bar;
 when focused, arrow keys move it (Shift moves farther). A healthy live display
 hides the bar after four seconds without control activity. **Controls** reveals
 it again. Focused controls, an open Settings panel, and connection/fullscreen
 errors keep the bar visible. The canvas itself never becomes a reveal gesture,
 so existing CarPlay single- and two-contact input is preserved. **Close settings**
-or Escape closes the panel even if the bar was moved behind it. **Stop** and touch
-state are in the bar; connection and fullscreen errors stay visible outside the drawer. **Reconnect**
-starts one fresh attempt after a stop, rejection, or failure. Hiding or leaving
-the page closes the session. Returning to a tab or restoring it from BFCache does
-not reconnect; no timer retries failed connections. Reloading the visible page
-is a new opening and makes one new attempt. The embedded browser has no parked
-checkbox: the explicitly enabled Android parked-use guard remains required.
+or Escape closes the panel even if the bar was moved behind it. Touch state is
+shown in the bar; connection and fullscreen errors stay visible outside the drawer.
+There are no viewer Connect, Reconnect, Stop, or touch-toggle buttons. A visible,
+disconnected page retries after five seconds; only one socket or retry timer exists.
+The embedded TLS opening handshake has a five-second timeout; the external LAN
+permission prompt retains its 60-second allowance. Android approval retains its
+30-second deadline and is never interrupted by a second attempt.
+
+Hiding or leaving the page closes the session and cancels retries. Returning to
+a visible embedded tab or BFCache page reconnects; external pages require fresh
+parked confirmation. A newly approved browser takes over the active display and
+releases the previous browser's touch. The replaced browser receives WebSocket
+4001 / `superseded` and stays idle until reloaded, including across focus/tab returns.
+An explicitly rejected browser also waits for reload rather than repeating consent
+prompts. The embedded browser has no parked checkbox: the explicitly enabled
+Android parked-use guard remains required. Android's service Stop remains available.
+
+Settings shows the Android-confirmed effective output target separately from the
+actual decoded `VideoFrame.displayWidth × displayHeight`. These read-only metrics
+never change the viewport target. Actual video clears while no current frame is
+available; target clears until the current request receives its own Android ACK.
+A saved target is not proof that the current video has reached that size.
 
 After approval, the embedded viewer reports its stable video container content box
 in rendering-device pixels after a two-second debounce. It uses
@@ -114,7 +130,7 @@ Access support. Chrome's
 describe the permission-gated exemption for explicit local IP addresses.
 
 Enter the private IPv4 address and plaintext WebSocket port shown by DiPlay in
-separate fields, then confirm parked use, click Connect, personally decide on
+separate fields, then confirm parked use, personally decide on
 Chrome's local-network permission, and Accept on Android. This destination is
 always `ws://<RFC1918 IPv4>:<port>/carplay` with port 1–65535. No hostname, URL,
 credentials, alternate path, parameter, discovery, or scan is accepted. The fixed
@@ -133,11 +149,12 @@ with TLS. Both modes still require Android approval. Use only a trusted network.
 pairing credentials, persistent approvals, or raw network-data logging. HTTPS
 secures page delivery; only WSS also protects the WebSocket transport.
 
-Hide/leave the page, lock the screen, or click Stop/Disconnect to close the
-session. Unchecking parked use also disconnects the external viewer. Touch is released on pointer cancel/lost capture, focus loss,
-video reconfiguration, and resize. On reconnect, click Connect/Reconnect, complete
-the Android approval handshake, and explicitly enable touch again. The external checkbox and the Android parked-use guard are user declarations,
-not vehicle-speed sensors.
+Hide/leave the page or lock the screen to close the session. Unchecking parked
+use also disconnects the external viewer. Touch is released on pointer cancel/lost
+capture, focus loss, video reconfiguration, and resize. Every reconnection repeats
+the Android approval handshake. Touch is requested automatically after video is
+ready and still requires a matching Android acknowledgment. The external checkbox
+and Android parked-use guard are user declarations, not vehicle-speed sensors.
 
 ## Connection diagnostics and LAN checks
 
@@ -178,13 +195,13 @@ address matches the APK; do not bypass browser security or certificate warnings.
 The viewer never fetches, preflights, embeds, or auto-opens that HTTP endpoint from
 this HTTPS page. Such a cross-scheme fetch can be blocked as mixed content and
 must not be mistaken for a failed LAN route. Navigating away disconnects an active
-session; return to the HTTPS viewer and explicitly Connect again. An unavailable
+session; return to the HTTPS viewer and confirm parked use again. An unavailable
 health endpoint alone can also mean an older APK; inspect the APK’s version and
 status rather than inferring a permission failure.
 
 ## Wire protocol
 
-One WebSocket client to `/carplay`. Protocol **v2** replaces token authentication
+One active approved WebSocket client to `/carplay`, with bounded pending candidates. Protocol **v2** replaces token authentication
 with Android-side approval. Manual mode shows an explicit consent prompt; the
 embedded auto-approval opt-in still uses the same versioned handshake. The first
 client text message is:
@@ -198,9 +215,9 @@ after Android authorizes the connection send `{"type":"authenticated","version":
 No video, config, keyframe request, touch ownership request, or touch packet is
 accepted before the authenticated acknowledgment. The viewer closes if approval
 has not completed within 30 seconds of its request. Repeated pending messages
-cannot extend this deadline. Disconnect cancels the request; retrying within the same page always
-requires another explicit click and the Android approval handshake. A freshly
-opened visible built-in page starts one attempt automatically.
+cannot extend this deadline. Disconnect cancels the request. Retrying always
+repeats the Android approval handshake. Ordinary network failures retry after five
+seconds while visible; rejection and supersession require a page reload.
 
 Reject, timeout, and protocol mismatch use `{ "type":"error", "version":2,
 "code":"approvalRejected" }`, with `approvalTimeout` or `upgradeRequired` as the
@@ -214,7 +231,7 @@ installing the latest DiPlay APK and reloading this viewer together.
 While no stream is available, an approved connection may receive
 `{"type":"status","code":"waiting"}` or code `disconnected`. These clear video
 and touch ownership but keep the approved socket waiting for config. Other errors
-close the session. There is no automatic reconnect.
+close the session; ordinary failures follow the visible-page retry policy.
 
 When video is available, send e.g.:
 
@@ -259,14 +276,14 @@ superseded, stale, rendered, and cancelled frames are closed. Browser/network
 WebSocket buffers are outside JavaScript's control; the server must also bound
 its output queue.
 
-Touch ownership is a separate, explicit opt-in for the current video stream:
+Touch ownership is a separate automatic request for the current live video stream:
 
 ```json
 {"type":"setTouchOwnership","enabled":true,"streamId":1,"requestId":1}
 ```
 
-The checkbox requests ownership; it does **not** immediately enable browser
-pointer control. Only the matching acknowledgment enables touch:
+Decoded live video triggers the ownership request; it does **not** immediately
+enable browser pointer control. Only the matching acknowledgment enables touch:
 
 ```json
 {"type":"touchOwnership","enabled":true,"streamId":1,"requestId":1}
@@ -275,15 +292,12 @@ pointer control. Only the matching acknowledgment enables touch:
 `requestId` is a positive safe integer, monotonically increasing for the lifetime
 of the page session object. The acknowledgment must match both the latest
 `requestId` and current `streamId`. Delayed or unsolicited enables cannot restore
-control, including rapid uncheck/recheck. An `enabled:false` acknowledgment for
-the current request revokes ownership. Unchecking sends a new explicit
-`setTouchOwnership` with `enabled:false` and disables pointer control immediately.
-Configuration replacement and decoder recovery clear active ownership, pending
-requests, and held contacts, but preserve the user’s touch choice on the same
-approved connection. Once fresh video is available, a new ownership request must
-receive a matching acknowledgment before touch resumes. Identical configs do not
-create a new stream generation. Inactive status and real disconnect clear both
-ownership and the user’s choice; a fresh opt-in is then required.
+control. An `enabled:false` acknowledgment for the current request revokes
+ownership. Configuration replacement and decoder recovery immediately clear active
+ownership, pending requests, and held contacts. Once fresh video is available, a
+new ownership request must receive a matching acknowledgment before touch resumes.
+Identical configs do not create a new stream generation. Inactive status and real
+disconnect clear ownership; a fresh live stream requests ownership automatically.
 
 Touch snapshots are `{"type":"touch","streamId":1,"contacts":[{"id":0,"x":0.5,"y":0.5}]}`.
 The identifier must match the current video configuration, and the viewer must
@@ -310,7 +324,7 @@ intended hardware; the viewer does not synchronize that path.
 
 For parked manual validation, play music and navigation prompts through the
 phone-to-car connection while using browser video and touch. Confirm sound keeps
-working through fullscreen, video recovery, viewer Stop, tab hide, and reconnect.
+working through fullscreen, video recovery, viewer replacement, tab hide, and reconnect.
 Also verify normal Android audio playback with browser output both off and on.
 
 ## Validation
@@ -329,18 +343,19 @@ overrides, external viewer compatibility, packaged local-asset dependency closur
 strict endpoint validation, framing, codec
 configuration, letterbox geometry, stable contacts, approval/version gating,
 rejection/expiry, stale touch acknowledgments, timeouts, codec negotiation races,
-backpressure, recovery, and explicit reconnect. Diagnostic tests cover exact
+backpressure, recovery, and automatic reconnect. Diagnostic tests cover exact
 milestone times, pre-open failure, rejection, timeout, received-versus-local close
 codes, deduplication across video recovery, stale callbacks, privacy-safe output,
 bounded retention, new-attempt reset, and absence of automatic HTTP health probes.
 Removal regression tests ensure retired audio assets, controls, and browser media
 APIs cannot return, and obsolete audio messages and packets fail closed.
 Both embedded TLS and external LAN UI flows exercise approval, touch ownership,
-repeated Connect, hide/return, cancellation, and explicit reconnect. Entry
+repeated connection triggers, hide/return, cancellation, and automatic reconnect. Entry
 tests cover exactly one embedded opening attempt, hidden openings/BFCache,
 preapproval gesture gating, synchronous fullscreen invocation, repeated
 clicks, rejected/unsupported fullscreen, stale async results,
-and visible connection errors without automatic retry. The Gradle source-contract checks do not replace building and inspecting a real APK.
+visible connection errors, five-second retries, bounded connect timeouts, and
+rejection/supersession standby without retry loops. The Gradle source-contract checks do not replace building and inspecting a real APK.
 Tests use synthetic bytes and identifiers only. Real TLS certificate/hostname
 validation, DNS routing, HTTPS-to-LAN browser permission,
 hardware AVC/HEVC decoding, physical two-finger gestures, background suspension,

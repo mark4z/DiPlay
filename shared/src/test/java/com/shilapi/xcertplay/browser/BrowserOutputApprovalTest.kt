@@ -79,6 +79,25 @@ class BrowserOutputApprovalTest {
         assertEquals(2, request.takeDecision())
     }
 
+    @Test fun newerCandidateDismissesOldPromptAndItsLateFinishCannotDismissNewPrompt() {
+        val owner = Any().also(owners::add)
+        val events = mutableListOf<String>()
+        BrowserOutput.registerApprovalUi(owner, { events.add("show:${it.id}") }, { events.add("finish:$it") })
+        val old = request(7)
+        dispatch(old)
+        val fresh = request(8)
+        dispatch(fresh)
+        assertFalse(old.approve())
+        assertFalse(BrowserOutput.isApprovalPending(old))
+        assertTrue(BrowserOutput.isApprovalPending(fresh))
+        assertEquals(listOf("show:7", "finish:7", "show:8"), events)
+        BrowserOutput::class.java.getDeclaredMethod("finishApproval", java.lang.Long.TYPE, java.lang.Long.TYPE)
+            .apply { isAccessible = true }.invoke(BrowserOutput, old.id, generation())
+        assertTrue(BrowserOutput.isApprovalPending(fresh))
+        assertEquals(listOf("show:7", "finish:7", "show:8"), events)
+        assertTrue(fresh.approve())
+    }
+
     private fun request(id: Long) = BrowserApprovalRequest(id, "192.168.40.5",
         System.nanoTime() / 1_000_000L + 30_000L)
 

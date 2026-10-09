@@ -115,12 +115,20 @@ object BrowserOutput {
     }
 
     private fun requestApproval(request: BrowserApprovalRequest, generation: Long) {
+        var previous: BrowserApprovalRequest? = null
         val ui = synchronized(lock) {
             if (generation != serverGeneration || approvalUi == null ||
                 (activeSecureIdentity != null && !secureReady)) null else {
+                previous = pendingApproval
                 pendingApproval = request
                 approvalUi
             }
+        }
+        // A replacement prompt must dismiss the exact old request immediately;
+        // its reader may still be draining a bounded superseded close frame.
+        previous?.takeIf { it !== request }?.let {
+            it.reject()
+            ui?.finished?.invoke(it.id)
         }
         if (ui == null) {
             val automatic = synchronized(lock) {
@@ -178,17 +186,7 @@ object BrowserOutput {
         val transport = BrowserLanServer(address, origin,
             onApprovalRequested = { requestApproval(it, generation) },
             onApprovalFinished = { finishApproval(it, generation) },
-            onAuthenticated = { synchronized(lock) {
-                if (generation != serverGeneration) return@synchronized
-                ++viewerGeneration
-                viewerConnected = true
-                lastOwnershipRequestId = 0L
-                browserTouchOwned = false
-                waitingForKey = true
-                server?.sendText("{\"type\":\"authenticated\",\"version\":2}")
-                sendConfig()
-                requestKeyframe()
-            } },
+            onAuthenticated = { viewerAuthenticated(generation) },
             onText = { receive(it, generation) },
             onDisconnected = { synchronized(lock) {
                 if (generation != serverGeneration) return@synchronized
@@ -196,7 +194,7 @@ object BrowserOutput {
                 waitingForKey = true
                 releaseTouches()
                 viewerConnected = false
-            } }, secureIdentity = identity, viewerAssets = assets)
+            } }, secureIdentity = identity, viewerAssets = assets, lock = lock)
         server = transport
         secureStopped = onStopped
         activeSecureIdentity = identity
@@ -207,6 +205,20 @@ object BrowserOutput {
                 else "wss://${BrowserViewerAssets.AUTHORITY}/carplay"
             endpoint!!
         } catch (e: Exception) { server = null; secureStopped = null; activeSecureIdentity = null; secureReady = false; transport.close(); throw e }
+    }
+
+    private fun viewerAuthenticated(generation: Long) = synchronized(lock) {
+        if (generation != serverGeneration) return@synchronized
+        ++viewerGeneration
+        // Handover must revoke held contacts and pending native transfers
+        // before the replacement viewer can request its own touch lease.
+        releaseTouches()
+        viewerConnected = true
+        lastOwnershipRequestId = 0L
+        waitingForKey = true
+        server?.sendText("{\"type\":\"authenticated\",\"version\":2}")
+        sendConfig()
+        requestKeyframe()
     }
 
     fun stop() {

@@ -542,6 +542,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     controller != null && BrowserOutput.viewerConnected &&
                     com.shilapi.xcertplay.hud.BydNavigationOutputs.carPlayCall() == null &&
                     sink?.hasRealtimeAudio() != true,
+                generation = restartGeneration,
             )
         }, reconnect = {
             if (!CarPlayBackgroundSession.isOwner(this) || shuttingDown.get() || menuOpen || handshakeResetInProgress) false
@@ -875,6 +876,7 @@ class CarPlayHostActivity : ComponentActivity() {
             hideBottomBar = savedHideBottomBar
         }
         maybeStartCarPlay()
+        returnBackendToHomeWhenReady()
         applyFullscreenMode()
         if (systemBarsChanged) refreshDisplaySizeAfterLayout()
         videoView?.post {
@@ -1203,6 +1205,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     override fun onStop() {
         BrowserHttpsForeground.leave(this)
+        mainHandler.removeCallbacks(returnBackendToHome)
         closePicturePanel()
         // The controller, USB/iAP2 link, and VPN attachment intentionally outlive the UI.
         isActivityStarted = false
@@ -1294,6 +1297,7 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(returnBackendToHome)
         resetSidePanel()
         nightModeController.pause()
         pictureBinding?.close()
@@ -1496,23 +1500,6 @@ class CarPlayHostActivity : ComponentActivity() {
         stageStatusView = stage
         connectionPanel = viewport
         updateDebugOverlays()
-        if (backendMode) {
-            root.addView(LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setBackgroundColor(Color.BLACK)
-                isClickable = true
-                addView(TextView(this@CarPlayHostActivity).apply {
-                    text = "Backend mode / 后端模式\nNo local picture or sound. You can turn off the screen.\n本机不显示、不发声，可以熄屏。"
-                    setTextColor(Color.WHITE)
-                    gravity = Gravity.CENTER
-                })
-                addView(Button(this@CarPlayHostActivity).apply {
-                    text = "Settings / 设置"
-                    setOnClickListener { showDiPlayHome("settings") }
-                })
-            }, FrameLayout.LayoutParams(-1, -1))
-        }
         return root
     }
 
@@ -4130,6 +4117,7 @@ class CarPlayHostActivity : ComponentActivity() {
         try {
             startForegroundService(Intent(this, DiPlaySessionService::class.java))
             next.start()
+            returnBackendToHomeWhenReady()
         } catch (error: RuntimeException) {
             appendLog("Connection could not start: ${error.javaClass.simpleName}")
             shutdown(false, "foreground service could not start")
@@ -4503,6 +4491,23 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
+    /** Keep the controller owner alive behind the home/status screen. Permissions and the
+     * initial display layout must finish here before the foreground session can be started. */
+    private fun returnBackendToHomeWhenReady() {
+        if (!backendMode || !isActivityStarted || isFinishing || isDestroyed ||
+            shuttingDown.get() || controller == null || !CarPlayBackgroundSession.isOwner(this)) return
+        mainHandler.removeCallbacks(returnBackendToHome)
+        mainHandler.post(returnBackendToHome)
+    }
+
+    private val returnBackendToHome = Runnable {
+        if (backendMode && isActivityStarted && !isFinishing && !isDestroyed &&
+            !shuttingDown.get() && controller != null && CarPlayBackgroundSession.isOwner(this)) {
+            // Do not finish(): the existing controller, listeners and reconnect callbacks live here.
+            showDiPlayHome()
+        }
+    }
+
     private fun showDiPlayHome(page: String = "home") {
         controller?.sendTouch(emptyList())
         startActivity(Intent(this, DiPlayActivity::class.java)
@@ -4832,7 +4837,11 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun setConnectionStage(message: String) {
         latestStage = message
-        stageStatusView?.text = friendlyStage(message)
+        val stage = friendlyStage(message)
+        stageStatusView?.text = stage
+        val exhausted = getString(R.string.wireless_startup_retries_exhausted)
+        CarPlayBackgroundSession.updateConnectionStage(this,
+            if (message.contains(exhausted)) "$stage\n$exhausted" else stage)
         updateDebugOverlays()
     }
 
@@ -5019,6 +5028,11 @@ internal data class CarPlaySessionDisplay(
 /** Process-local hand-off for keeping the CarPlay session alive while no Activity is visible. */
 internal object CarPlayBackgroundSession {
     @Volatile var active = false
+    @Volatile var connectionStage: String? = null
+        private set
+    @Synchronized fun updateConnectionStage(candidate: Any, stage: String) {
+        if (owner === candidate) connectionStage = stage
+    }
     private var stopAction: (((() -> Unit)) -> Unit)? = null
     private var stopping = false
     private var owner: Any? = null
@@ -5082,7 +5096,7 @@ internal object CarPlayBackgroundSession {
         if (expected != null && controller !== expected) return
         controller = null
         sink = null
-        if (!keepOwner) { stopAction = null; owner = null }
+        if (!keepOwner) { stopAction = null; owner = null; connectionStage = null }
         active = false
         width = 0
         height = 0

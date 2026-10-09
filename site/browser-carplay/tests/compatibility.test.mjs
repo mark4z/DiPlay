@@ -52,13 +52,11 @@ for (const [index, scenario] of scenarios.entries()) {
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: scenario.userAgent || 'Chrome/154.0' } });
     await import(`../viewer.mjs?compatibility-${index}`);
     assert.match(element('status').textContent, scenario.message);
-    assert.equal(element('connect').disabled, true);
     element('ip').value = '192.168.1.20';
     element('port').value = '8765';
     element('parked').checked = true;
     element('parked').dispatch('change');
     element('connection').dispatch('submit');
-    assert.equal(element('connect').disabled, true);
     assert.equal(sockets, 0);
     if (scenario.origin && scenario.origin !== canonicalOrigin) assert.equal(element('manual-endpoint').hidden, false);
   });

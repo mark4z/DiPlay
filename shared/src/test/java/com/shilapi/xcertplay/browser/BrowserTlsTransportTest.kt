@@ -106,6 +106,38 @@ class BrowserTlsTransportTest {
         }
     }
 
+    @Test fun supersededTlsViewerGetsExactTerminalMarkerAndNoFurtherMedia() {
+        Harness().use { harness ->
+            harness.handshake()
+            harness.upgrade()
+            harness.requestApproval()
+            assertTrue(harness.approval!!.approve())
+            assertTrue(harness.authenticated.await(3, TimeUnit.SECONDS))
+            harness.connection.supersede()
+            assertFalse(harness.connection.send(2, byteArrayOf(42), keyFrame = true))
+            val close = harness.readFrame()
+            assertEquals(8, close.opcode)
+            assertArrayEquals(byteArrayOf(0x0f, 0xa1.toByte()) + "superseded".toByteArray(), close.payload)
+            assertTrue(harness.finished.await(3, TimeUnit.SECONDS))
+            assertEquals(1, harness.disconnectedCount.get())
+        }
+    }
+
+    @Test fun supersededTlsCandidateCannotUseLateApproval() {
+        Harness().use { harness ->
+            harness.handshake()
+            harness.upgrade()
+            harness.requestApproval()
+            harness.connection.supersede()
+            assertFalse(harness.approval!!.approve())
+            val close = harness.readFrame()
+            assertEquals(8, close.opcode)
+            assertArrayEquals(byteArrayOf(0x0f, 0xa1.toByte()) + "superseded".toByteArray(), close.payload)
+            assertTrue(harness.finished.await(3, TimeUnit.SECONDS))
+            assertEquals(0, harness.authenticatedCount.get())
+        }
+    }
+
     @Test fun legacyApprovalPayloadCannotAuthenticateOverTls() {
         Harness().use { harness ->
             harness.handshake()

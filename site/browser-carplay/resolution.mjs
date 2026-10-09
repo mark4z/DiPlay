@@ -67,7 +67,7 @@ export function browserSize(rect) {
   return { width, height };
 }
 
-export function followBrowserResolution({ measure, send, onStatus, setTimer = setTimeout, clearTimer = clearTimeout }) {
+export function followBrowserResolution({ measure, send, onStatus, onTarget = () => {}, setTimer = setTimeout, clearTimer = clearTimeout }) {
   let ready = false, enabled = true, timer = null, deadline = null, pending = null, acknowledgedId = null, last = null, nextId = 0;
   function cancel() { if (timer !== null) clearTimer(timer); timer = null; }
   function settle() {
@@ -84,6 +84,7 @@ export function followBrowserResolution({ measure, send, onStatus, setTimer = se
     const requestId = ++nextId;
     if (!Number.isSafeInteger(requestId)) return;
     acknowledgedId = null;
+    onTarget(null);
     pending = { requestId, key };
     last = key;
     if (!send({ requestId, enabled: follow, ...(size ? { ...size, units: RESOLUTION_UNITS } : {}) })) {
@@ -105,7 +106,7 @@ export function followBrowserResolution({ measure, send, onStatus, setTimer = se
       if (ready === value) return;
       ready = value;
       cancel();
-      if (!ready) { if (deadline !== null) clearTimer(deadline); deadline = null; pending = null; acknowledgedId = null; last = null; }
+      if (!ready) { onTarget(null); if (deadline !== null) clearTimer(deadline); deadline = null; pending = null; acknowledgedId = null; last = null; }
       else if (enabled) settle();
     },
     enable(value) {
@@ -119,6 +120,11 @@ export function followBrowserResolution({ measure, send, onStatus, setTimer = se
       const first = pending?.requestId === message.requestId;
       if (!first && message.requestId !== acknowledgedId) return;
       acknowledgedId = message.requestId;
+      // Only a correlated Android acknowledgment can label a target. Never infer
+      // the effective output from raw viewport pixels or the decoded video.
+      onTarget(!message.code || message.code === 'reconnectFailed'
+        ? (Number.isSafeInteger(message.effectiveWidth) && Number.isSafeInteger(message.effectiveHeight)
+          ? { width: message.effectiveWidth, height: message.effectiveHeight } : null) : null);
       if (deadline !== null) clearTimer(deadline);
       deadline = null; pending = null;
       const application = message.applies === 'reconnecting' ? 'Reconnecting CarPlay…' : message.applies === 'unchanged' ? 'Current output already matches.' : 'Will apply on the next CarPlay connection.';

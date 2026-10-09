@@ -25,6 +25,7 @@ class BrowserResolutionCoordinatorTest {
     private val replies = mutableListOf<JSONObject>()
     private var active: BrowserResolutionPolicy.Size? = BrowserResolutionPolicy.Size(1280, 720)
     private var restarts = 0
+    private var generation = 1
 
     @After fun cleanup() {
         coordinator.uninstall(this)
@@ -38,8 +39,8 @@ class BrowserResolutionCoordinatorTest {
             val scaled = com.shilapi.xcertplay.airplay.CarPlayDisplayScale.applyPercent(
                 com.shilapi.xcertplay.airplay.AirPlayDisplayConfig(selected.width, selected.height), percent)
             BrowserResolutionCoordinator.Evaluation(
-                BrowserResolutionPolicy.Size(scaled.widthPixels, scaled.heightPixels), active, true)
-        }, { restarts++; true })
+                BrowserResolutionPolicy.Size(scaled.widthPixels, scaled.heightPixels), active, true, generation)
+        }, { restarts++; generation++; true })
     }
 
     private fun request(id: Int = 1, width: Any = 1920, height: Any = 1080) {
@@ -211,5 +212,124 @@ class BrowserResolutionCoordinatorTest {
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(16))
         assertEquals(2, restarts)
     }
+    private fun timeOutResize() {
+        install()
+        request()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(32))
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+        assertEquals(1, restarts)
+    }
+
+    @Test fun lateMatchingSessionClearsTimeoutWithoutStartingAnotherReconnect() {
+        timeOutResize()
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        coordinator.complete(true)
+        assertEquals("unchanged", replies.last().getString("applies"))
+        assertFalse(replies.last().has("code"))
+        val count = replies.size
+        coordinator.complete(true)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(count, replies.size)
+        assertEquals(1, restarts)
+        request(2, 1600, 900)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+        assertEquals(2, restarts)
+    }
+
+    @Test fun lateWrongSizeDoesNotClearTimeoutOrOpenCircuit() {
+        timeOutResize()
+        coordinator.complete(true)
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+        request(2, 1600, 900)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(1, restarts)
+    }
+
+    @Test fun lateDifferentGenerationCannotClearTimeout() {
+        timeOutResize()
+        generation++
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        coordinator.complete(true)
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+        request(2, 1600, 900)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(1, restarts)
+    }
+
+    @Test fun newerRequestInvalidatesLateTimeoutAcknowledgement() {
+        timeOutResize()
+        request(2, 1600, 900)
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        val count = replies.size
+        coordinator.complete(true)
+        assertEquals(count, replies.size)
+        request(3, 1440, 900)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(1, restarts)
+    }
+
+    @Test fun terminalFailureIsNotReclassifiedAsLateTimeoutSuccess() {
+        install()
+        request()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+        coordinator.complete(false)
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        coordinator.complete(true)
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+        request(2, 1600, 900)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(1, restarts)
+    }
+
+    @Test fun configuredTargetAloneCannotClearTimeout() {
+        timeOutResize()
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+        assertEquals(1, restarts)
+    }
+
+    @Test fun disposingOwnerInvalidatesLateTimeoutAcknowledgement() {
+        timeOutResize()
+        coordinator.uninstall(this)
+        install()
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        coordinator.complete(true)
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+    }
+
+    @Test fun disconnectedViewerCannotClearTimeout() {
+        install()
+        var current = true
+        coordinator.request(JSONObject().put("requestId", 1).put("enabled", true)
+            .put("units", BrowserResolutionPolicy.UNITS).put("width", 1920).put("height", 1080),
+            { replies.add(it) }, { current })
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(32))
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+        current = false
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        coordinator.complete(true)
+        request(2, 1600, 900)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(1, restarts)
+    }
+
+    @Test fun replacingOwnerDirectlyInvalidatesLateTimeoutAcknowledgement() {
+        timeOutResize()
+        val replacementOwner = Any()
+        coordinator.install(replacementOwner, { baseline ->
+            BrowserResolutionCoordinator.Evaluation(baseline ?: BrowserResolutionPolicy.Size(1280, 720),
+                active, true, generation)
+        }, { restarts++; generation++; true })
+        active = BrowserResolutionPolicy.Size(1920, 1080)
+        val count = replies.size
+        coordinator.complete(true)
+        assertEquals(count, replies.size)
+        assertEquals("reconnectFailed", replies.last().getString("code"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(1, restarts)
+        coordinator.uninstall(replacementOwner)
+    }
+
 }
 

@@ -31,12 +31,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Bundled HTTP files are served only by the fixed-origin TLS variant. No discovery,
  * URL credentials, TLS fallback, compression, binary input or fragmented messages.
  *
- * Each connection requires a foreground Android permission decision and the exact trusted HTTPS
+ * Each connection requires Android policy approval and the exact trusted HTTPS
  * origin. This is plaintext LAN transport: pairing does not protect against a hostile
  * LAN observer. A browser must independently permit HTTPS -> private-address ws://.
  *
- * Callbacks run serially on the reader thread and must not block. onDisconnected is
- * called once for an authenticated session, including close()/timeouts. Sends copy
+ * Viewer callbacks are serialized with ownership changes and must not block. Only the
+ * current approved viewer may deliver input or disconnect the application. A newer
+ * candidate leaves that viewer active until approval. Sends copy
  * their payload and never do socket writes. Video pressure drops queued dependencies
  * until a fresh keyframe; a persistently blocked writer still closes on its deadline.
  * Create a new server after close().
@@ -51,13 +52,20 @@ class BrowserLanServer(
     private val onDisconnected: () -> Unit,
     private val secureIdentity: BrowserTlsIdentity? = null,
     private val viewerAssets: BrowserViewerAssets? = null,
+    // BrowserOutput passes its own lock: changing the transport target and updating
+    // the singleton's viewer/touch generations must be one atomic operation. Never
+    // call application callbacks under an independent transport lock.
+    private val lock: Any = Any(),
 ) : AutoCloseable {
-    private val lock = Any()
     private var listener: ServerSocket? = null
     private var closed = false
     @Volatile private var owner: BrowserLanConnection? = null
     private var watchdog: java.util.concurrent.ScheduledExecutorService? = null
-    private val preflights = mutableSetOf<BrowserLanConnection>()
+    // Includes preflights, pending approval and retiring sockets until their reader
+    // finishes. Only the current owner is exempt from the bounded candidate limit.
+    private val connections = mutableSetOf<BrowserLanConnection>()
+    private var candidate: BrowserLanConnection? = null
+    private var newestCandidateSequence = 0L
     private val attempts = BrowserLanRateLimit(if (secureIdentity == null) 8 else 64, 10_000)
     private val diagnostics = BrowserConnectionDiagnostics()
 
@@ -108,12 +116,12 @@ class BrowserLanServer(
         if (text.length > BrowserLanProtocol.MAX_TEXT_BYTES) return false
         val bytes = text.toByteArray(Charsets.UTF_8)
         if (bytes.size > BrowserLanProtocol.MAX_TEXT_BYTES) return false
-        return owner?.send(1, bytes, resetVideo = resetVideo) ?: false
+        return synchronized(lock) { owner?.send(1, bytes, resetVideo = resetVideo) ?: false }
     }
 
     fun sendBinary(bytes: ByteArray, keyFrame: Boolean): Boolean {
         if (bytes.size > BrowserLanProtocol.MAX_BINARY_BYTES) return false
-        return owner?.send(2, bytes, keyFrame = keyFrame) ?: false
+        return synchronized(lock) { owner?.send(2, bytes, keyFrame = keyFrame) ?: false }
     }
 
     override fun close() {
@@ -125,13 +133,13 @@ class BrowserLanServer(
             listener = null
             watchdog?.shutdownNow()
             watchdog = null
-            sessions = preflights.toList() + listOfNotNull(owner)
+            sessions = connections.toList()
         }
         sessions.forEach { it.stop() }
     }
 
     internal fun checkDeadlines(now: Long = monotonicMillis()) {
-        val sessions = synchronized(lock) { preflights.toList() + listOfNotNull(owner) }
+        val sessions = synchronized(lock) { connections.toList() }
         sessions.forEach { it.checkDeadline(now) }
     }
 
@@ -154,7 +162,7 @@ class BrowserLanServer(
                 closed -> BrowserConnectionReason.SERVER_STOPPED
                 !privatePeer -> BrowserConnectionReason.NON_PRIVATE_PEER
                 !attempts.allow() -> BrowserConnectionReason.RATE_LIMIT
-                preflights.size >= (if (secureIdentity == null) 4 else 16) -> BrowserConnectionReason.PREFLIGHT_LIMIT
+                (connections.size - if (owner != null) 1 else 0) >= (if (secureIdentity == null) 4 else 16) -> BrowserConnectionReason.PREFLIGHT_LIMIT
                 else -> null
             }
             if (rejection != null) {
@@ -162,24 +170,54 @@ class BrowserLanServer(
                 runCatching { socket.close() }
                 return
             }
-            // Health probes have their own bounded short-lived slots. Only a fully
-            // validated upgrade may claim the single viewer slot, under the same lock.
-            val session = BrowserLanConnection(
+            // Health/assets never compete for ownership. A strict approval request
+            // from the newest admitted socket may replace the pending candidate;
+            // only its completed approval may replace the active viewer.
+            lateinit var session: BrowserLanConnection
+            session = BrowserLanConnection(
                 socket, expectedHost, allowedOrigin,
-                onApprovalRequested, onApprovalFinished, onAuthenticated, onText, onDisconnected,
+                onApprovalRequested = { request -> synchronized(lock) {
+                    if (!closed && candidate === session && session.isLive()) onApprovalRequested(request)
+                    else request.reject()
+                } },
+                onApprovalFinished = onApprovalFinished,
+                onAuthenticated = { synchronized(lock) {
+                    if (!closed && candidate === session && session.isLive()) {
+                        val previous = owner
+                        owner = session
+                        candidate = null
+                        previous?.supersede()
+                        onAuthenticated()
+                    } else session.supersede()
+                } },
+                onText = { text -> synchronized(lock) {
+                    if (!closed && owner === session && session.isLive()) onText(text)
+                } },
+                onDisconnected = { synchronized(lock) {
+                    if (owner === session) {
+                        owner = null
+                        onDisconnected()
+                    }
+                } },
                 onFinished = { finished -> synchronized(lock) {
-                    preflights.remove(finished)
-                    if (owner === finished) owner = null
+                    connections.remove(finished)
+                    if (candidate === finished) candidate = null
                 } },
                 diagnostic = attempt,
                 viewerAssets = viewerAssets,
                 secureIdentity = secureIdentity,
-                claimViewer = { candidate -> synchronized(lock) {
-                    if (closed || owner != null || !preflights.remove(candidate)) false
-                    else { owner = candidate; true }
+                claimViewer = { next -> synchronized(lock) {
+                    if (closed || !next.isLive() || next.sequence <= newestCandidateSequence) false
+                    else {
+                        newestCandidateSequence = next.sequence
+                        val previous = candidate
+                        candidate = next
+                        previous?.supersede()
+                        true
+                    }
                 } },
             )
-            preflights.add(session)
+            connections.add(session)
             session.start()
         }
     }
@@ -270,6 +308,9 @@ internal class BrowserLanConnection(
 
     @Volatile private var tlsSocket: javax.net.ssl.SSLSocket? = null
     private val stopped = AtomicBoolean(false)
+    private val superseded = AtomicBoolean(false)
+    @Volatile private var supersededAt = 0L
+    val sequence = nextConnectionSequence.incrementAndGet()
     private val approvalLock = Any()
     private val outbound = BrowserLanQueue()
     private val acceptedAt = monotonicMillis()
@@ -282,14 +323,32 @@ internal class BrowserLanConnection(
     @Volatile private var approval: BrowserApprovalRequest? = null
     @Volatile private var approvalStartedAt = 0L
 
-    companion object { private val nextRequestId = AtomicLong() }
+    companion object {
+        private val nextRequestId = AtomicLong()
+        private val nextConnectionSequence = AtomicLong()
+        private val SUPERSEDED_CLOSE = byteArrayOf(0x0f, 0xa1.toByte()) + "superseded".toByteArray(Charsets.US_ASCII)
+    }
+
+    fun isLive(): Boolean = !stopped.get() && !superseded.get()
+
+    /** Nonblocking: the bounded writer sends 4001, or the watchdog hard-closes it.
+     * Keep the socket tracked until its reader exits, including a blocked TLS write. */
+    fun supersede() {
+        synchronized(approvalLock) {
+            if (stopped.get() || superseded.get()) return
+            supersededAt = monotonicMillis()
+            superseded.set(true)
+            approval?.invalidate()
+            outbound.finishWithClose(SUPERSEDED_CLOSE)
+        }
+    }
 
     fun start() {
         Thread(::readLoop, "CarPlay-LAN-reader").apply { isDaemon = true; start() }
     }
 
     fun send(opcode: Int, bytes: ByteArray, keyFrame: Boolean = false, resetVideo: Boolean = false): Boolean {
-        if (!authenticated || stopped.get()) return false
+        if (!authenticated || !isLive()) return false
         if (outbound.offer(opcode, bytes, keyFrame, resetVideo)) return true
         // A missed video dependency needs a fresh keyframe, not a new WebSocket.
         if (opcode != 2) stop()
@@ -314,6 +373,10 @@ internal class BrowserLanConnection(
 
     fun checkDeadline(now: Long = monotonicMillis()) {
         if (stopped.get()) return
+        if (superseded.get()) {
+            if (now - supersededAt >= 1_000) stop()
+            return
+        }
         val writeStart = writingSince
         val reason = when {
             !upgraded && now - acceptedAt >= 5_000 -> BrowserConnectionReason.HEADER_DEADLINE
@@ -381,10 +444,6 @@ internal class BrowserLanConnection(
             }
             val accept = (request as BrowserLanProtocol.HttpRequestKind.Upgrade).accept
             if (stopped.get()) return
-            if (!claimViewer(this)) {
-                diagnostic?.record(BrowserConnectionStage.WEBSOCKET_REJECTED, BrowserConnectionReason.BUSY)
-                return
-            }
             writingSince = monotonicMillis()
             output.write(("HTTP/1.1 101 Switching Protocols\r\n" +
                 "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
@@ -401,12 +460,17 @@ internal class BrowserLanConnection(
                 return
             }
             diagnostic?.record(BrowserConnectionStage.APPROVAL_REQUEST_RECEIVED)
+            if (!claimViewer(this)) {
+                supersede()
+                gracefulClose(SUPERSEDED_CLOSE)
+                return
+            }
             val approvalRequest = synchronized(approvalLock) {
-                if (stopped.get()) return
+                if (!isLive()) return
                 approvalStartedAt = monotonicMillis()
                 BrowserApprovalRequest(nextRequestId.incrementAndGet(),
                     socket.inetAddress?.hostAddress ?: "unknown", approvalStartedAt + 30_000,
-                    { !stopped.get() }).also { request ->
+                    { isLive() }).also { request ->
                     request.observePrompt { shown -> diagnostic?.record(
                         if (shown) BrowserConnectionStage.PROMPT_SHOWN else BrowserConnectionStage.PROMPT_UNAVAILABLE) }
                     request.observeAutomaticApproval { diagnostic?.record(BrowserConnectionStage.AUTO_APPROVED) }
@@ -418,7 +482,7 @@ internal class BrowserLanConnection(
             onApprovalRequested(approvalRequest)
             if (!awaitApproval(input, approvalRequest)) return
             synchronized(approvalLock) {
-                if (stopped.get()) return
+                if (!isLive()) return
                 authenticated = true
                 diagnostic?.record(BrowserConnectionStage.APPROVED)
             }
@@ -465,6 +529,9 @@ internal class BrowserLanConnection(
             // Only a fixed classification is retained; never exception text or input.
             if (!stopped.get()) stopWithReason(BrowserConnectionReason.IO_FAILURE)
         } finally {
+            // A candidate can be superseded just before it enters its approval
+            // loop. Give its already-queued marker the same bounded send window.
+            if (superseded.get()) gracefulClose(SUPERSEDED_CLOSE)
             stop()
             val request = approval
             request?.invalidate()

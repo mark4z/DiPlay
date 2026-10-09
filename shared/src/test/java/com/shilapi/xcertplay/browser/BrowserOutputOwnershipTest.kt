@@ -146,6 +146,52 @@ class BrowserOutputOwnershipTest {
         assertTrue(BrowserOutput.browserTouchOwned)
     }
 
+    @Test fun replacingViewerRevokesHeldTouchAndResetsRequestIds() {
+        ownership(true, 10)
+        transfers.last().complete(true)
+        touch()
+        val oldViewer = field("viewerGeneration").getLong(null)
+        authenticateViewer()
+        assertTrue(BrowserOutput.viewerConnected)
+        assertFalse(BrowserOutput.browserTouchOwned)
+        assertFalse(transfers.last().enabled)
+        assertTrue(field("viewerGeneration").getLong(null) > oldViewer)
+        touch()
+        assertEquals("Replacement viewer must explicitly enable input", 1, touches.size)
+        ownership(true, 1)
+        transfers.last().complete(true)
+        assertTrue(BrowserOutput.browserTouchOwned)
+    }
+
+    @Test fun replacingViewerInvalidatesOldPendingTouchCompletion() {
+        ownership(true, 1)
+        val oldEnable = transfers.last()
+        authenticateViewer()
+        assertFalse(transfers.last().enabled)
+        oldEnable.complete(true)
+        assertFalse(BrowserOutput.browserTouchOwned)
+        ownership(true, 1)
+        transfers.last().complete(true)
+        assertTrue(BrowserOutput.browserTouchOwned)
+        oldEnable.complete(true)
+        assertTrue(BrowserOutput.browserTouchOwned)
+    }
+
+    @Test fun stoppedServerAuthenticationCannotReplaceCurrentViewer() {
+        ownership(true, 1)
+        transfers.last().complete(true)
+        val viewer = field("viewerGeneration").getLong(null)
+        authenticateViewer(field("serverGeneration").getLong(null) - 1)
+        assertEquals(viewer, field("viewerGeneration").getLong(null))
+        assertTrue(BrowserOutput.browserTouchOwned)
+        assertEquals(1, transfers.size)
+    }
+
+    private fun authenticateViewer(generation: Long = field("serverGeneration").getLong(null)) {
+        BrowserOutput::class.java.getDeclaredMethod("viewerAuthenticated", java.lang.Long.TYPE)
+            .apply { isAccessible = true }.invoke(BrowserOutput, generation)
+    }
+
     private fun configure(pps: Byte = 1) = tee.onVideoConfig(110,
         byteArrayOf(1,100,0,42,-1,-31,0,4,103,100,0,42,1,0,2,104,pps))
 

@@ -19,7 +19,8 @@ class BrowserResolutionCoordinator(context: Context) {
         }
     }
     data class Evaluation(val effective: BrowserResolutionPolicy.Size,
-                          val active: BrowserResolutionPolicy.Size?, val allowed: Boolean)
+                          val active: BrowserResolutionPolicy.Size?, val allowed: Boolean,
+                          val generation: Int = 0)
 
     private data class Pending(val id: Long, val baseline: BrowserResolutionPolicy.Size?,
                                val reply: (JSONObject) -> Unit, val isCurrent: () -> Boolean,
@@ -33,8 +34,12 @@ class BrowserResolutionCoordinator(context: Context) {
     private var pending: Pending? = null
     private var attempt: Pending? = null
     private var attemptEffective: BrowserResolutionPolicy.Size? = null
+    private var attemptGeneration: Int? = null
+    private data class TimedOut(val request: Pending, val effective: BrowserResolutionPolicy.Size,
+                                val generation: Int)
+    private var timedOut: TimedOut? = null
     private val poll = Runnable { evaluatePending() }
-    private val timeout = Runnable { complete(false) }
+    private val timeout = Runnable { finish(false, timedOut = true) }
 
     /** Corrupt/unbounded files fall back to normal Android display negotiation. */
     fun load(): BrowserResolutionPolicy.Size? = try {
@@ -75,6 +80,7 @@ class BrowserResolutionCoordinator(context: Context) {
     fun install(owner: Any, evaluate: (BrowserResolutionPolicy.Size?) -> Evaluation,
                 reconnect: () -> Boolean) {
         check(Looper.myLooper() == Looper.getMainLooper())
+        if (this.owner !== owner) timedOut = null
         this.owner = owner
         this.evaluate = evaluate
         this.reconnect = reconnect
@@ -89,6 +95,8 @@ class BrowserResolutionCoordinator(context: Context) {
         pending = null
         attempt = null
         attemptEffective = null
+        attemptGeneration = null
+        timedOut = null
         handler.removeCallbacks(poll)
         handler.removeCallbacks(timeout)
         if (gate.inFlight) gate.complete(false)
@@ -120,6 +128,7 @@ class BrowserResolutionCoordinator(context: Context) {
                 respond(next, null, "nextConnection", "saveFailed")
                 return@post
             }
+            timedOut = null // A new authenticated request supersedes any late timeout acknowledgement.
             pending = next
             handler.removeCallbacks(poll)
             evaluatePending()
@@ -157,11 +166,13 @@ class BrowserResolutionCoordinator(context: Context) {
         if (gate.shouldReconnect(evaluation.effective, evaluation.active, SystemClock.elapsedRealtime())) {
             attempt = next
             attemptEffective = evaluation.effective
+            attemptGeneration = null
             pending = null
             respond(next, evaluation.effective, "reconnecting")
             handler.postDelayed(timeout, 30_000L)
             val started = try { reconnect?.invoke() == true } catch (_: Exception) { false }
             if (!started) complete(false)
+            else attemptGeneration = try { evaluate?.invoke(next.baseline)?.generation } catch (_: Exception) { null }
         } else {
             if (gate.hasAttempted(evaluation.effective)) {
                 respond(next, evaluation.effective, "nextConnection", "reconnectFailed")
@@ -176,6 +187,31 @@ class BrowserResolutionCoordinator(context: Context) {
     /** Host reports actual negotiated success or terminal failure, never merely a restart invocation. */
     fun complete(success: Boolean) {
         if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { complete(success) }; return }
+        if (!gate.inFlight) {
+            if (success) acknowledgeLateSuccess()
+            else timedOut = null
+            return
+        }
+        finish(success)
+    }
+
+    private fun acknowledgeLateSuccess() {
+        val late = timedOut ?: return
+        val evaluation = try { evaluate?.invoke(late.request.baseline) } catch (_: Exception) { null }
+        // Retain only the original timeout's identity. Never unblock on another generation, viewer,
+        // saved target, or on configured dimensions alone without a host session-active callback.
+        if (!late.request.isCurrent() || load() != late.request.baseline ||
+            evaluation == null || evaluation.generation != late.generation) {
+            timedOut = null
+            return
+        }
+        if (evaluation.active != late.effective || evaluation.effective != late.effective) return
+        timedOut = null
+        gate.reset() // Keeps the cooldown; this does not schedule another attempt.
+        respond(late.request, late.effective, "unchanged")
+    }
+
+    private fun finish(success: Boolean, timedOut: Boolean = false) {
         if (!gate.inFlight) return
         handler.removeCallbacks(timeout)
         val current = attempt
@@ -192,8 +228,12 @@ class BrowserResolutionCoordinator(context: Context) {
         val latestAchieved = latestEvaluation != null && latestEvaluation.active == latestEvaluation.effective
         gate.complete(verifiedSuccess || latestAchieved)
         if (latestAchieved && !verifiedSuccess) gate.reset() // A was superseded, not a failed A retry.
+        this.timedOut = if (timedOut && current != null && effective != null &&
+            attemptGeneration != null && pending == null && current.isCurrent() &&
+            load() == current.baseline) TimedOut(current, effective, attemptGeneration!!) else null
         attempt = null
         attemptEffective = null
+        attemptGeneration = null
         if (current != null) respond(current, effective, if (verifiedSuccess) "unchanged" else "nextConnection",
             if (verifiedSuccess || latestAchieved) null else "reconnectFailed")
         if (pending != null) {

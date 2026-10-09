@@ -4,12 +4,12 @@ import { browserSize, followBrowserResolution, renderPixelSize, observeRenderPix
 import { BrowserSession } from '../session.mjs';
 
 function fixture() {
-  const sent = [], messages = [], timers = new Map(); let id = 0, size = { width: 1280, height: 720 };
-  const follow = followBrowserResolution({ measure: () => size, send: m => { sent.push(m); return true; }, onStatus: m => messages.push(m),
+  const sent = [], messages = [], targets = [], timers = new Map(); let id = 0, size = { width: 1280, height: 720 };
+  const follow = followBrowserResolution({ measure: () => size, send: m => { sent.push(m); return true; }, onStatus: m => messages.push(m), onTarget: size => targets.push(size),
     setTimer: (fn, ms) => { timers.set(++id, { fn, ms }); return id; }, clearTimer: key => timers.delete(key) });
   const tick = ms => { for (const [key, job] of [...timers]) if (job.ms === ms) { timers.delete(key); job.fn(); } };
   const ack = fields => follow.acknowledged({ ...sent.at(-1), applies: 'unchanged', ...fields });
-  return { follow, sent, messages, timers, tick, ack, resize(width, height) { size = { width, height }; follow.changed(); } };
+  return { follow, sent, messages, targets, timers, tick, ack, resize(width, height) { size = { width, height }; follow.changed(); } };
 }
 
 test('only approved, two-second stable device-pixel viewport triggers a report; duplicate and ACK loops are suppressed', () => {
@@ -131,4 +131,33 @@ test('a hidden container never reports its retained computed CSS dimensions', ()
     getComputedStyle: () => ({ width: '960px', height: '540px', boxSizing: 'content-box' }) });
   assert.equal(measure(), null);
   visible = true; assert.deepEqual(measure(), { width: 1920, height: 1080 });
+});
+
+test('target metrics use only correlated effective Android dimensions and never cause resize feedback', () => {
+  const p = fixture(); p.follow.connected(true); p.tick(2000);
+  p.ack({ effectiveWidth: 1024, effectiveHeight: 576, applies: 'reconnecting' });
+  assert.deepEqual(p.targets.at(-1), { width: 1024, height: 576 });
+  const count = p.targets.length;
+  p.follow.acknowledged({ requestId: 999, effectiveWidth: 333, effectiveHeight: 333 });
+  assert.equal(p.targets.length, count);
+  p.tick(2000);
+  assert.equal(p.sent.length, 1, 'rendering effective dimensions cannot emit a new viewport request');
+  p.ack({ effectiveWidth: 1024, effectiveHeight: 576, code: 'reconnectFailed' });
+  assert.deepEqual(p.targets.at(-1), { width: 1024, height: 576 }, 'saved target remains truthful even if current video differs');
+  p.resize(1440, 900); p.tick(2000);
+  assert.equal(p.targets.at(-1), null, 'a new request invalidates old target labels');
+  p.ack({ effectiveWidth: 1152, effectiveHeight: 720 });
+  assert.deepEqual(p.targets.at(-1), { width: 1152, height: 720 });
+  p.follow.connected(false);
+  assert.equal(p.targets.at(-1), null);
+  p.ack({ effectiveWidth: 1152, effectiveHeight: 720 });
+  assert.equal(p.targets.at(-1), null, 'late ACK after disconnect cannot restore target');
+});
+
+test('missing effective dimensions or failed save never labels raw browser dimensions as target output', () => {
+  const p = fixture(); p.follow.connected(true); p.tick(2000);
+  p.ack(); assert.equal(p.targets.at(-1), null);
+  p.resize(1400, 800); p.tick(2000);
+  p.ack({ effectiveWidth: 1120, effectiveHeight: 640, code: 'saveFailed' });
+  assert.equal(p.targets.at(-1), null);
 });

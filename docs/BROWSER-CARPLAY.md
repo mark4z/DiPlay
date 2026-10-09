@@ -27,9 +27,11 @@ A normal system-trust TLS self-check pins the exact hostname, SNI, and destinati
 before enabling Android approvals. The listener also checks SNI, exact HTTP Host,
 and exact WebSocket Origin. It serves only the small bounded HTML/CSS/MJS
 allowlist, with strict response CSP and no arbitrary filesystem or ZIP paths.
-The embedded page still requires a manual parked confirmation and Connect;
-every connection still requires foreground Android approval. Touch stays off
-until the existing ownership ACK. Audio uses the phone’s direct connection to
+The embedded page connects automatically while visible, retaining Android’s
+parked-use guard and configured approval policy. Disconnected viewers retry after
+five seconds. Touch is requested when video is ready and stays off until the
+matching ownership ACK. A newly approved browser replaces the previous viewer;
+a superseded or explicitly rejected page stays idle until reloaded. Audio uses the phone’s direct connection to
 the car; Android’s normal audio playback remains unchanged. No audio is forwarded
 to the viewer, and no microphone feature is introduced. The older external-viewer mode is retained.
 
@@ -93,20 +95,21 @@ port. User permission must be granted personally in the browser's normal prompt.
    `https://mark4z.github.io`; arbitrary origins are not accepted. On Android 17/API 37+, personally
    grant the Android local-network permission if requested, then press Start again.
 4. In the HTTPS viewer, manually enter the displayed private IPv4 address and port,
-   confirm parked, and Connect. Personally grant Local Network Access if prompted.
+   confirm parked, and the page connects. Personally grant Local Network Access if prompted.
    Keep DiPlay in the foreground: Android shows the network-observed remote IP and
    asks whether to allow this connection to view and potentially control CarPlay.
    Reject, dismissal, backgrounding, cancellation, or 30 seconds without acceptance
    denies the pending connection. Every reconnect needs a new Android approval.
    No pairing code or remembered-device access is used.
-5. After approval, viewing starts with a fresh config/keyframe. Native touch remains
-   available until you explicitly enable browser touch control and Android acknowledges
-   the ownership transfer. Disable it to restore native touch. Stream reconfiguration
-   and decoder recovery immediately release contacts and revoke active ownership. The
-   viewer preserves the user’s touch choice during benign recovery on the same approved
-   connection, then requests a fresh ownership acknowledgment after video resumes.
-   Stream inactivity and real disconnection clear that choice. The viewer closes on hiding/leaving
-   the page; reconnect is manual.
+5. After approval, viewing starts with a fresh config/keyframe. Browser touch is
+   requested automatically after video is ready and transfers only after Android
+   acknowledges ownership. Stream reconfiguration and decoder recovery release
+   contacts and revoke active ownership, then request a fresh acknowledgment after
+   video resumes. Hidden pages disconnect and cancel retries; visible disconnected
+   pages retry after five seconds. External pages need fresh parked confirmation
+   after being hidden. A newer approved viewer takes over the display; the previous
+   viewer releases touch and waits for page reload instead of fighting to reconnect.
+
 6. Use the phone’s direct connection to the car for music and navigation sound.
    Browser output carries only video and touch and leaves Android’s normal audio
    playback unchanged.
@@ -165,7 +168,7 @@ First use another Android Chromium browser, then the actual Tesla browser:
 - Compare 30fps and 60fps with frequent screen changes: no repeated decoder reset
   starvation, bounded queues, held contacts released during recovery, and touch
   restored only after fresh matching ownership acknowledgment. A real network
-  disconnect still requires new Android approval and a fresh touch choice.
+  disconnect still requires the Android approval handshake and a fresh touch ownership ACK.
 - Play music and navigation prompts using the phone’s direct connection to the
   car while browser video and touch are active. Verify sound continues through
   fullscreen, video recovery, Stop, tab hide, and reconnect. Confirm normal Android
