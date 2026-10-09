@@ -2681,6 +2681,9 @@ class CarPlayController(
             uiListener?.onDebugLog(
                 "$message: ${error.message ?: error.javaClass.simpleName}",
             )
+            // Keep the existing error line/redaction policy; add only bounded cause metadata.
+            // Nested exception messages can contain unlabelled payloads or credentials.
+            uiListener?.onDebugLog("failure causes=${ThrowableDiagnosticSummary.describe(error)}")
         } catch (callbackError: Exception) {
             Log.w(IphoneCarPlayConfiguration.TAG, "debug log callback failed", callbackError)
         }

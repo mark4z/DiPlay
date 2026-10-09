@@ -29,6 +29,45 @@ import org.robolectric.util.ReflectionHelpers.ClassParameter
 class UsbReadQueueCompatibilityTest {
     @Before fun reset() { UsbQueueReplay.reset() }
 
+    @Test fun bothPipesStepDownToFourKAndCacheTheAcceptedSize() {
+        UsbQueueReplay.outcomes.addAll(listOf(false, false, false, true, true))
+        val pipe = pipe()
+        try { repeat(2) { assertArrayEquals(payload, pipe.read(100)) } } finally { pipe.close() }
+        assertEquals(listOf(65_536, 16_384, 8_192, 4_096, 4_096), UsbQueueReplay.sizes)
+        UsbQueueReplay.reset()
+        UsbQueueReplay.outcomes.addAll(listOf(false, false, false, true, true))
+        val ncm = ncm()
+        try { repeat(2) { assertEquals(payload.size, readChunk(ncm)) } } finally { ncm.close() }
+        assertEquals(listOf(32_768, 16_384, 8_192, 4_096, 4_096), UsbQueueReplay.sizes)
+    }
+
+    @Test fun ncmReassemblesLargeUnpaddedBlockAcrossFourKReadsAndRetainsNextFrame() {
+        val frame = ByteArray(32_740) { (it * 31).toByte() }
+        val padded = Ntb16Codec.build(frame, 7)
+        UsbQueueReplay.transfer = padded.copyOf(padded.size - 1) + Ntb16Codec.build(payload, 8)
+        UsbQueueReplay.outcomes.addAll(listOf(false, false, false, true))
+        val ncm = ncm()
+        try {
+            assertArrayEquals(frame, ncm.recv(1_000))
+            assertArrayEquals(payload, ncm.recv(1_000))
+        } finally { ncm.close() }
+        assertEquals(listOf(32_768, 16_384, 8_192) + List(9) { 4_096 }, UsbQueueReplay.sizes)
+        assertEquals(List(8) { 4_096 } + Ntb16Codec.build(payload, 8).size, UsbQueueReplay.completedBytes)
+        assertEquals(UsbQueueReplay.transfer!!.size, UsbQueueReplay.transferOffset)
+    }
+
+    @Test fun cachedSixteenKRejectionRetriesEightKInBothPipes() {
+        UsbQueueReplay.outcomes.addAll(listOf(false, true, false, true, true))
+        val pipe = pipe()
+        try { repeat(3) { assertArrayEquals(payload, pipe.read(100)) } } finally { pipe.close() }
+        assertEquals(listOf(65_536, 16_384, 16_384, 8_192, 8_192), UsbQueueReplay.sizes)
+        UsbQueueReplay.reset()
+        UsbQueueReplay.outcomes.addAll(listOf(false, true, false, true, true))
+        val ncm = ncm()
+        try { repeat(3) { assertEquals(payload.size, readChunk(ncm)) } } finally { ncm.close() }
+        assertEquals(listOf(32_768, 16_384, 16_384, 8_192, 8_192), UsbQueueReplay.sizes)
+    }
+
     @Test fun normalUsbmuxAndNcmRequestsKeepTheirOriginalSizes() {
         val diagnostics = mutableListOf<String>()
         val pipe = pipe(diagnostics::add)
@@ -67,7 +106,7 @@ class UsbReadQueueCompatibilityTest {
         val frame = ByteArray(32_740) { (it * 31).toByte() }
         val followingFrame = byteArrayOf(0x33, 0x33, 0, 0, 0, 1, 0x86.toByte(), 0xdd.toByte())
         val block = Ntb16Codec.build(frame, 7)
-        assertEquals(32_769, block.size) // Two 16 KiB reads, then the required short-packet pad.
+        assertEquals(32_769, block.size) // Two 16 KiB reads, then the optional short-packet pad.
         UsbQueueReplay.transfer = block + Ntb16Codec.build(followingFrame, 8)
         UsbQueueReplay.outcomes.addAll(listOf(false, true))
         val diagnostics = mutableListOf<String>()
@@ -93,16 +132,16 @@ class UsbReadQueueCompatibilityTest {
         try { assertEquals(payload.size, readChunk(ncm)) } finally { ncm.close() }
     }
 
-    @Test fun bothQueueRejectionsFailWithEndpointApiAndAttemptedSizes() {
+    @Test fun everyLadderRejectionFailsWithEndpointApiAndAttemptedSizes() {
         val pipe = pipe()
-        UsbQueueReplay.outcomes.addAll(listOf(false, false))
+        UsbQueueReplay.outcomes.addAll(listOf(false, false, false, false, false))
         try { checkQueueFailure { pipe.read(100) } } finally { pipe.close() }
-        assertEquals(listOf(65_536, 16_384), UsbQueueReplay.sizes)
+        assertEquals(listOf(65_536, 16_384, 8_192, 4_096, 2_048), UsbQueueReplay.sizes)
         UsbQueueReplay.reset()
         val ncm = ncm()
-        UsbQueueReplay.outcomes.addAll(listOf(false, false))
+        UsbQueueReplay.outcomes.addAll(listOf(false, false, false, false, false))
         try { checkQueueFailure { readChunk(ncm) } } finally { ncm.close() }
-        assertEquals(listOf(32_768, 16_384), UsbQueueReplay.sizes)
+        assertEquals(listOf(32_768, 16_384, 8_192, 4_096, 2_048), UsbQueueReplay.sizes)
     }
 
     @Test fun queueExceptionDoesNotTriggerCompatibilityRetryInEitherPipe() {
@@ -160,7 +199,7 @@ class UsbReadQueueCompatibilityTest {
         assertTrue(error.message!!.contains("api=28"))
         assertTrue(error.message!!.contains("endpoint=0x85"))
         assertTrue(error.message!!.contains("firstBytes="))
-        assertTrue(error.message!!.contains("fallbackBytes=16384"))
+        assertTrue(error.message!!.contains("fallbackBytes=2048"))
     }
 
     private fun checkFallbackDiagnostic(diagnostics: List<String>, pipe: String, firstBytes: Int) {

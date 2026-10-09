@@ -1465,17 +1465,23 @@ private class AudioRenderer(
                             )
                         }
                     }
-                    if (size > 0) {
-                        val output = codec.getOutputBuffer(index)
-                        if (output != null) {
-                            if (size > pcm.size) pcm = ByteArray(size)
-                            output.position(info.offset)
-                            output.limit(info.offset + size)
-                            output.get(pcm, 0, size)
-                            writePcm(pcm, 0, size)
+                    var copied = false
+                    try {
+                        if (size > 0) {
+                            val output = codec.getOutputBuffer(index)
+                            if (output != null) {
+                                if (size > pcm.size) pcm = ByteArray(size)
+                                output.position(info.offset)
+                                output.limit(info.offset + size)
+                                output.get(pcm, 0, size)
+                                copied = true
+                            }
                         }
+                    } finally {
+                        // PCM is ours now; do not hold a codec slot during a blocking track write.
+                        codec.releaseOutputBuffer(index, false)
                     }
-                    codec.releaseOutputBuffer(index, false)
+                    if (copied) writePcm(pcm, 0, size)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
                 }
                 else -> return
@@ -1544,12 +1550,17 @@ private class AudioRenderer(
     private fun maintainPlaybackBuffer() {
         val track = track ?: return
         if (bufferProgress.shouldRebuffer(mappedChannel == AudioChannel.MEDIA, playbackStarted,
-                track.underrunCount > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition)) {
-            // The hardware buffer has actually drained. Pause without flushing or discarding PCM,
-            // then use the configured start threshold again when music resumes.
+                track.underrunCount > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition,
+                startThresholdBytes / 2L)) {
+            // The hardware buffer has starved below the recovery floor. Pause without flushing
+            // or discarding PCM, then use the configured start threshold again when music resumes.
             track.pause()
             playbackStarted = false
-            prebufferBytes = 0
+            // Pausing retains queued PCM. Count it toward the restart threshold so a
+            // blocking write cannot fill the paused track before we call play().
+            prebufferBytes = bufferProgress.queuedBytes(track.playbackHeadPosition)
+                .coerceAtMost(startThresholdBytes.toLong()).toInt()
+            lastPcmWriteNs = System.nanoTime()
             rebufferCount++
         }
         // A short final burst may never reach the start threshold. Play it after a bounded wait.

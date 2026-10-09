@@ -378,7 +378,7 @@ class Iap2UsbSession internal constructor(
                         "firstBytes=${queueResult.firstBytes} fallbackBytes=${queueResult.fallbackBytes ?: "not_attempted"})",
                 )
             }
-            // The policy remembers an accepted fallback, so this event occurs once per pipe.
+            // Log only an accepted size reduction; subsequent reads reuse that size silently.
             if (queueResult.fallbackBytes != null) runCatching {
                 onDiagnostic(
                     "USBMUX read queue compatibility fallback api=${Build.VERSION.SDK_INT} " +
