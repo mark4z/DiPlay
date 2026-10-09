@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BrowserSession } from '../session.mjs';
 import { EMBEDDED_VIEWER_ORIGIN, MAX_DECODE_QUEUE } from '../core.mjs';
-import { audioSdp, candidate } from './audio-fixtures.mjs';
 
 const CONFIG = { type: 'config', streamId: 1, codec: 'avc1.64001f', width: 1280, height: 720 };
 const ENDPOINT = 'ws://192.168.1.20:8765/carplay';
@@ -87,7 +86,6 @@ test('embedded WSS session retains Android approval and touch ownership gating',
   assert.doesNotMatch(JSON.stringify(h.diagnostics), /tesla|mark4z|9999/);
   assert.equal(h.session.authenticated, false);
   assert.equal(h.session.setTouchOwnership(true), false);
-  assert.equal(h.session.setAudioEnabled(true, 1), false);
   assert.deepEqual(socket.sent, []);
   socket.open();
   assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
@@ -677,44 +675,6 @@ test('usable recovered output clears its watchdog and never persists consent int
   h.session.close();
 });
 
-test('audio is approval-gated and independent of video recovery on the same socket', async () => {
-  const preapproval = harness();
-  const rejectedAudio = [];
-  preapproval.session.onAudioPacket = value => rejectedAudio.push(value);
-  const pending = preapproval.connect();
-  assert.equal(preapproval.session.setAudioEnabled(true, 1), false);
-  const audio = new ArrayBuffer(36);
-  new Uint8Array(audio)[0] = 3;
-  pending.receive(audio);
-  assert.equal(preapproval.session.closed, true);
-  assert.equal(rejectedAudio.length, 0);
-
-  const h = harness();
-  const packets = [], messages = [];
-  let resets = 0;
-  h.session.onAudioPacket = value => packets.push(value);
-  h.session.onAudioMessage = value => messages.push(value);
-  h.session.onAudioReset = () => { resets++; };
-  const socket = await h.ready();
-  assert.equal(h.session.setAudioEnabled(true, 1), true);
-  assert.deepEqual(socket.sent.at(-1), { type: 'audioMode', enabled: true, requestId: 1, transport: 'webrtc-opus' });
-  socket.receive({ type: 'audioState', enabled: true, epoch: 1 });
-  socket.receive(audio);
-  assert.equal(packets[0], audio);
-  assert.equal(messages[0].epoch, 1);
-  assert.equal(h.decoders[0].chunks.length, 0);
-  h.decoders[0].error();
-  socket.receive(audio);
-  socket.receive({ ...CONFIG, streamId: 2 });
-  await Promise.resolve();
-  socket.receive(audio);
-  assert.equal(resets, 0, 'video-only recovery must not tear down audio');
-  assert.equal(packets.length, 3);
-  h.session.close();
-  assert.equal(resets, 1);
-  assert.equal(h.session.setAudioEnabled(true, 1), false);
-});
-
 test('diagnostic milestones measure only the current approved attempt and never repeat per frame', async () => {
   const h = harness();
   assert.equal(h.diagnostics.length, 0);
@@ -798,18 +758,24 @@ test('diagnostics cannot turn approval rejection into success or invent a receiv
 });
 
 
-test('WebRTC signaling stays approval-gated, audio-only and separate from video configuration', async () => {
-  const h = harness(), messages = []; h.session.onAudioMessage = message => messages.push(message);
-  const answer = { type: 'audioAnswer', transport: 'webrtc-opus', requestId: 1, epoch: 1, sdp: audioSdp('recvonly') };
-  const socket = h.connect(); assert.equal(h.session.sendAudioSignal(answer), false); approve(socket);
-  assert.equal(h.session.setAudioEnabled(true, 1, 'test'), true); assert.equal(socket.sent.at(-1).source, 'test');
-  socket.receive({ type: 'audioOffer', requestId: 1, epoch: 1, transport: 'webrtc-opus', sdp: audioSdp('sendonly') });
-  socket.receive({ type: 'audioIce', requestId: 1, epoch: 1, transport: 'webrtc-opus', ...candidate });
-  assert.deepEqual(messages.map(message => message.type), ['audioOffer', 'audioIce']);
-  assert.equal(h.session.sendAudioSignal(answer), true);
-  for (const invalid of [{ ...answer, type: 'offer' }, { ...answer, transport: 'pcm' }, { ...answer, epoch: 0 },
-    { ...answer, sdp: audioSdp('sendrecv') }, { ...answer, type: 'audioIce', ...candidate, sdpMLineIndex: 1 }])
-    assert.equal(h.session.sendAudioSignal(invalid), false);
-  assert.equal(h.session.sendAudioSignal({ type: 'audioAlive', requestId: 1, epoch: 1, transport: 'webrtc-opus' }), true);
-  assert.equal(h.decoders.length, 0, 'synthetic test needs no video or CarPlay configuration'); h.session.close();
+test('removed audio controls fail closed rather than revive browser forwarding', async () => {
+  for (const type of ['audioOffer', 'audioIce', 'audioState', 'audioStopped', 'audioError']) {
+    const h = harness();
+    const socket = await h.ready();
+    socket.receive({ type, requestId: 1, epoch: 1, transport: 'webrtc-opus' });
+    assert.equal(h.session.closed, true, type);
+    assert.match(h.states.at(-1).message, /unexpected control message/);
+  }
+});
+
+test('former audio packet kind is rejected before and after Android approval', async () => {
+  for (const approved of [false, true]) {
+    const h = harness();
+    const socket = approved ? await h.ready() : h.connect();
+    const legacyPacket = new ArrayBuffer(36);
+    new Uint8Array(legacyPacket)[0] = 3;
+    socket.receive(legacyPacket);
+    assert.equal(h.session.closed, true);
+    assert.match(h.states.at(-1).message, approved ? /invalid video packet/ : /before Android approval/);
+  }
 });

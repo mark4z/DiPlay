@@ -49,18 +49,18 @@ internal class BrowserApprovalUi(private val activity: Activity) {
         request = pending
         var approved = false
         val transportNotice = if (BrowserOutput.secure)
-            "The local page/video/control link uses HTTPS/WSS; WebRTC audio uses DTLS-SRTP. "
-        else "The video/control link is unencrypted; WebRTC audio uses DTLS-SRTP. "
-        val transportNoticeZh = if (BrowserOutput.secure) "本地页面、视频和控制使用 HTTPS/WSS，音频使用 WebRTC 加密。"
-            else "局域网视频和控制未加密，音频使用 WebRTC 加密。"
+            "The local page/video/control link uses HTTPS/WSS. "
+        else "The video/control link is unencrypted. "
+        val transportNoticeZh = if (BrowserOutput.secure) "本地页面、视频和控制使用 HTTPS/WSS。"
+            else "局域网视频和控制未加密。"
         val alert = AlertDialog.Builder(activity)
             .setTitle("Allow browser connection? / 允许浏览器连接？")
             .setMessage("Browser network address / 浏览器网络地址: ${pending.remoteAddress}\n\n" +
-                "Allow this browser to view CarPlay and optionally play audio or enable touch control for this connection? " +
+                "Allow this browser to view CarPlay and optionally enable touch control for this connection? " +
                 "This is an observed network address, not verified device identity. " +
                 "Use only while parked on a trusted private network. " + transportNotice +
                 "Every reconnect needs your approval; no device is remembered.\n\n" +
-                "允许此浏览器查看 CarPlay，并可选择播放音频或启用触控？仅限本次连接，每次重连都需确认。" +
+                "允许此浏览器查看 CarPlay，并可选择启用触控？仅限本次连接，每次重连都需确认。" +
                 "请停车后使用。" + transportNoticeZh)
             .setNegativeButton("Reject / 拒绝") { _, _ -> pending.reject() }
             .setPositiveButton("Allow / 允许") { _, _ ->

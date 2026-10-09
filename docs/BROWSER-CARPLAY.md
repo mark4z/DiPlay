@@ -1,4 +1,4 @@
-# Experimental browser video, touch, and audio output
+# Experimental browser video and touch output
 
 Status: source implementation, **not verified on Android/Tesla hardware**. Native
 CarPlay remains the normal output. Browser output is off after process launch,
@@ -29,8 +29,9 @@ and exact WebSocket Origin. It serves only the small bounded HTML/CSS/MJS
 allowlist, with strict response CSP and no arbitrary filesystem or ZIP paths.
 The embedded page still requires a manual parked confirmation and Connect;
 every connection still requires foreground Android approval. Touch stays off
-until the existing ownership ACK, and optional audio stays WebRTC/DTLS-SRTP.
-No microphone feature is introduced. The older external-viewer mode is retained.
+until the existing ownership ACK. Audio uses the phone’s direct connection to
+the car; Android’s normal audio playback remains unchanged. No audio is forwarded
+to the viewer, and no microphone feature is introduced. The older external-viewer mode is retained.
 
 Stop (in settings or the notification), VPN revocation, task removal, startup
 failure, and service destruction cancel the session and close both TUN descriptors,
@@ -40,12 +41,13 @@ failures are surfaced and a new session is blocked until the app is reset.
 
 Device validation remains required: successful Tesla HTTP `/health` on the dual
 TUN arrangement establishes that TCP path only. It does not establish HTTPS,
-SNI/provider behavior, video, audio, or touch on this combined implementation.
+SNI/provider behavior, video, or touch on this combined implementation.
 Do not bypass certificate or browser security warnings. Test Cancel during ZIP
 selection/import, deny VPN permission, Stop during startup/handshake, VPN revoke,
 repeat start/stop, app/task closure, reconnect approval, and both TUN removal.
-Then test the exact HTTPS page on the phone and Tesla, media playback, audio
-stop/reconnect, and touch revoke. Android unit tests/lint/APK build run in Actions;
+Then test the exact HTTPS page on the phone and Tesla, video playback,
+stop/reconnect, and touch revoke. Confirm that the direct phone-to-car sound
+continues independently of the browser session. Android unit tests/lint/APK build run in Actions;
 source-only browser checks are not an Android or Tesla pass.
 
 ## Architecture and browser gate
@@ -53,10 +55,10 @@ source-only browser checks are not an Android or Tesla pass.
 The bundled or independently hosted **HTTPS** static page (`site/browser-carplay`) decodes
 CarPlay's existing compressed H.264/HEVC access units with WebCodecs. The Android
 app tees the main screen without decode/re-encode, preserving native video/audio.
-Video and two-contact CarPlay touch retain the existing WebSocket path. Explicitly selected
-audio uses an audio-only WebRTC/Opus track over DTLS-SRTP; the approved WebSocket carries
-only its bounded SDP/ICE signaling.
-There is no browser microphone uplink, vehicle-control integration, internet media relay,
+Video and two-contact CarPlay touch retain the existing WebSocket path. Sound
+uses the phone’s direct connection to the car. Browser sessions do not reroute or
+mute Android audio.
+There is no browser audio forwarding, microphone uplink, vehicle-control integration, internet media relay,
 or bypass of driving restrictions.
 CarPlay's current HID descriptor supports two contacts even if the browser supports more.
 
@@ -105,13 +107,9 @@ port. User permission must be granted personally in the browser's normal prompt.
    connection, then requests a fresh ownership acknowledgment after video resumes.
    Stream inactivity and real disconnection clear that choice. The viewer closes on hiding/leaving
    the page; reconnect is manual.
-6. Optionally click **Test audio (3 seconds)** after approval, even without a CarPlay
-   source, to hear a finite quiet tone over the same WebRTC route. This never mutes Android.
-   Then click **Play audio here** to route real CarPlay music/navigation to the browser.
-   Android stays audible until the browser confirms ICE connectivity, progressing inbound
-   audio RTP, and successful media-element playback, and Android confirms the same route.
-   Stop, hide/disconnect, playback failure, stalled RTP, or a missing playback heartbeat
-   restores native audio. No microphone is opened or requested on either endpoint.
+6. Use the phone’s direct connection to the car for music and navigation sound.
+   Browser output carries only video and touch and leaves Android’s normal audio
+   playback unchanged.
 7. In Android settings, **Stop** closes the listener, disconnects the viewer, and
    revokes the connection grant. App/session shutdown also stops browser output.
    Merely backgrounding/recreating the Activity does not kill the CarPlay session.
@@ -127,10 +125,9 @@ port. User permission must be granted personally in the browser's normal prompt.
   rate-limited. Touch ownership is separate from viewing and transferred serially
   on the input executor after releasing prior contacts. Native touch gestures for
   settings remain available while native CarPlay input is suppressed during remote ownership.
-- **The LAN WebSocket is unencrypted.** Video, control, and WebRTC signaling remain
-  observable/modifiable by an attacker on the network. Audio packets use DTLS-SRTP,
-  but its fingerprints arrive over that unauthenticated transport; this does not
-  make the overall session secure on hostile Wi-Fi. Approval is not network encryption.
+- **The external viewer’s LAN WebSocket is unencrypted.** Video and control remain
+  observable/modifiable by an attacker on the network. The embedded HTTPS viewer
+  uses WSS with TLS. Approval is not network encryption.
   Use only a trusted, access-controlled network.
 - No session values are stored in preferences, URL query, local/session storage, or
   logs. No network discovery, telemetry, third-party JS, or automatic reconnection.
@@ -138,31 +135,17 @@ port. User permission must be granted personally in the browser's normal prompt.
   Decoder overload drops dependent compressed frames and waits for a new keyframe
   while allowing existing decoder work to drain, rather than repeatedly destroying
   the decoder before it can output. Identical video configs do not create new stream
-  generations. Audio media no longer occupies WebSocket queues. Only bounded WebRTC
-  signaling shares the existing control queue.
+  generations.
   Decoder overload waits for a new keyframe. Socket deadlines, input size limits,
   frame validation, origin validation and rate limits restrict resource use.
 - Microsecond timestamps are monotonic Android receipt times: the existing media
-  sink does not expose source presentation timestamps. Audio synchronization and
-  B-frame reordering are not asserted. Real stream tests are required.
-- Browser audio reuses Android’s existing decoded PCM output for AAC/Opus/LPCM; it
-  does not depend on the browser implementing those compressed audio codecs. Native
-  playback is the default, and browser playback is a per-connection user choice.
-  Source PCM is copied into sample-counted, bounded per-stream storage, converted with
-  Media3 Sonic, mixed with supplied source gains into 48 kHz stereo, and clocked into
-  WebRTC at 10 ms intervals. WebRTC Opus/NetEq handles network encoding and receive
-  buffering. A source overflow/discontinuity fails visibly back to native audio rather
-  than silently discarding decoder bursts. No audio is sent before Android approval
-  and the explicit browser gesture. Voice AEC/AGC/NS are disabled for decoded music.
-  Both endpoints use no ICE servers, accept only local host candidates, and never
-  configure public STUN/TURN or a media relay. The WebRTC API does not pin one physical
-  interface. Same-LAN UDP/mDNS compatibility is unverified on Tesla. Old APK/viewer
-  pairs fail closed with upgrade guidance; there is no PCM-over-WebSocket fallback.
-  Actual latency, navigation prompts, calls, stereo fidelity, and A/V sync still need
-  validation. Navigation retains the existing native overlay policy; captured per-chunk
-  focus gain may lag a later external focus change by the bounded source backlog.
-  Existing HEVC video is unchanged and is not automatically synchronized
-  to the independent WebRTC audio clock. See [dependency and no-microphone audit](WEBRTC_DEPENDENCY.md).
+  sink does not expose source presentation timestamps. Synchronization with the
+  separate phone-to-car audio path and B-frame reordering are not asserted. Real stream tests are required.
+- Browser output has no audio transport or test tone. The phone’s direct connection
+  to the car supplies sound, while Android’s existing native playback, mixing,
+  audio focus, and volume behavior remain available. The viewer does not control
+  or synchronize that separate audio route. Validate music, navigation prompts,
+  calls, and A/V timing on the intended devices.
 - Source-only APKs contain no accessory identity and are **not standalone iPhone
   connection test packages**. No authentication assets are read or published here.
 
@@ -183,13 +166,12 @@ First use another Android Chromium browser, then the actual Tesla browser:
   starvation, bounded queues, held contacts released during recovery, and touch
   restored only after fresh matching ownership acknowledgment. A real network
   disconnect still requires new Android approval and a fresh touch choice.
-- Start/stop browser audio repeatedly; test media and navigation overlap, changing
-  tracks, prolonged silence, tab hide, media-element pause/suspension, and real disconnect.
-  First check the three-second test tone, then music/navigation overlap on the same
-  route. Record selected ICE pair type, RTP progress, packet loss/jitter, and measured
-  A/V offset; a build/test pass is not proof of device latency. Native sound must
-  return, stale source samples must not leak into a new connection, and
-  microphone access must never be requested.
+- Play music and navigation prompts using the phone’s direct connection to the
+  car while browser video and touch are active. Verify sound continues through
+  fullscreen, video recovery, Stop, tab hide, and reconnect. Confirm normal Android
+  audio playback with browser output both off and on. No browser audio controls or
+  microphone permission prompts should appear. Measure A/V timing on the intended
+  hardware; a build/test pass does not establish device latency or synchronization.
 - One/two-finger down/move/up, one finger lifted while the other continues,
   pointer cancellation, outside-letterbox touch, tab hide, and network loss release
   all contacts. Settings gesture and Stop remain usable from Android.
@@ -240,7 +222,7 @@ Opening it on Android tests Android's own route, not the car's route.
 
 The Android report records bounded, process-local timestamps, elapsed milliseconds,
 connection numbers, stage counters and fixed failure categories. It never records
-remote addresses, request headers, URLs, pairing data or audio/video payloads. The
+remote addresses, request headers, URLs, pairing data or video payloads. The
 report window refreshes from memory and has an explicit copy button; the same safe
 snapshot is included in the existing diagnostic export. Stopping and restarting
 the listener starts a fresh report. Keep the Android app in front during approval.

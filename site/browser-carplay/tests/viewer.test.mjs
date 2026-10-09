@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { audioEnvironment, audioSdp, deferred, flush } from './audio-fixtures.mjs';
 
 // Minimal DOM/WebCodecs stubs exercise the actual page module's event wiring.
 // This supplements (not replaces) a real browser/hardware acceptance test.
@@ -35,18 +34,18 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
     releasePointerCapture(id) { captured.delete(id); this.dispatch('lostpointercapture', { pointerId: id }); }
   }
   const elements = Object.fromEntries(['settings-close', 'resolution-settings', 'resolution-follow', 'resolution-status', 'controls-grip', 'controls-reveal', 'controls-safe-area', 'connection', 'ip', 'port', 'parked', 'touch', 'connect', 'disconnect',
-    'video', 'viewport', 'placeholder', 'status', 'indicator', 'origin', 'touch-status', 'audio', 'audio-test', 'audio-status',
+    'video', 'viewport', 'placeholder', 'status', 'indicator', 'origin', 'touch-status',
     'connection-timeline', 'connection-attempt', 'connection-transport', 'manual-endpoint', 'local-endpoint',
     'local-endpoint-value', 'connection-instructions', 'transport-warning', 'browser-requirements', 'lan-diagnostics',
     'connection-troubleshooting', 'viewer-shell', 'enter', 'retry', 'stop', 'entry-status', 'embedded-controls',
     'page-header', 'intro', 'parked-control', 'settings-content', 'placeholder-title', 'placeholder-note',
-    'parking-explanation', 'local-approval-help', 'touch-control', 'audio-toolbar', 'setup', 'diagnostics',
-    'display-note', 'requirements', 'legal', 'compact-audio-error', 'compact-touch-state', 'display-toolbar', 'viewer-settings'].map(id => [id, new Element()]));
+    'parking-explanation', 'local-approval-help', 'touch-control', 'setup', 'diagnostics',
+    'display-note', 'requirements', 'legal', 'compact-touch-state', 'display-toolbar', 'viewer-settings'].map(id => [id, new Element()]));
   elements.parked.checked = true;
   elements.touch.checked = true;
   elements.ip.value = 'untrusted.invalid'; // Restored form values cannot override the embedded endpoint.
   elements.port.value = '12345';
-  const document = Object.assign(new Events(), { visibilityState: 'visible', getElementById: id => elements[id], createElement: kind => kind === 'audio' ? audioEnv.dependencies.createAudio() : new Element() });
+  const document = Object.assign(new Events(), { visibilityState: 'visible', getElementById: id => elements[id], createElement: () => new Element() });
   const sockets = [], decoders = [], raf = new Map();
   let rafId = 0, fetches = 0;
   class Socket {
@@ -66,22 +65,16 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
       this.output(frame); return frame;
     }
   }
-  const audioOptions = {};
-  const audioEnv = audioEnvironment(audioOptions), audioPeers = audioEnv.peers;
   const timers = new Map(); let nextTimer = 0;
   t.mock.method(globalThis, 'setTimeout', (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; });
   t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
-  const audioTick = async () => {
-    const [id, timer] = [...timers].find(([, value]) => value.delay === 250);
-    timers.delete(id); timer.callback(); await flush();
-  };
   const window = Object.assign(new Events(), { devicePixelRatio: 2, getComputedStyle: () => ({ width: '1000px', height: '1000px', writingMode: 'horizontal-tb', boxSizing: 'content-box' }), VideoDecoder: Decoder, EncodedVideoChunk: class {}, PointerEvent: class {}, ResizeObserver: class { observe() {} } });
   window.top = window.self = window;
   const origin = embedded ? 'https://tesla.mark4z.asia:9999' : 'https://mark4z.github.io';
   Object.assign(globalThis, { document, window, location: { protocol: 'https:', origin,
     search: '?endpoint=wss://untrusted.invalid&ip=8.8.8.8&port=443', hash: '#ws://untrusted.invalid' }, isSecureContext: true,
     VideoDecoder: Decoder, EncodedVideoChunk: window.EncodedVideoChunk, WebSocket: Socket, ResizeObserver: window.ResizeObserver,
-    devicePixelRatio: 1, RTCPeerConnection: audioEnv.dependencies.PeerConnection, MediaStream: audioEnv.dependencies.MediaStream,
+    devicePixelRatio: 1,
     fetch: () => { fetches++; throw new Error('The viewer must not fetch an HTTP health probe.'); },
     requestAnimationFrame: callback => { raf.set(++rafId, callback); return rafId; }, cancelAnimationFrame: id => raf.delete(id) });
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: embedded ? 'Tesla Chromium/130.0.0.0' : 'Chrome/154.0.0.0' } });
@@ -90,9 +83,6 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   await import(`../viewer.mjs?ui-test-${embedded}`);
 
   assert.equal(sockets.length, embedded ? 1 : 0, 'only the built-in page connects once on load');
-  assert.equal(audioPeers.length, 0, 'page load must not create a peer connection');
-  elements.audio.dispatch('click');
-  assert.equal(audioPeers.length, 0, 'preapproval cannot start audio');
   assert.equal(elements.parked.checked, false, 'restored parked state is not fresh consent');
   assert.equal(elements.touch.checked, false);
   assert.equal(elements.connect.disabled, true);
@@ -177,37 +167,6 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   elements.video.dispatch('pointerdown', pointer(100));
   assert.equal(socket.sent.some(m => m.type === 'touch'), false, 'video must not implicitly enable touch');
 
-  elements['audio-test'].dispatch('click'); await flush();
-  assert.equal(socket.sent.at(-1).source, 'test');
-  assert.equal(elements['audio-test'].disabled, true);
-  elements.audio.dispatch('click');
-  assert.equal(socket.sent.at(-1).enabled, false);
-  assert.equal(audioPeers[0].closed, true, 'cancelling a test releases its peer');
-  audioOptions.playback = deferred();
-  elements.audio.dispatch('click'); await flush();
-  audioEnv.audios.at(-1).play = () => Promise.reject({ name: 'NotAllowedError' });
-  const audioRequest = socket.sent.findLast(message => message.type === 'audioMode');
-  assert.equal(audioRequest.enabled, true);
-  assert.equal(audioRequest.transport, 'webrtc-opus');
-  assert.ok(Number.isSafeInteger(audioRequest.requestId));
-  socket.receive({ type: 'audioOffer', transport: 'webrtc-opus', epoch: 10, requestId: audioRequest.requestId, sdp: audioSdp('sendonly') });
-  await flush();
-  audioPeers.at(-1).emitTrack(); audioPeers.at(-1).connect();
-  audioPeers.at(-1).packets = 1; await audioTick();
-  audioPeers.at(-1).packets = 2; await audioTick();
-  assert.equal(elements.audio.textContent, 'Play audio here', 'gesture recovery stays actionable');
-  assert.equal(socket.sent.some(message => message.type === 'audioReady'), false);
-  const modesBeforeResume = socket.sent.filter(message => message.type === 'audioMode').length;
-  let inClick = true;
-  audioEnv.audios.at(-1).play = function () { assert.equal(inClick, true); this.paused = false; return Promise.resolve(); };
-  elements.audio.dispatch('click'); inClick = false; await flush();
-  assert.equal(socket.sent.filter(message => message.type === 'audioMode').length, modesBeforeResume, 'resume does not cancel or replace the route');
-  assert.equal(socket.sent.at(-1).type, 'audioReady');
-  assert.equal(elements.audio.textContent, 'Cancel audio start');
-  socket.receive({ type: 'audioState', transport: 'webrtc-opus', enabled: true, epoch: 10, requestId: audioRequest.requestId });
-  assert.equal(elements.audio.textContent, 'Return audio to Android');
-  assert.equal(audioPeers.length, 2);
-
   elements.touch.checked = true;
   elements.touch.dispatch('change');
   assert.deepEqual(socket.sent.at(-1), { type: 'setTouchOwnership', enabled: true, streamId: 1, requestId: 1 });
@@ -277,8 +236,6 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   decoders.at(-1).emit();
   paint();
   assert.equal(elements.touch.checked, true, 'same approved socket retains explicit opt-in');
-  assert.equal(audioPeers.at(-1).closed, false, 'benign video recovery leaves audio running');
-  assert.equal(elements.audio.textContent, 'Return audio to Android');
   assert.equal(elements.video.classes.has('touch-enabled'), false, 'new generation still needs a matching ACK');
   const resumedTouch = socket.sent.at(-1);
   assert.equal(resumedTouch.enabled, true);
@@ -291,10 +248,6 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   document.dispatch('visibilitychange');
   assert.equal(cancelled.closes, 1, 'pending frame is closed on hide');
   assert.equal(socket.readyState, 3);
-  assert.equal(audioPeers.at(-1).closed, true, 'tab hide closes audio');
-  assert.equal(elements.audio.disabled, true);
-  assert.equal(socket.sent.findLast(message => message.type === 'audioMode').enabled, false, 'tab hide sends explicit fallback before closing');
-  assert.equal(elements.audio.textContent, 'Play audio here');
   assert.equal(elements.placeholder.hidden, false);
   assert.equal(elements.parked.checked, false);
   assert.equal(elements.touch.checked, false);

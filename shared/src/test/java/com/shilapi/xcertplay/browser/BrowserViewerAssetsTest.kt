@@ -27,8 +27,15 @@ class BrowserViewerAssetsTest {
         assertEquals("text/html; charset=utf-8", assets.resource("/")!!.mime)
         assertArrayEquals(assets.resource("/")!!.bytes, assets.resource("/index.html")!!.bytes)
         assertEquals("text/css; charset=utf-8", assets.resource("/viewer.css?v=connection-diag-v1")!!.mime)
-        assertEquals("text/javascript; charset=utf-8", assets.resource("/viewer.mjs?v=webrtc-audio-v1")!!.mime)
+        assertEquals("text/javascript; charset=utf-8", assets.resource("/viewer.mjs?v=video-v1")!!.mime)
         for (name in BrowserViewerAssets.NAMES) assertNotNull(assets.resource("/$name"))
+    }
+
+    @Test fun removedAudioAssetsAreUnavailableAndMediaPlaybackIsBlocked() {
+        val assets = assets()
+        assertNull(assets.resource("/audio.mjs"))
+        assertNull(assets.resource("/audio-protocol.mjs"))
+        assertTrue(BrowserViewerAssets.CSP.contains("media-src 'none';"))
     }
 
     @Test fun neverResolvesFilesystemOrEncodedPaths() {

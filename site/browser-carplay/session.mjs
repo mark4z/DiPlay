@@ -1,8 +1,8 @@
-import { AUDIO_TRANSPORT, positiveId, validAudioSdp, validAudioCandidate } from './audio-protocol.mjs?v=webrtc-audio-v1';
 import { MAX_DECODE_QUEUE, parseConfig, parseEndpoint, parseVideoPacket } from './core.mjs?v=embedded-https-v1';
 import { ConnectionDiagnostics } from './diagnostics.mjs?v=embedded-https-v1';
 
 export const PROTOCOL_VERSION = 2;
+const positiveId = value => Number.isSafeInteger(value) && value > 0;
 const UPGRADE_ADVICE = 'Install the latest DiPlay APK and reload the updated browser viewer; both must support Android approval (protocol v2).';
 
 const APPROVAL_ERRORS = {
@@ -15,12 +15,12 @@ const APPROVAL_ERRORS = {
 // backpressure are tested without a network, browser, or real accessory identity.
 export class BrowserSession {
   constructor({ WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame,
-    onBrowserResolution = () => {}, onTouchOwnership = () => {}, onAudioMessage = () => {}, onAudioPacket = () => {}, onAudioReset = () => {}, onDiagnostics = () => {},
+    onBrowserResolution = () => {}, onTouchOwnership = () => {}, onDiagnostics = () => {},
     now = () => performance.now(),
     // Window timers require their host receiver, not this BrowserSession.
     setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
     clearTimer = id => globalThis.clearTimeout(id) }) {
-    Object.assign(this, { WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame, onBrowserResolution, onTouchOwnership, onAudioMessage, onAudioPacket, onAudioReset, now, setTimer, clearTimer });
+    Object.assign(this, { WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame, onBrowserResolution, onTouchOwnership, now, setTimer, clearTimer });
     this.diagnostics = new ConnectionDiagnostics({ now, onUpdate: onDiagnostics });
     this.socket = null;
     this.decoder = null;
@@ -191,8 +191,6 @@ export class BrowserSession {
       this.touchPending = false;
       if (!message.enabled) this.touchRequested = false;
       this.reportTouchOwnership();
-    } else if (['audioOffer', 'audioIce', 'audioState', 'audioStopped', 'audioError'].includes(message.type)) {
-      this.onAudioMessage(message);
     } else if (message.type === 'status' && ['waiting', 'disconnected'].includes(message.code)) {
       this.clearDecoder();
       this.reportState('waiting', 'Approved on Android. Waiting for CarPlay video…');
@@ -258,10 +256,6 @@ export class BrowserSession {
   receiveVideo(data) {
     if (this.closed) return;
     if (!this.authenticated) { this.close(`The bridge sent video before Android approval. ${UPGRADE_ADVICE}`, true); return; }
-    if (data instanceof ArrayBuffer && data.byteLength > 0 && new Uint8Array(data, 0, 1)[0] === 3) {
-      this.onAudioPacket(data);
-      return;
-    }
     let chunk;
     try { chunk = parseVideoPacket(data); } catch { this.close('The bridge sent an invalid video packet.', true); return; }
     // No encoded-frame array or pending async work per frame. Frames arriving during
@@ -385,21 +379,6 @@ export class BrowserSession {
       ...(message.enabled ? { width: message.width, height: message.height, units: message.units } : {}) });
   }
 
-  setAudioEnabled(enabled, requestId, source) {
-    return typeof enabled === 'boolean' && positiveId(requestId) && (source === undefined || source === 'test') &&
-      this.send({ type: 'audioMode', enabled, requestId, transport: AUDIO_TRANSPORT, ...(enabled && source === 'test' ? { source } : {}) });
-  }
-
-  sendAudioSignal(message) {
-    if (!message || !positiveId(message.requestId) || !positiveId(message.epoch) || message.transport !== AUDIO_TRANSPORT) return false;
-    if (message.type === 'audioAnswer') {
-      if (!validAudioSdp(message.sdp, 'recvonly')) return false;
-    } else if (message.type === 'audioIce') {
-      if (!validAudioCandidate(message)) return false;
-    } else if (!['audioReady', 'audioAlive'].includes(message.type)) return false;
-    return this.send(message);
-  }
-
   suspendTouch(preserveIntent) {
     const requested = preserveIntent && this.touchRequested;
     const needsRelease = this.touchRequested || this.touchOwned || this.touchPending;
@@ -447,7 +426,6 @@ export class BrowserSession {
     this.clearTimer(this.timeout);
     this.timeout = null;
     this.clearDecoder();
-    this.onAudioReset();
     const socket = this.socket;
     this.socket = null;
     if (socket) {

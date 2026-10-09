@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { audioEnvironment, deferred, flush } from './audio-fixtures.mjs';
+import { deferred, flush } from './async-fixtures.mjs';
 
 let testId = 0;
-async function page(t, { hidden = false, fullscreen = 'resolve', playback } = {}) {
+async function page(t, { hidden = false, fullscreen = 'resolve' } = {}) {
   class Events {
     constructor() { this.listeners = new Map(); }
     addEventListener(name, handler) {
@@ -28,9 +28,8 @@ async function page(t, { hidden = false, fullscreen = 'resolve', playback } = {}
   }
   const elements = new Map();
   const element = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
-  const audio = audioEnvironment({ playback });
   const document = Object.assign(new Events(), { visibilityState: hidden ? 'hidden' : 'visible', fullscreenElement: null,
-    getElementById: element, createElement: type => type === 'audio' ? audio.dependencies.createAudio() : new Element() });
+    getElementById: element, createElement: () => new Element() });
   let fullscreenCalls = 0;
   const full = deferred();
   if (fullscreen !== 'unavailable') element('viewer-shell').requestFullscreen = () => {
@@ -54,42 +53,39 @@ async function page(t, { hidden = false, fullscreen = 'resolve', playback } = {}
   window.self = window.top = window;
   Object.assign(globalThis, { document, window, location: { protocol: 'https:', origin: 'https://tesla.mark4z.asia:9999' },
     isSecureContext: true, VideoDecoder: window.VideoDecoder, EncodedVideoChunk: window.EncodedVideoChunk,
-    WebSocket: Socket, RTCPeerConnection: audio.dependencies.PeerConnection, MediaStream: audio.dependencies.MediaStream });
+    WebSocket: Socket });
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Tesla Chromium/130.0' } });
   await import(`../viewer.mjs?entry-test-${++testId}`);
   const approve = () => { const socket = sockets.at(-1); socket.open(); socket.receive({ type: 'approvalPending', version: 2 }); socket.receive({ type: 'authenticated', version: 2 }); return socket; };
-  return { element, document, window, sockets, timers, audio, approve, full, fullscreenCalls: () => fullscreenCalls };
+  return { element, document, window, sockets, timers, approve, full, fullscreenCalls: () => fullscreenCalls };
 }
 
-test('embedded entry starts exactly once, keeps approval gates, and combines real gesture APIs', async t => {
+test('embedded entry starts exactly once, keeps approval gates, and requests fullscreen only from a real gesture', async t => {
   const p = await page(t, { fullscreen: 'pending' });
   assert.equal(p.sockets.length, 1);
   assert.equal(p.sockets[0].url, 'wss://tesla.mark4z.asia:9999/carplay');
   assert.equal(p.element('parked').checked, false, 'no fabricated checkbox consent');
   assert.equal(p.element('parked-control').hidden, true);
   assert.equal(p.element('viewer-shell').classes.has('embedded-viewer'), true);
-  assert.equal(p.element('settings-content').children.length, 7);
-  assert.equal(p.audio.peers.length, 0);
+  assert.equal(p.element('settings-content').children.length, 6);
   p.element('enter').dispatch('click');
-  assert.equal(p.fullscreenCalls(), 0, 'preapproval click cannot enter or start audio');
+  assert.equal(p.fullscreenCalls(), 0, 'preapproval click cannot enter fullscreen');
   const socket = p.approve();
   assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
-  assert.equal(p.audio.peers.length, 0, 'approval alone must not manufacture a playback gesture');
+  assert.equal(p.fullscreenCalls(), 0, 'approval alone must not manufacture a fullscreen gesture');
+  assert.equal(p.element('enter').textContent, 'Enter fullscreen');
   p.element('enter').dispatch('click');
-  assert.equal(p.audio.audios[0].plays, 1, 'play is called within the click, before any await');
   assert.equal(p.fullscreenCalls(), 1);
-  assert.equal(socket.sent.findLast(message => message.type === 'audioMode').enabled, true);
+  assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }], 'fullscreen does not send media-routing controls');
   p.element('enter').dispatch('click');
   p.element('connection').dispatch('submit');
   p.element('retry').dispatch('click');
   assert.equal(p.fullscreenCalls(), 1, 'pending fullscreen cannot duplicate requests');
-  assert.equal(p.audio.peers.length, 1);
   assert.equal(p.sockets.length, 1);
   p.element('stop').dispatch('click');
   p.full.reject(new Error('late failure'));
   await flush();
   assert.equal(p.element('entry-status').hidden, true, 'stale fullscreen result cannot restore an old error');
-  assert.equal(p.audio.peers[0].closed, true);
   assert.equal(p.element('retry').hidden, false);
   assert.equal(p.sockets.length, 1, 'Stop never causes a retry');
   p.element('retry').dispatch('click');
@@ -97,6 +93,26 @@ test('embedded entry starts exactly once, keeps approval gates, and combines rea
   assert.equal(p.sockets.length, 2, 'one explicit retry makes one fresh attempt');
   p.sockets[1].open();
   assert.deepEqual(p.sockets[1].sent, [{ type: 'requestApproval', version: 2 }]);
+  p.element('stop').dispatch('click');
+});
+
+test('successful fullscreen hides Enter until fullscreen exits without changing the session', async t => {
+  const p = await page(t);
+  const socket = p.approve();
+  assert.equal(p.element('enter').hidden, false);
+  p.element('enter').dispatch('click');
+  assert.equal(p.fullscreenCalls(), 1, 'request occurs within the click');
+  await flush();
+  assert.equal(p.element('enter').hidden, true);
+  p.element('enter').dispatch('click');
+  assert.equal(p.fullscreenCalls(), 1, 'already-fullscreen gesture does not repeat the request');
+  p.document.fullscreenElement = null;
+  p.document.dispatch('fullscreenchange');
+  assert.equal(p.element('enter').hidden, false);
+  assert.equal(p.element('enter').disabled, false);
+  assert.equal(p.element('enter').textContent, 'Enter fullscreen');
+  assert.equal(socket.readyState, 1);
+  assert.deepEqual(socket.sent, [{ type: 'requestApproval', version: 2 }]);
   p.element('stop').dispatch('click');
 });
 
@@ -110,26 +126,9 @@ for (const fullscreen of ['unavailable', 'reject', 'throw']) {
     assert.match(p.element('entry-status').textContent, /fullscreen is unavailable.*fills this page/);
     assert.equal(socket.readyState, 1);
     assert.equal(p.sockets.length, 1);
-    assert.equal(p.audio.peers.length, 1, 'fullscreen refusal does not prevent a gesture-started audio attempt');
     p.element('stop').dispatch('click');
   });
 }
-
-test('blocked playback is visible outside settings and never silently retries', async t => {
-  const playback = deferred();
-  const p = await page(t, { playback });
-  const socket = p.approve();
-  p.element('enter').dispatch('click');
-  playback.reject(new Error('NotAllowedError'));
-  await flush();
-  assert.equal(p.element('compact-audio-error').hidden, false);
-  assert.match(p.element('compact-audio-error').textContent, /Playback was blocked/);
-  assert.equal(socket.readyState, 1, 'audio failure does not kill video');
-  assert.equal(p.audio.peers.length, 1);
-  assert.equal(p.audio.peers[0].closed, true);
-  assert.equal(socket.sent.findLast(message => message.type === 'audioMode').enabled, false);
-  p.element('stop').dispatch('click');
-});
 
 test('hidden opening, tab restoration, and BFCache restoration never trigger automatic retries', async t => {
   const p = await page(t, { hidden: true });
@@ -144,7 +143,6 @@ test('hidden opening, tab restoration, and BFCache restoration never trigger aut
   p.window.dispatch('pageshow', { persisted: true });
   assert.equal(p.sockets.length, 1);
   assert.equal(p.sockets[0].readyState, 3);
-  assert.equal(p.audio.peers.length, 0);
 });
 
 test('approval rejection and connection timeout stay visible with explicit retry only', async t => {

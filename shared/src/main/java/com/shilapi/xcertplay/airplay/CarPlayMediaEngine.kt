@@ -26,9 +26,6 @@ interface MediaSink {
     fun onAudioStarted(id: AudioStreamId, format: AudioFormat, firstSample: Int) {}
     fun onAudioRtp(id: AudioStreamId, format: AudioFormat, rtp: ByteArray, sample: Int) {}
     fun onAudioStopped(id: AudioStreamId) {}
-    /** Optional decoded downlink tap. Unsupported sinks keep native playback. */
-    fun setDecodedAudioOutput(output: DecodedAudioOutput?): Boolean = false
-    fun setNativeAudioEnabled(enabled: Boolean) {}
     fun onMicrophoneStarted(id: AudioStreamId, config: MicrophoneConfig) {}
     fun onMicrophoneStopped(id: AudioStreamId) {}
     fun onIapMessage(bytes: ByteArray) {}

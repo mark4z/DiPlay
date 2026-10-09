@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws:; worker-src 'self'; img-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws:; img-src 'self'; media-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>DiPlay · Browser CarPlay preview</title>
-  <link rel="stylesheet" href="viewer.css?v=floating-controls-v1">
-  <script type="module" src="viewer.mjs?v=floating-controls-v1"></script>
+  <link rel="stylesheet" href="viewer.css?v=video-touch-v1">
+  <script type="module" src="viewer.mjs?v=video-touch-v1"></script>
 </head>
 <body>
 <main id="viewer-shell">
@@ -16,7 +16,7 @@
   <div id="embedded-controls" hidden>
     <div class="quick-actions">
       <button id="controls-grip" class="secondary" type="button" aria-label="Move display controls" title="Drag to move; use arrow keys when focused">⠿</button>
-      <button id="enter" type="button" disabled aria-describedby="entry-status">Enter fullscreen + audio</button>
+      <button id="enter" type="button" disabled aria-describedby="entry-status">Enter fullscreen</button>
       <button id="retry" class="secondary" type="button" hidden>Reconnect</button>
       <button id="stop" class="secondary" type="button" disabled>Stop</button>
       <details id="viewer-settings">
@@ -32,7 +32,6 @@
       </details>
     </div>
     <p id="entry-status" role="status" aria-live="polite" hidden></p>
-    <p id="compact-audio-error" role="status" aria-live="polite" hidden></p>
   </div>
   <header id="page-header">
     <a class="brand" href="../">DiPlay<span>Browser CarPlay</span></a>
@@ -51,7 +50,7 @@
         <li>DiPlay must allow this website origin: <output id="origin">this page’s HTTPS origin</output>.</li>
         <li id="connection-instructions">Enter its private IPv4 address and port below. Click Connect, allow Chrome’s local-network permission if you choose, then tap Accept in DiPlay on Android.</li>
       </ol>
-      <p id="transport-warning" class="warning">The external viewer’s local ws:// WebSocket link is unencrypted, including video, audio signaling, and touch controls. WebRTC audio media uses DTLS-SRTP encryption, but its signaling still depends on your trusted LAN. Use only your own trusted private network. HTTPS protects this page, not that ws:// link.</p>
+      <p id="transport-warning" class="warning">The external viewer’s local ws:// WebSocket link is unencrypted, including video and touch controls. Use only your own trusted private network. HTTPS protects this page, not that ws:// link.</p>
     </div>
     <form id="connection" autocomplete="off">
       <div id="local-endpoint" hidden>
@@ -85,7 +84,7 @@
       <p>While parked, manually enter the HTTP health URL shown in DiPlay in the browser address bar, for example http://192.168.1.20:8765/health. A response identifying the DiPlay browser service proves that this browser can reach that APK’s health endpoint over the LAN. It does not prove the HTTPS viewer has local-network permission, that its WebSocket handshake is allowed, or that Android approved a session.</p>
       <p>This HTTPS page never fetches the HTTP health endpoint, because that request can be blocked as mixed content. Navigating away disconnects an active session. Return to this HTTPS viewer and click Connect for a new attempt. Do not bypass browser or certificate warnings.</p>
     </details>
-    <p class="diagnostic-privacy">Only this attempt’s stage times and numeric close code are kept in memory. No payloads, credentials, audio, or video are logged or stored.</p>
+    <p class="diagnostic-privacy">Only this attempt’s stage times and numeric close code are kept in memory. No payloads, credentials, or video are logged or stored.</p>
   </section>
   <section class="display" aria-label="CarPlay display">
     <div id="display-toolbar" class="display-toolbar">
@@ -94,11 +93,6 @@
         <label class="check"><input id="touch" type="checkbox" disabled aria-describedby="touch-status"> Enable touch control</label>
         <span id="touch-status" role="status" aria-live="polite">Touch control off</span>
       </div>
-    </div>
-    <div id="audio-toolbar" class="audio-toolbar">
-      <button id="audio" class="secondary" type="button" disabled aria-describedby="audio-status">Play audio here</button>
-      <button id="audio-test" class="secondary" type="button" disabled aria-describedby="audio-status">Test audio (3 seconds)</button>
-      <span id="audio-status" role="status" aria-live="polite">Audio plays on Android until you choose this browser.</span>
     </div>
     <div id="viewport">
       <canvas id="video" width="1280" height="720" aria-label="Live CarPlay video; enable touch control to interact"></canvas>
@@ -110,7 +104,7 @@
     <summary>Browser requirements &amp; privacy</summary>
     <p id="browser-requirements">Open this page over HTTPS in Chrome 147 or later with WebCodecs and Local Network Access support. Embedded WebViews, older browsers, and many in-car browsers may not support this flow. Install the latest DiPlay APK and reload this viewer together: both must support Android approval (protocol v2). A supported codec is checked when the bridge sends its configuration. H.265 support depends on the browser and device.</p>
     <p id="connection-troubleshooting">If a connection is blocked, check the site’s local-network permission, the bridge’s allowed origin, and that both devices share a trusted LAN. Do not disable browser security, ignore certificate warnings, or expose the bridge to the internet.</p>
-    <p>Click Play audio here to move playback from Android to this browser. Stop browser audio to return playback to Android. Test audio plays a short, quiet tone without muting Android. Audio needs WebRTC/Opus support; it is experimental and is not a guarantee of synchronized audio/video or call support. This viewer has no analytics, third-party scripts, internet media uploads, recording, credential storage, or microphone access. Video and audio stay between the Android bridge and this browser. <span id="parking-explanation">The parked checkbox is your confirmation; this page does not detect vehicle speed.</span></p>
+    <p>Use the phone’s direct connection to the car for sound. This viewer carries video and touch only; Android’s normal audio playback remains available. This viewer has no analytics, third-party scripts, internet media uploads, recording, credential storage, or microphone access. Video stays between the Android bridge and this browser. <span id="parking-explanation">The parked checkbox is your confirmation; this page does not detect vehicle speed.</span></p>
     <p><a href="https://groups.google.com/a/chromium.org/g/blink-dev/c/O6GMKt44Ups" target="_blank" rel="noopener noreferrer">Chrome’s local WebSocket requirements</a></p>
   </details>
   <noscript><p class="warning">JavaScript and WebCodecs are required. No connection has been started.</p></noscript>

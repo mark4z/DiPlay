@@ -44,11 +44,18 @@ class EmbeddedViewerApkTest(unittest.TestCase):
                     guard.verify(self.apk, self.source)
 
     def test_missing_unexpected_or_modified_assets_fail(self):
-        for options in ({"omit": "audio.mjs"}, {"extra": "README.md"}, {"extra": "tests/test.mjs"}, {"alter": "viewer.mjs"}):
+        for options in ({"omit": "viewer.mjs"}, {"extra": "audio.mjs"}, {"extra": "audio-protocol.mjs"}, {"extra": "README.md"}, {"extra": "tests/test.mjs"}, {"alter": "viewer.mjs"}):
             with self.subTest(options=options):
                 self.archive(**options)
                 with self.assertRaises(ValueError):
                     guard.verify(self.apk, self.source)
+
+    def test_obsolete_browser_webrtc_native_library_is_not_bundled(self):
+        self.archive()
+        with zipfile.ZipFile(self.apk, "a") as archive:
+            archive.writestr("lib/arm64-v8a/libjingle_peerconnection_so.so", b"synthetic native library")
+        with self.assertRaises(ValueError):
+            guard.verify(self.apk, self.source)
 
     def test_oversize_asset_fails(self):
         (self.source / "viewer.mjs").write_bytes(b"x" * (512 * 1024 + 1))

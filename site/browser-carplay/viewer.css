@@ -53,9 +53,6 @@ footer { border-top: 1px solid #25344a; padding: 20px 0 0; margin-top: 12px; }
 #touch-status { display: block; font-size: 12px; color: #a6b7cd; }
 #indicator[data-state="requestingApproval"], #indicator[data-state="approvalPending"] { background: #ead2a4; }
 
-.audio-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 2px 0 14px; }
-#audio-status { font-size: 12px; color: #a6b7cd; flex: 1 1 220px; }
-
 .connection-diagnostics { padding: 20px 24px; margin: 18px 0 8px; border: 1px solid #30445e; border-radius: 13px; background: #101b29; }
 .connection-diagnostics h2 { margin-bottom: 8px; }
 .connection-diagnostics p { margin: 8px 0; font-size: 13px; overflow-wrap: anywhere; }
@@ -67,7 +64,7 @@ footer { border-top: 1px solid #25344a; padding: 20px 0 0; margin-top: 12px; }
 .connection-diagnostics details { padding: 8px 0 0; }
 
 /* Built-in page: the video fills the viewport without requiring browser fullscreen.
-   Browser fullscreen and audio still begin only from the Enter user gesture. */
+   Browser fullscreen still begins only from the Enter user gesture. */
 .embedded-viewer { position: fixed; inset: 0; width: 100%; height: 100vh; height: 100dvh; max-width: none; margin: 0; padding: 0; background: #000; }
 .embedded-viewer .display { position: absolute; inset: 0; margin: 0; }
 .embedded-viewer #viewport { width: 100%; height: 100%; min-height: 0; border-radius: 0; outline: none; }
@@ -86,8 +83,7 @@ footer { border-top: 1px solid #25344a; padding: 20px 0 0; margin-top: 12px; }
 .embedded-viewer #local-endpoint { margin-top: 18px; }
 .embedded-viewer .connection-diagnostics { padding: 16px; }
 .embedded-viewer #touch-control { padding: 10px 0; }
-.embedded-viewer .audio-toolbar { margin-top: 12px; }
-#entry-status, #compact-audio-error { pointer-events: auto; margin: 8px 0 0 auto; padding: 9px 12px; max-width: 620px; border-radius: 9px; background: #101b29f2; color: #e8cba0; font-size: 13px; }
+#entry-status { pointer-events: auto; margin: 8px 0 0 auto; padding: 9px 12px; max-width: 620px; border-radius: 9px; background: #101b29f2; color: #e8cba0; font-size: 13px; }
 @media (max-width: 520px) {
   .quick-actions { gap: 5px; }
   .quick-actions button, #viewer-settings > summary { font-size: 12px; padding: 10px; }

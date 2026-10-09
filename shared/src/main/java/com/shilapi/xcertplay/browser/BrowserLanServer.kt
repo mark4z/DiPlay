@@ -116,23 +116,6 @@ class BrowserLanServer(
         return owner?.send(2, bytes, keyFrame = keyFrame) ?: false
     }
 
-    fun sendAudio(bytes: ByteArray): Boolean = owner?.sendAudio(bytes) ?: false
-
-    fun resetAudio() { owner?.resetAudio() }
-
-    /** Capture the approved socket, not mutable owner: a late PCM worker cannot
-     * transmit to or clear a later connection's queues after consent has changed. */
-    internal fun bindAudioTransport(): BrowserLanAudioTransport? {
-        val connection = owner ?: return null
-        return BrowserLanAudioTransport(
-            sendText = { text ->
-                if (text.length > BrowserLanProtocol.MAX_TEXT_BYTES) false else {
-                    val bytes = text.toByteArray(Charsets.UTF_8)
-                    bytes.size <= BrowserLanProtocol.MAX_TEXT_BYTES && connection.send(1, bytes)
-                }
-            }, sendAudio = connection::sendAudio, resetAudio = connection::resetAudio)
-    }
-
     override fun close() {
         val sessions: List<BrowserLanConnection>
         synchronized(lock) {
@@ -219,12 +202,6 @@ internal fun bindBrowserListener(address: InetAddress, port: Int, reuseAddress: 
         throw failure
     }
 }
-
-internal data class BrowserLanAudioTransport(
-    val sendText: (String) -> Boolean,
-    val sendAudio: (ByteArray) -> Boolean,
-    val resetAudio: () -> Unit,
-)
 
 /** A one-shot grant for one live connection. No device identity or credential is persisted. */
 class BrowserApprovalRequest internal constructor(
@@ -318,11 +295,6 @@ internal class BrowserLanConnection(
         if (opcode != 2) stop()
         return false
     }
-
-    fun sendAudio(bytes: ByteArray): Boolean =
-        authenticated && !stopped.get() && outbound.offerAudio(bytes)
-
-    fun resetAudio() { outbound.resetAudio() }
 
     fun stop() { stopWithReason(BrowserConnectionReason.NONE) }
 
@@ -576,7 +548,7 @@ internal object BrowserLanProtocol {
     class Failure(val closeCode: Int = 1002,
         val reason: BrowserConnectionReason = BrowserConnectionReason.INVALID_FRAME) :
         IOException("Invalid browser bridge protocol")
-    data class Frame(val opcode: Int, val payload: ByteArray, val audio: Boolean = false)
+    data class Frame(val opcode: Int, val payload: ByteArray)
 
     fun isPrivateIpv4(address: InetAddress): Boolean {
         if (address !is Inet4Address) return false
@@ -785,14 +757,10 @@ internal class BrowserLanQueue {
     private val lock = Object()
     private val video = ArrayDeque<BrowserLanProtocol.Frame>()
     private val control = ArrayDeque<BrowserLanProtocol.Frame>()
-    private val audio = ArrayDeque<BrowserLanProtocol.Frame>()
     private var videoCount = 0
     private var videoBytes = 0L
     private var controlCount = 0
     private var controlBytes = 0L
-    private var audioCount = 0
-    private var audioBytes = 0L
-    private var audioNext = true
     private var waitingForKey = true
     private var closed = false
 
@@ -831,39 +799,17 @@ internal class BrowserLanQueue {
         true
     }
 
-    /** PCM packets are independent: shed the oldest queued samples, never video references. */
-    fun offerAudio(payload: ByteArray): Boolean = synchronized(lock) {
-        if (closed || payload.size > MAX_AUDIO_PACKET_BYTES) return@synchronized false
-        while (audio.isNotEmpty() && (audioCount >= MAX_AUDIO_FRAMES || audioBytes + payload.size > MAX_AUDIO_BYTES)) {
-            complete(audio.removeFirst())
-        }
-        if (audioCount >= MAX_AUDIO_FRAMES || audioBytes + payload.size > MAX_AUDIO_BYTES) return@synchronized false
-        audio.addLast(BrowserLanProtocol.Frame(2, payload.copyOf(), audio = true))
-        audioCount++
-        audioBytes += payload.size
-        lock.notifyAll()
-        true
-    }
-
-    fun resetAudio() = synchronized(lock) { discardAudio() }
-
     fun take(): BrowserLanProtocol.Frame? = synchronized(lock) {
-        while (control.isEmpty() && video.isEmpty() && audio.isEmpty() && !closed) lock.wait()
+        while (control.isEmpty() && video.isEmpty() && !closed) lock.wait()
         when {
             control.isNotEmpty() -> control.removeFirst()
-            // Control/config stays FIFO and ahead of either media type. When both
-            // are ready, alternating whole messages prevents either from starvation.
-            audio.isNotEmpty() && (audioNext || video.isEmpty()) -> audio.removeFirst().also { audioNext = false }
-            video.isNotEmpty() -> video.removeFirst().also { audioNext = true }
+            video.isNotEmpty() -> video.removeFirst()
             else -> null
         }
     }
 
     fun complete(frame: BrowserLanProtocol.Frame) = synchronized(lock) {
-        if (frame.audio) {
-            audioCount--
-            audioBytes -= frame.payload.size
-        } else if (frame.opcode == 2) {
+        if (frame.opcode == 2) {
             videoCount--
             videoBytes -= frame.payload.size
         } else {
@@ -875,7 +821,6 @@ internal class BrowserLanQueue {
     fun finishWithClose(payload: ByteArray) = synchronized(lock) {
         if (closed) return@synchronized
         discardVideo()
-        discardAudio()
         discardControl()
         control.addLast(BrowserLanProtocol.Frame(8, payload.copyOf()))
         controlCount++
@@ -887,17 +832,12 @@ internal class BrowserLanQueue {
     fun close() = synchronized(lock) {
         closed = true
         discardVideo()
-        discardAudio()
         discardControl()
         lock.notifyAll()
     }
 
     private fun discardVideo() {
         while (video.isNotEmpty()) complete(video.removeFirst())
-    }
-
-    private fun discardAudio() {
-        while (audio.isNotEmpty()) complete(audio.removeFirst())
     }
 
     private fun discardControl() {
@@ -907,9 +847,6 @@ internal class BrowserLanQueue {
     companion object {
         private const val MAX_VIDEO_FRAMES = 3
         private const val MAX_VIDEO_BYTES = 8L * 1024 * 1024
-        private const val MAX_AUDIO_PACKET_BYTES = 36 + 4096 * 2 * 2
-        private const val MAX_AUDIO_FRAMES = 8
-        private const val MAX_AUDIO_BYTES = 64L * 1024
         private const val MAX_CONTROL_FRAMES = 16
         private const val MAX_CONTROL_BYTES = 64L * 1024
     }

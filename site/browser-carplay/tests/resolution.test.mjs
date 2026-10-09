@@ -54,6 +54,11 @@ test('session resolution send remains approval-gated; ACK parsing rejects invali
   assert.equal(session.setBrowserResolution(request), true); assert.equal(sent[0].type, 'setBrowserResolution');
   assert.equal(session.setBrowserResolution({ ...request, width: Infinity }), false);
   const ack = { ...request, type: 'browserResolution', applies: 'unchanged', text: 'untrusted payload' };
+  for (const requestId of [undefined, null, 0, -1, 1.5, '1', Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(session.setBrowserResolution({ ...request, requestId }), false);
+    session.receiveText(JSON.stringify({ ...ack, requestId }));
+    assert.equal(acks.length, 0, 'invalid request IDs cannot reach the resolution controls');
+  }
   session.receiveText(JSON.stringify(ack)); assert.equal(acks.length, 1); assert.equal(acks[0].text, undefined);
   session.receiveText(JSON.stringify({ ...ack, width: '1280' }));
   session.receiveText(JSON.stringify({ ...ack, applies: 'arbitrary server text' })); assert.equal(acks.length, 1);

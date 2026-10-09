@@ -110,7 +110,7 @@ internal object BrowserOutputSettings {
                     return@setOnClickListener
                 }
                 try {
-                    BrowserOutput.start(addresses[address.selectedItemPosition], context = context)
+                    BrowserOutput.start(addresses[address.selectedItemPosition])
                     dialog.dismiss(); show(context)
                 } catch (_: Exception) { error.text = "Could not start. Check that the selected private Wi-Fi IP is still available." }
             }

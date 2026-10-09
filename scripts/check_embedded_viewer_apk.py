@@ -6,7 +6,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 NAMES = {"index.html", "viewer.css", "viewer.mjs", "core.mjs", "session.mjs",
-         "controls.mjs", "resolution.mjs", "audio.mjs", "audio-protocol.mjs", "diagnostics.mjs", "config.mjs"}
+         "controls.mjs", "resolution.mjs", "diagnostics.mjs", "config.mjs"}
 PREFIX = "assets/browser-carplay/"
 HTTPS_CONFIG = "diplay-browser-https.properties"
 DEFAULT_HOSTNAME = "tesla.mark4z.asia"
@@ -14,6 +14,8 @@ DEFAULT_HOSTNAME = "tesla.mark4z.asia"
 
 def verify(apk, source=ROOT / "site/browser-carplay", hostname=DEFAULT_HOSTNAME):
     with zipfile.ZipFile(apk) as archive:
+        if any(name.rsplit("/", 1)[-1] == "libjingle_peerconnection_so.so" for name in archive.namelist()):
+            raise ValueError("Obsolete browser WebRTC native library must not be bundled")
         if any(name.lower().rstrip("/") == "assets/private-https" or
                name.lower().startswith("assets/private-https/") for name in archive.namelist()):
             raise ValueError("Source-only APK must not contain bundled TLS identity assets")

@@ -1,5 +1,5 @@
 // Local, bounded connection milestones only. Never accept payloads, URLs,
-// server close reasons, tokens, SDP, audio, or video in the diagnostic record.
+// server close reasons, tokens, or video in the diagnostic record.
 const STAGES = Object.freeze({
   connect: 'Connect requested',
   wsOpen: 'WebSocket opened',

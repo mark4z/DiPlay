@@ -1,8 +1,7 @@
 import { followBrowserResolution, observeRenderPixels } from './resolution.mjs?v=render-pixels-v2';
 import { floatingControls } from './controls.mjs?v=floating-controls-v1';
 import { Contacts, EMBEDDED_VIEWER_ORIGIN, EMBEDDED_VIEWER_ENDPOINT, fitRect, mapPointer } from './core.mjs?v=embedded-https-v1';
-import { BrowserSession } from './session.mjs?v=embedded-https-v1';
-import { BrowserAudioPlayer } from './audio.mjs?v=webrtc-audio-v1';
+import { BrowserSession } from './session.mjs?v=video-touch-v1';
 import { milestoneText, transportCaption } from './diagnostics.mjs?v=embedded-https-v1';
 
 const byId = id => document.getElementById(id);
@@ -19,9 +18,6 @@ const port = byId('port');
 const parked = byId('parked');
 const touch = byId('touch');
 const touchStatus = byId('touch-status');
-const audioButton = byId('audio');
-const audioTestButton = byId('audio-test');
-const audioStatus = byId('audio-status');
 const connect = byId('connect');
 const disconnect = byId('disconnect');
 const canvas = byId('video');
@@ -40,8 +36,6 @@ let moveRequest = null;
 let videoWidth = 0;
 let videoHeight = 0;
 let live = false;
-let audioState = { enabled: false, ready: false, pending: false };
-let audioPlayer = null;
 let displayControls = null;
 let resolutionFollow = null;
 
@@ -62,14 +56,14 @@ if (embeddedViewer) {
   byId('page-header').hidden = byId('intro').hidden = true;
   byId('parked-control').hidden = true;
   parked.required = false;
-  byId('settings-content').append(...['touch-control', 'audio-toolbar', 'setup', 'diagnostics', 'display-note', 'requirements', 'legal'].map(byId));
+  byId('settings-content').append(...['touch-control', 'setup', 'diagnostics', 'display-note', 'requirements', 'legal'].map(byId));
   byId('placeholder-title').textContent = 'DiPlay';
   byId('placeholder-note').textContent = 'Connecting to your Android display…';
   byId('parking-explanation').textContent = 'Use only while safely parked. DiPlay’s Android parked-use guard must be enabled; this page does not detect vehicle speed.';
   byId('local-approval-help').textContent = 'No IP address is needed. DiPlay’s configured approval mode applies. Manual approval requires Accept on Android within 30 seconds.';
   byId('local-endpoint-value').textContent = EMBEDDED_VIEWER_ENDPOINT;
   byId('connection-instructions').textContent = 'This viewer connects automatically to this DiPlay device once when opened. In manual approval mode, tap Accept in DiPlay on Android. Stop or reconnect from the display controls.';
-  byId('transport-warning').textContent = 'HTTPS and WSS protect page delivery, video, audio signaling, and touch controls with TLS. WebRTC audio media uses DTLS-SRTP. Keep both devices on your trusted private LAN. DiPlay controls connection approval. Do not bypass certificate warnings.';
+  byId('transport-warning').textContent = 'HTTPS and WSS protect page delivery, video, and touch controls with TLS. Keep both devices on your trusted private LAN. DiPlay controls connection approval. Do not bypass certificate warnings.';
   byId('browser-requirements').textContent = 'The built-in HTTPS viewer needs WebCodecs video decoding and a valid TLS connection. No Chrome 147 Local Network Access exemption is needed for the same-origin WSS link. In-car browser and H.265 support still depend on the browser and device. Install the latest DiPlay APK and reload this viewer together; both must support Android approval (protocol v2).';
   byId('connection-troubleshooting').textContent = 'If a connection is blocked, check that DiPlay is enabled, both devices share a trusted private LAN, and the built-in HTTPS page loads with a valid certificate. Do not disable browser security, ignore certificate warnings, or expose the bridge to the internet.';
   byId('lan-diagnostics').hidden = true;
@@ -108,21 +102,7 @@ showDiagnostics({ attempt: 0, transport: null, events: [] });
 const session = new BrowserSession({ WebSocket, VideoDecoder: window.VideoDecoder,
   EncodedVideoChunk: window.EncodedVideoChunk, onState: setState, onFrame: queueFrame, onTouchOwnership: setTouchState,
   onDiagnostics: showDiagnostics,
-  onBrowserResolution: message => resolutionFollow?.acknowledged(message),
-  onAudioMessage: message => audioPlayer?.handleMessage(message),
-  onAudioPacket: packet => audioPlayer?.handlePacket(packet),
-  onAudioReset: () => audioPlayer?.reset() });
-audioPlayer = new BrowserAudioPlayer({
-  sendMode: (enabled, requestId, source) => session.setAudioEnabled(enabled, requestId, source),
-  sendSignal: message => session.sendAudioSignal(message),
-  onState: state => {
-    audioState = state;
-    audioStatus.textContent = state.message;
-    byId('compact-audio-error').textContent = state.error ? state.message : '';
-    byId('compact-audio-error').hidden = !state.error;
-    updateControls();
-  },
-});
+  onBrowserResolution: message => resolutionFollow?.acknowledged(message) });
 
 if (embeddedViewer) {
   const closeSettings = () => {
@@ -150,11 +130,8 @@ if (embeddedViewer) {
   document.addEventListener('fullscreenchange', changed);
 }
 
-// Read-only, bounded operational counters for parked manual validation.
-export const getAudioDiagnostics = () => audioPlayer.getDiagnostics();
-
 function updateControls() {
-  displayControls?.update({ critical: !live || Boolean(blocked) || Boolean(audioState.error) || !entryStatus.hidden });
+  displayControls?.update({ critical: !live || Boolean(blocked) || !entryStatus.hidden });
   const active = !session.closed;
   resolutionFollow?.connected(session.authenticated && active && document.visibilityState === 'visible');
   if (embeddedViewer) byId('resolution-follow').disabled = !session.authenticated || !active;
@@ -162,15 +139,11 @@ function updateControls() {
   disconnect.disabled = stop.disabled = !active;
   retry.hidden = active || Boolean(blocked);
   retry.disabled = connect.disabled;
-  enter.disabled = Boolean(blocked) || !session.authenticated || !active || fullscreenPending || audioState.pending;
+  enter.disabled = Boolean(blocked) || !session.authenticated || !active || fullscreenPending;
   const fullscreen = document.fullscreenElement === shell;
-  enter.hidden = fullscreen && audioState.enabled;
-  enter.textContent = fullscreen ? 'Play audio here' : audioState.enabled ? 'Enter fullscreen' : 'Enter fullscreen + audio';
+  enter.hidden = fullscreen;
+  enter.textContent = 'Enter fullscreen';
   ip.disabled = port.disabled = embeddedViewer || active;
-  audioButton.disabled = !session.authenticated || !active || !parkedUseAllowed();
-  audioTestButton.disabled = audioButton.disabled || audioState.pending || audioState.enabled;
-  audioButton.textContent = audioState.needsGesture ? 'Play audio here' : audioState.pending ? 'Cancel audio start'
-    : (audioState.enabled ? 'Return audio to Android' : 'Play audio here');
   touch.disabled = (!live && !session.touchRequested) || !parkedUseAllowed() || active === false || !window.PointerEvent;
 }
 
@@ -308,18 +281,6 @@ function finishPointer(event) {
 for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) canvas.addEventListener(name, finishPointer);
 canvas.addEventListener('contextmenu', event => { if (session.touchOwned) event.preventDefault(); });
 
-audioButton.addEventListener('click', () => {
-  if (!session.authenticated || session.closed || !parkedUseAllowed() || document.visibilityState !== 'visible') return;
-  if (audioState.needsGesture) audioPlayer.resumePlaybackFromGesture();
-  else if (audioState.enabled || audioState.pending) audioPlayer.disable();
-  else void audioPlayer.enableFromGesture();
-});
-
-audioTestButton.addEventListener('click', () => {
-  if (!session.authenticated || session.closed || !parkedUseAllowed() || document.visibilityState !== 'visible') return;
-  void audioPlayer.enableFromGesture({ test: true });
-});
-
 touch.addEventListener('change', () => {
   if (!parkedUseAllowed() || (!live && touch.checked)) touch.checked = false;
   releaseContacts();
@@ -327,10 +288,10 @@ touch.addEventListener('change', () => {
   canvas.classList.toggle('touch-enabled', session.touchOwned);
 });
 parked.addEventListener('change', () => {
-  if (!embeddedViewer && !parked.checked) { audioPlayer.disable(); releaseContacts(); session.close('Disconnected. Park safely before connecting again.'); }
+  if (!embeddedViewer && !parked.checked) { releaseContacts(); session.close('Disconnected. Park safely before connecting again.'); }
   updateControls();
 });
-function stopSession() { audioPlayer.disable(); releaseContacts(); session.close(); }
+function stopSession() { releaseContacts(); session.close(); }
 disconnect.addEventListener('click', stopSession);
 stop.addEventListener('click', stopSession);
 function connectSession() {
@@ -353,9 +314,7 @@ enter.addEventListener('click', () => {
   if (!embeddedViewer || blocked || !session.authenticated || session.closed || fullscreenPending || document.visibilityState !== 'visible') return;
   const generation = ++entryGeneration;
   entryStatus.hidden = true;
-  // Both browser APIs are invoked synchronously inside this real user gesture.
-  // Calling audio first avoids consuming activation on fullscreen before play().
-  if (!audioState.enabled && !audioState.pending) void audioPlayer.enableFromGesture();
+  // Request fullscreen synchronously inside this real user gesture.
   if (document.fullscreenElement === shell) return;
   const failed = () => {
     if (generation !== entryGeneration || session.closed) return;
@@ -379,7 +338,6 @@ document.addEventListener('fullscreenchange', () => { releaseContacts(); updateC
 byId('viewer-settings').addEventListener('toggle', releaseContacts);
 
 function leavePage() {
-  audioPlayer.disable();
   releaseContacts();
   session.close('Disconnected because this page is no longer visible. Click Connect to request approval again.');
   parked.checked = touch.checked = false;

@@ -1,8 +1,7 @@
 package com.shilapi.xcertplay.media
 
 import com.shilapi.xcertplay.airplay.*
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.CopyOnWriteArrayList
 import org.mockito.Mockito.mock
 import org.junit.Assert.*
 import org.junit.Test
@@ -26,37 +25,50 @@ class RelayOnlyMediaSinkTest {
         } finally { sink.close() }
     }
 
-    @Test fun relayPcmIsTappedWithoutCreatingAudioTrackOrMicrophone() {
-        val sink = AndroidMediaSink(relayOnly = true)
-        val id = AudioStreamId(96, "media")
-        val format = AudioFormat(AudioCodecKind.LPCM, 48_000, 2, 96)
-        val received = CountDownLatch(1)
+    @Test fun relayAudioNeverCreatesAudioTrackOrMicrophone() {
+        val diagnostics = CopyOnWriteArrayList<String>()
+        val sink = AndroidMediaSink(relayOnly = true, onAudioDiagnostic = diagnostics::add)
         try {
-            assertTrue(sink.setDecodedAudioOutput(object : DecodedAudioOutput {
-                override fun pcm(stream: Long, id: AudioStreamId, format: DecodedAudioFormat,
-                    firstSample: Long, bytes: ByteArray, offset: Int, length: Int, gain: Float) {
-                    if (length == 960 && format.supported && format.sampleRate == 48_000) received.countDown()
-                }
-            }))
-            sink.onAudioStarted(id, format, 0)
-            sink.onAudioRtp(id, format, ByteArray(12 + 960), 0)
-            assertTrue("Decoded PCM must reach the WebRTC tap without a speaker track", received.await(2, TimeUnit.SECONDS))
-            val renderers = AndroidMediaSink::class.java.getDeclaredField("audioRenderers").apply { isAccessible = true }.get(sink) as Map<*, *>
-            val renderer = checkNotNull(renderers[id])
-            assertNull(renderer.javaClass.getDeclaredField("track").apply { isAccessible = true }.get(renderer))
-            sink.onMicrophoneStarted(id, mock(MicrophoneConfig::class.java))
-            val uplinks = AndroidMediaSink::class.java.getDeclaredField("microphoneUplinks").apply { isAccessible = true }.get(sink) as Map<*, *>
-            assertTrue(uplinks.isEmpty())
+            for (codec in AudioCodecKind.values()) {
+                val id = AudioStreamId(96, "media")
+                val format = AudioFormat(codec, 48_000, 2, 96)
+                sink.onAudioStarted(id, format, 0)
+                sink.onAudioRtp(id, format, ByteArray(12 + 960), 0)
+                val renderer = checkNotNull(entries(sink, "audioRenderers")[id])
+                assertFalse(field(renderer, "started") as Boolean)
+                assertEquals(Thread.State.NEW, (field(renderer, "thread") as Thread).state)
+                assertNull(field(renderer, "codec"))
+                assertNull(field(renderer, "track"))
+                sink.onMicrophoneStarted(id, mock(MicrophoneConfig::class.java))
+                assertTrue(entries(sink, "microphoneUplinks").isEmpty())
+                sink.onAudioStopped(id)
+            }
+            assertFalse(diagnostics.any { it.startsWith("Audio: ready") })
         } finally { sink.close() }
     }
 
-    @Test fun browserFailureOrDetachCannotUnmuteBackend() {
-        val sink = AndroidMediaSink(relayOnly = true)
+    @Test fun relayRetainsMediaAndRealtimeStreamBookkeeping() {
+        val mediaChanges = mutableListOf<Boolean>()
+        val sink = AndroidMediaSink(relayOnly = true, onMediaAudioChanged = mediaChanges::add)
+        val media = AudioStreamId(96, "media")
+        val phone = AudioStreamId(96, "telephony")
+        val format = AudioFormat(AudioCodecKind.LPCM, 48_000, 2, 96)
         try {
-            sink.setNativeAudioEnabled(true)
-            sink.setDecodedAudioOutput(null)
-            val field = AndroidMediaSink::class.java.getDeclaredField("nativeAudioEnabled").apply { isAccessible = true }
-            assertFalse(field.getBoolean(sink))
+            sink.onAudioStarted(media, format, 0)
+            sink.onAudioStarted(phone, format.copy(audioType = "telephony"), 0)
+            assertEquals(listOf(true), mediaChanges)
+            assertTrue(sink.hasRealtimeAudio())
+            sink.onAudioStopped(phone)
+            assertFalse(sink.hasRealtimeAudio())
+            assertEquals(listOf(true), mediaChanges)
+            sink.onAudioStopped(media)
+            assertEquals(listOf(true, false), mediaChanges)
+            assertTrue(entries(sink, "audioRenderers").isEmpty())
         } finally { sink.close() }
     }
+
+    private fun entries(sink: AndroidMediaSink, name: String) = field(sink, name) as Map<*, *>
+
+    private fun field(instance: Any, name: String): Any? =
+        instance.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(instance)
 }

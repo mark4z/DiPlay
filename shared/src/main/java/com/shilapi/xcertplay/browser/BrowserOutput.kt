@@ -65,7 +65,6 @@ object BrowserOutput {
         ++streamId
         format = null; recovery = null; waitingForKey = true
         releaseTouches()
-        BrowserAudioOutput.detach(native)
         if (viewerConnected) server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
     }
     private var streamId = 0L
@@ -145,8 +144,8 @@ object BrowserOutput {
         ui?.finished?.invoke(id)
     }
 
-    fun start(address: InetAddress, origin: String = VIEWER_ORIGIN, context: android.content.Context? = null): String =
-        startTransport(address, origin, context)
+    fun start(address: InetAddress, origin: String = VIEWER_ORIGIN): String =
+        startTransport(address, origin)
 
     /** Caller owns explicit VPN consent and both descriptors for this single in-memory session. */
     fun startSecure(context: android.content.Context, identity: BrowserTlsIdentity,
@@ -158,7 +157,7 @@ object BrowserOutput {
         val assets = BrowserViewerAssets.load { context.assets.open(it) }
         onStage(BrowserHttpsStartup.Stage.LISTENER_BIND)
         return startTransport(InetAddress.getByName(BrowserViewerAssets.ADDRESS), BrowserViewerAssets.ORIGIN,
-            context, identity, assets, onStopped)
+            identity, assets, onStopped)
     }
 
     /** Only the matching session may become available after its normal-trust self-check. */
@@ -171,10 +170,9 @@ object BrowserOutput {
 
     fun healthResponseForSelfCheck(): ByteArray = BrowserLanProtocol.healthResponse(false)
 
-    private fun startTransport(address: InetAddress, origin: String, context: android.content.Context?,
+    private fun startTransport(address: InetAddress, origin: String,
                                identity: BrowserTlsIdentity? = null, assets: BrowserViewerAssets? = null,
                                onStopped: (() -> Unit)? = null): String = synchronized(lock) {
-        context?.let(BrowserAudioOutput::initialize)
         check(server == null) { "Stop the current browser session first" }
         val generation = ++serverGeneration
         val transport = BrowserLanServer(address, origin,
@@ -188,9 +186,6 @@ object BrowserOutput {
                 browserTouchOwned = false
                 waitingForKey = true
                 server?.sendText("{\"type\":\"authenticated\",\"version\":2}")
-                server?.bindAudioTransport()?.let {
-                    BrowserAudioOutput.connect(it.sendText)
-                }
                 sendConfig()
                 requestKeyframe()
             } },
@@ -200,7 +195,6 @@ object BrowserOutput {
                 ++viewerGeneration
                 waitingForKey = true
                 releaseTouches()
-                BrowserAudioOutput.disconnect()
                 viewerConnected = false
             } }, secureIdentity = identity, viewerAssets = assets)
         server = transport
@@ -227,7 +221,6 @@ object BrowserOutput {
             ++viewerGeneration
             server = null; endpoint = null
             waitingForKey = true; releaseTouches()
-            BrowserAudioOutput.disconnect()
             viewerConnected = false
             val pending = pendingApproval
             pendingApproval = null
@@ -247,7 +240,6 @@ object BrowserOutput {
         val generation = synchronized(lock) {
             releaseTouches()
             nativeMedia = native
-            BrowserAudioOutput.attach(native)
             if (viewerConnected && format != null) {
                 server?.sendText("{\"type\":\"status\",\"code\":\"waiting\"}", resetVideo = true)
             }
@@ -299,7 +291,6 @@ object BrowserOutput {
                     if (generation != mediaGeneration) return@synchronized
                     ++streamId
                     format = null; recovery = null; waitingForKey = true; releaseTouches()
-                    BrowserAudioOutput.restoreNative()
                     if (viewerConnected) server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
                 }
             }
@@ -368,15 +359,6 @@ object BrowserOutput {
                         if (current()) server?.sendText(response.toString())
                     } }, current)
                 }
-                "audioMode" -> {
-                    val id = json.get("requestId")
-                    require(id is Number && id.toDouble().isFinite() && id.toDouble() == id.toLong().toDouble())
-                    require(id.toLong() in 1..9_007_199_254_740_991L)
-                    BrowserAudioOutput.setEnabled(json.get("enabled") as? Boolean
-                        ?: throw IllegalArgumentException("Boolean required"), id.toLong(),
-                        json.optString("transport"), json.optString("source") == "test")
-                }
-                "audioAnswer", "audioIce", "audioReady", "audioAlive" -> BrowserAudioOutput.receive(json)
                 "touch" -> {
                     if (!browserTouchOwned || json.optLong("streamId", -1L) != streamId) return
                     if (format == null) { releaseTouches(); return }

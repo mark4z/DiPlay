@@ -10,7 +10,7 @@ The DiPlay home screen now exposes the HTTPS certificate import and service cont
 4. Optionally enable **Automatically allow browser connections** after reading the LAN disclosure. This is off by default. While HTTPS is running, ready and DiPlay is in front, a valid browser connection is allowed with an Android notice. This is not device identity verification: any reachable device on that trusted LAN may try to connect.
 5. Optionally enable **Start HTTPS when I open DiPlay** after its separate disclosure. This is also off by default. It uses the saved certificate; it cannot bypass a missing system VPN/local-network grant. A manual Stop or denied prompt suppresses another automatic attempt during that visit. Boot-launched activities are explicitly excluded; tap the launcher for a later normal app-open attempt. There is no boot receiver or sticky-service restoration for HTTPS.
 
-The Android connection permission does not manufacture a browser playback gesture, activate audio playback, or grant touch ownership. Audio playback and touch retain their separate browser controls. Disabling automatic approval applies to subsequent requests; Stop revokes the current session.
+Android connection approval does not grant touch ownership. Touch retains its separate browser control. Audio goes directly from the phone to the car; the browser does not forward audio. Disabling automatic approval applies to subsequent requests; Stop revokes the current session.
 
 ## Local storage and deletion
 
@@ -34,4 +34,4 @@ Automatic permission is recorded as `AUTO_APPROVED`, never as `PROMPT_SHOWN`. Th
 
 New synthetic Android tests cover encrypted storage, cancellation/delete races, atomic-replace failure, malformed storage and defaults, cross-screen revision invalidation, foreground handoff, consent/Stop suppression and automatic approval without dialog or touch ownership. Existing Origin/Host/approval/single-client tests remain in place. Android tests/lint/build run in GitHub Actions; no local Gradle execution or real TLS private-key handling is required.
 
-Physical acceptance is still required for Android Keystore behavior, VPN consent/revoke, hotspot/Tesla reachability, background/return, certificate replacement/deletion, and WebRTC audio handoff. The local TLS self-check alone does not prove Tesla reachability or audio playback.
+Physical acceptance is still required for Android Keystore behavior, VPN consent/revoke, hotspot/Tesla reachability, background/return, and certificate replacement/deletion. The local TLS self-check alone does not prove Tesla reachability.
