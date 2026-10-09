@@ -130,3 +130,12 @@ test('contacts reject invalid coordinates and unknown pointers', () => {
   assert.equal(contacts.down(1, { x: 0, y: 1 }), true);
   assert.equal(contacts.move(1, null), false);
 });
+
+test('moves report coordinate changes so a stationary lift need not resend DOWN', () => {
+  const contacts = new Contacts();
+  contacts.down(42, { x: .25, y: .5 });
+  assert.equal(contacts.move(42, { x: .25, y: .5 }), false);
+  assert.equal(contacts.move(42, { x: .75, y: .5 }), true);
+  assert.equal(contacts.move(42, { x: .75, y: .5 }), false);
+  assert.deepEqual(contacts.snapshot(), [{ id: 0, x: .75, y: .5 }]);
+});

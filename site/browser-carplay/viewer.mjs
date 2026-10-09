@@ -258,19 +258,29 @@ canvas.addEventListener('pointerdown', event => {
 canvas.addEventListener('pointermove', event => {
   if (!contacts.has(event.pointerId)) return;
   event.preventDefault();
-  if (event.pointerType === 'mouse' && event.buttons === 0) { finishPointer(event); return; }
+  if (event.pointerType === 'mouse' && event.buttons === 0) { finishPointer(event, true); return; }
   if (contacts.move(event.pointerId, point(event, true)) && moveRequest === null) moveRequest = requestAnimationFrame(flushContacts);
 });
 
-function finishPointer(event) {
-  if (!contacts.up(event.pointerId)) return;
+function finishPointer(event, useReleasePosition = false) {
+  if (!contacts.has(event.pointerId)) return;
   event.preventDefault();
+  if (useReleasePosition) {
+    // UP can arrive before the pending move's animation frame, or contain a
+    // newer position itself. Send that pressed state before removing its slot.
+    // Cancel/lost capture only release: their coordinates need not be usable.
+    const moved = contacts.move(event.pointerId, point(event, true));
+    if (moved || moveRequest !== null) flushContacts();
+  }
+  // A failed flush can close the session and synchronously clear all contacts.
+  if (!contacts.up(event.pointerId)) return;
   // Up/cancel sends the surviving contacts immediately, including an empty final
   // snapshot. Native pointer IDs never become reordered CarPlay contact slots.
   flushContacts();
   if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
 }
-for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) canvas.addEventListener(name, finishPointer);
+canvas.addEventListener('pointerup', event => finishPointer(event, true));
+for (const name of ['pointercancel', 'lostpointercapture']) canvas.addEventListener(name, event => finishPointer(event));
 canvas.addEventListener('contextmenu', event => { if (session.touchOwned) event.preventDefault(); });
 
 parked.addEventListener('change', () => {

@@ -109,7 +109,9 @@ export class Contacts {
 
   move(pointerId, point) {
     if (!this.has(pointerId) || !validPoint(point)) return false;
-    this.#contacts.set(pointerId, { id: this.#contacts.get(pointerId).id, ...point });
+    const previous = this.#contacts.get(pointerId);
+    if (previous.x === point.x && previous.y === point.y) return false;
+    this.#contacts.set(pointerId, { id: previous.id, ...point });
     return true;
   }
 

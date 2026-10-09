@@ -189,6 +189,79 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.deepEqual(socket.sent.at(-1).contacts, []);
   assert.equal(captured.size, 0);
 
+  const touchMessagesSince = index => socket.sent.slice(index).filter(message => message.type === 'touch').map(message => message.contacts);
+  let touchStart = socket.sent.length;
+  elements.video.dispatch('pointerdown', pointer(301, 250, 500));
+  elements.video.dispatch('pointermove', pointer(301, 650, 500));
+  elements.video.dispatch('pointerup', pointer(301, 750, 500));
+  assert.deepEqual(touchMessagesSince(touchStart), [
+    [{ id: 0, x: .25, y: .5 }], [{ id: 0, x: .75, y: .5 }], [],
+  ], 'a swipe completed before rAF preserves the actual lift position before release');
+  paint();
+  assert.equal(touchMessagesSince(touchStart).length, 3, 'cancelled move callback cannot replay the released pointer');
+
+  touchStart = socket.sent.length;
+  elements.video.dispatch('pointerdown', pointer(302, 250, 500));
+  elements.video.dispatch('pointerup', pointer(302, 750, 500));
+  assert.deepEqual(touchMessagesSince(touchStart), [
+    [{ id: 0, x: .25, y: .5 }], [{ id: 0, x: .75, y: .5 }], [],
+  ], 'pointerup can carry the only final position update');
+
+  touchStart = socket.sent.length;
+  elements.video.dispatch('pointerdown', pointer(303, 250, 500));
+  elements.video.dispatch('pointerup', pointer(303, 250, 500));
+  assert.deepEqual(touchMessagesSince(touchStart), [[{ id: 0, x: .25, y: .5 }], []],
+    'stationary taps do not add a redundant pressed snapshot');
+
+  for (const releaseX of [750, NaN]) {
+    elements.video.dispatch('pointerdown', pointer(308, 250, 500));
+    touchStart = socket.sent.length;
+    elements.video.dispatch('pointermove', pointer(308, 750, 500));
+    elements.video.dispatch('pointerup', pointer(308, releaseX, 500));
+    assert.deepEqual(touchMessagesSince(touchStart), [[{ id: 0, x: .75, y: .5 }], []],
+      'an unchanged or invalid lift coordinate still flushes the pending valid movement');
+    paint();
+    assert.equal(touchMessagesSince(touchStart).length, 2);
+  }
+
+  elements.video.dispatch('pointerdown', pointer(309, 250, 500));
+  elements.video.dispatch('pointermove', pointer(309, 750, 500));
+  paint();
+  touchStart = socket.sent.length;
+  elements.video.dispatch('pointerup', pointer(309, 750, 500));
+  assert.deepEqual(touchMessagesSince(touchStart), [[]], 'an already flushed final point is not sent twice');
+
+  elements.video.dispatch('pointerdown', pointer(304, 250, 500));
+  elements.video.dispatch('pointerdown', pointer(305, 750, 500));
+  touchStart = socket.sent.length;
+  elements.video.dispatch('pointermove', pointer(304, 350, 500));
+  elements.video.dispatch('pointermove', pointer(305, 850, 500));
+  elements.video.dispatch('pointerup', pointer(304, 450, 500));
+  assert.deepEqual(touchMessagesSince(touchStart), [
+    [{ id: 0, x: .45, y: .5 }, { id: 1, x: .85, y: .5 }],
+    [{ id: 1, x: .85, y: .5 }],
+  ], 'one lift flushes both pending positions without reassigning the surviving slot');
+  elements.video.dispatch('pointerup', pointer(305, 2000, 2000));
+  assert.deepEqual(touchMessagesSince(touchStart).slice(-2), [[{ id: 1, x: 1, y: 1 }], []],
+    'captured lift outside the picture is clamped before release');
+  paint();
+  assert.equal(captured.size, 0);
+
+  for (const name of ['pointercancel', 'lostpointercapture']) {
+    elements.video.dispatch('pointerdown', pointer(306, 250, 500));
+    elements.video.dispatch('pointermove', pointer(306, 650, 500));
+    touchStart = socket.sent.length;
+    elements.video.dispatch(name, pointer(306, 950, 500));
+    paint();
+    assert.deepEqual(touchMessagesSince(touchStart), [[]], `${name} releases immediately without inventing a terminal movement`);
+  }
+
+  elements.video.dispatch('pointerdown', { ...pointer(307, 250, 500), pointerType: 'mouse', button: 0 });
+  touchStart = socket.sent.length;
+  elements.video.dispatch('pointermove', { ...pointer(307, 750, 500), pointerType: 'mouse', buttons: 0 });
+  assert.deepEqual(touchMessagesSince(touchStart), [[{ id: 0, x: .75, y: .5 }], []],
+    'a missed mouse up uses the observed release position');
+
   // CSS can stretch the previous bitmap between paints. Hit testing must follow
   // that actual picture, not assume it has already been fitted to the new size.
   elements.video.bounds = { left: 40, top: 20, width: 1000, height: 500 };
@@ -211,7 +284,11 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.deepEqual(socket.sent.at(-1).contacts, []);
 
   elements.video.dispatch('pointerdown', pointer(451));
+  elements.video.dispatch('pointermove', pointer(451, 750, 500));
+  touchStart = socket.sent.length;
   socket.receive({ type: 'config', streamId: 2, codec: 'avc1.64001f', width: 1920, height: 1080 });
+  paint();
+  assert.deepEqual(touchMessagesSince(touchStart), [], 'reconfiguration never replays a queued move into a replacement stream');
   assert.equal(captured.size, 0, 'reconfiguration releases held gestures');
   assert.equal(elements.video.classes.has('touch-enabled'), false);
   socket.receive({ type: 'touchOwnership', enabled: true, streamId: 1, requestId: 1 });
@@ -225,9 +302,14 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.equal(resumedTouch.requestId, 3);
   socket.receive({ ...resumedTouch, type: 'touchOwnership' });
   assert.equal(elements.video.classes.has('touch-enabled'), true);
+  elements.video.dispatch('pointerdown', pointer(452, 250, 500));
+  elements.video.dispatch('pointermove', pointer(452, 750, 500));
+  touchStart = socket.sent.length;
   const cancelled = decoders.at(-1).emit();
   document.visibilityState = 'hidden';
   document.dispatch('visibilitychange');
+  paint();
+  assert.deepEqual(touchMessagesSince(touchStart), [[]], 'hide releases without replaying a pending movement');
   assert.equal(cancelled.closes, 1, 'pending frame is closed on hide');
   assert.equal(elements['resolution-actual'].textContent, '等待视频');
   if (embedded) assert.equal(elements['resolution-target'].textContent, '等待 Android 确认');

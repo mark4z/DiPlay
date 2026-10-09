@@ -591,11 +591,11 @@ internal class BrowserLanConnection(
 
     private fun writeLoop(output: OutputStream) {
         try {
+            val frameWriter = BrowserWebSocketFrameWriter(output)
             while (!stopped.get()) {
                 val frame = outbound.take() ?: break
                 writingSince = monotonicMillis()
-                BrowserLanProtocol.writeFrame(output, frame)
-                output.flush()
+                frameWriter.writeFrame(frame.opcode, frame.payload)
                 writingSince = 0
                 outbound.complete(frame)
                 if (frame.opcode == 8) break
@@ -759,23 +759,6 @@ internal object BrowserLanProtocol {
         for (index in payload.indices) payload[index] = (payload[index].toInt() xor mask[index and 3].toInt()).toByte()
         if (opcode == 1) utf8(payload)
         return Frame(opcode, payload)
-    }
-
-    fun writeFrame(output: OutputStream, frame: Frame) {
-        output.write(0x80 or frame.opcode)
-        when {
-            frame.payload.size < 126 -> output.write(frame.payload.size)
-            frame.payload.size <= 65535 -> {
-                output.write(126)
-                output.write(frame.payload.size ushr 8)
-                output.write(frame.payload.size)
-            }
-            else -> {
-                output.write(127)
-                for (shift in 56 downTo 0 step 8) output.write((frame.payload.size.toLong() ushr shift).toInt() and 255)
-            }
-        }
-        output.write(frame.payload)
     }
 
     fun utf8(bytes: ByteArray): String = try {
