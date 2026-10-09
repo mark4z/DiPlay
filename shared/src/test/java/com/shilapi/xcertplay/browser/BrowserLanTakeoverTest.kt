@@ -54,10 +54,10 @@ class BrowserLanTakeoverTest {
             assertEquals(-1, wrongOrigin.socket.getInputStream().read())
             val rejected = h.connect().apply { upgrade() }
             rejected.requestApproval().reject()
-            assertEquals("approvalRejected", rejected.closeReason())
+            assertEquals("approvalRejected", rejected.closeReason("approvalRejected"))
             val invalid = h.connect().apply { upgrade() }
             invalid.send("""{"type":"touch","contacts":[]}""")
-            assertEquals("upgradeRequired", invalid.closeReason())
+            assertEquals("upgradeRequired", invalid.closeReason("upgradeRequired"))
             assertEquals(1, h.authenticated.get())
             assertEquals(0, h.disconnected.get())
             assertNull(h.approvals.poll())
@@ -259,6 +259,28 @@ class BrowserLanTakeoverTest {
         }
     }
 
+    @Test fun rejectionReaderAcceptsOnlyExactOptionalErrorThenMatchingPolicyClose() {
+        for (reason in listOf("approvalRejected", "upgradeRequired")) {
+            val error = BrowserLanProtocol.Frame(1,
+                """{"type":"error","code":"$reason","version":2}""".toByteArray())
+            val close = BrowserLanProtocol.Frame(8, byteArrayOf(3, 0xf0.toByte()) + reason.toByteArray())
+            for (frames in listOf(listOf(close), listOf(error, close))) {
+                val queue = java.util.ArrayDeque(frames)
+                assertEquals(reason, rejectionReason(reason) { queue.removeFirst() })
+                assertTrue(queue.isEmpty())
+            }
+            for (frames in listOf(
+                listOf(error, error, close),
+                listOf(BrowserLanProtocol.Frame(1, "unexpected text".toByteArray()), close),
+                listOf(BrowserLanProtocol.Frame(8, byteArrayOf(3, 0xe8.toByte()) + reason.toByteArray())),
+                listOf(BrowserLanProtocol.Frame(8, byteArrayOf(3, 0xf0.toByte()) + "wrongReason".toByteArray())),
+            )) {
+                val queue = java.util.ArrayDeque(frames)
+                assertThrows(AssertionError::class.java) { rejectionReason(reason) { queue.removeFirst() } }
+            }
+        }
+    }
+
     private class Client(val socket: Socket, val acceptedSocket: Socket,
                          val connection: BrowserLanConnection?, val h: Harness) : AutoCloseable {
         fun connection(): BrowserLanConnection = connection!!
@@ -304,11 +326,7 @@ class BrowserLanTakeoverTest {
             assertEquals(8, close.opcode)
             assertArrayEquals(byteArrayOf(0x0f, 0xa1.toByte()) + "superseded".toByteArray(), close.payload)
         }
-        fun closeReason(): String {
-            val frame = readFrame()
-            assertEquals(8, frame.opcode)
-            return String(frame.payload.copyOfRange(2, frame.payload.size))
-        }
+        fun closeReason(expected: String): String = rejectionReason(expected, ::readFrame)
         fun readFrame(): BrowserLanProtocol.Frame {
             val input = socket.getInputStream()
             val first = input.read()
@@ -335,6 +353,20 @@ class BrowserLanTakeoverTest {
     }
 
     companion object {
+        private fun rejectionReason(expected: String, read: () -> BrowserLanProtocol.Frame): String {
+            var frame = read()
+            // failApproval can write its fixed error before finishWithClose drops
+            // queued controls. Both legal schedules must still end in exact 1008.
+            if (frame.opcode == 1) {
+                assertEquals("""{"type":"error","code":"$expected","version":2}""", String(frame.payload))
+                frame = read()
+            }
+            assertEquals(8, frame.opcode)
+            assertTrue(frame.payload.size >= 2)
+            assertEquals(1008, ((frame.payload[0].toInt() and 255) shl 8) or (frame.payload[1].toInt() and 255))
+            return String(frame.payload.copyOfRange(2, frame.payload.size)).also { assertEquals(expected, it) }
+        }
+
         private const val HOST = "192.168.40.2:8765"
         private const val ORIGIN = "https://mark4z.github.io"
         private fun field(target: Any, name: String) = target.javaClass.getDeclaredField(name).apply { isAccessible = true }
