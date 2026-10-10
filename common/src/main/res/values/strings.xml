@@ -689,4 +689,6 @@
     <string name="byd_hardware_disabled">BYD hardware integration is disabled. Vehicle battery, wheel speed, gear and parked-video playback are unavailable; Android GPS remains available.</string>
     <string name="standard_call_keys">CarPlay call keys</string>
     <string name="standard_call_keys_description">Use standard Android call and end-call buttons during a CarPlay call. Off by default; proprietary vehicle key codes are not handled.</string>
+    <string name="settings_qualcomm_low_latency_decoder" tools:ignore="MissingTranslation">Qualcomm low-latency compatibility (experimental)</string>
+    <string name="settings_qualcomm_low_latency_decoder_description" tools:ignore="MissingTranslation">Native Android main picture only; no effect on browser output. May reduce buffering on compatible Qualcomm decoders. Applies on the next connection. Turn off if the picture freezes or shows artifacts.</string>
 </resources>

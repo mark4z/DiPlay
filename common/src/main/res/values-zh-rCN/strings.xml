@@ -689,4 +689,6 @@
     <string name="byd_hardware_disabled">已停用 BYD 专属硬件接入。车辆电量、轮速、挡位和驻车视频不可用；Android GPS 仍可使用。</string>
     <string name="standard_call_keys">CarPlay 通话按键</string>
     <string name="standard_call_keys_description">在 CarPlay 通话中使用标准 Android 接听和挂断按键。默认关闭；不处理车厂专属按键码。</string>
+    <string name="settings_qualcomm_low_latency_decoder">高通低延迟兼容（实验性）</string>
+    <string name="settings_qualcomm_low_latency_decoder_description">仅用于 Android 本机主画面，不影响浏览器输出。可能减少兼容高通解码器的缓冲，下次连接生效。如出现花屏或卡住，请关闭此项。</string>
 </resources>

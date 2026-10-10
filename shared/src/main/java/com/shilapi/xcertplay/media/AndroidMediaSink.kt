@@ -146,6 +146,8 @@ class AndroidMediaSink(
     private val onAudioDiagnostic: (String) -> Unit = {},
     /** True while any music ("media") audio stream is running; called from media threads. */
     private val onMediaAudioChanged: (Boolean) -> Unit = {},
+    /** Optional Qualcomm parameters for the native main picture; takes effect with a new sink. */
+    private val vendorLowLatencyDecoder: Boolean = false,
 ) : MediaSink {
     private val appContext = context?.applicationContext
     private val audioManager = appContext?.getSystemService(AudioManager::class.java)
@@ -394,6 +396,8 @@ class AndroidMediaSink(
         requestKeyFrame = { requestVideoRecovery(type) },
         report = { videoDiagnosticHandlers[type]?.invoke(it) },
         statsLabel = statsLabel,
+        // Keep mirror/secondary decoders on their existing configuration path.
+        vendorLowLatency = vendorLowLatencyDecoder && type == 110 && statsLabel == null,
     )
 
     @Synchronized
@@ -416,6 +420,16 @@ class AndroidMediaSink(
     }
 }
 
+/**
+ * Qualcomm's optional low-latency and decode-order requests from upstream #496.
+ * CarPlay's screen stream is expected to have no reordered B-frames. These vendor-specific requests
+ * are opt-in: supported names do not guarantee support or a latency improvement on every device.
+ */
+internal fun vendorLowLatencyKeys(codecName: String): List<String> =
+    if (codecName.startsWith("c2.qti.") || codecName.startsWith("OMX.qcom.")) {
+        listOf("vendor.qti-ext-dec-low-latency.enable", "vendor.qti-ext-dec-picture-order.enable")
+    } else emptyList()
+
 /** Serial MediaCodec video decoder: one worker owns configure and frame feeding. */
 private class VideoDecoder(
     private val streamType: Int,
@@ -426,6 +440,7 @@ private class VideoDecoder(
     private val requestKeyFrame: () -> Unit,
     private val report: (String) -> Unit,
     statsLabel: String? = null,
+    private val vendorLowLatency: Boolean = false,
 ) : Closeable {
     private val queue = VideoDecodeQueue()
     @Volatile private var running = true
@@ -434,6 +449,7 @@ private class VideoDecoder(
     private var lastConfig: VideoJob.Config? = null
     private var renderedFrameLogged = false
     private var submittedFrameLogged = false
+    private var configuredVendorLowLatency = false
     private var duplicateConfigLogged = false
     private var failureReports = 0
     private val referenceChain = VideoReferenceChain()
@@ -576,6 +592,7 @@ private class VideoDecoder(
             DecoderAttempt(codecName = null, tuned = false),
         ) + softwareDecoderName(mime)?.let { listOf(DecoderAttempt(it, tuned = false)) }.orEmpty()
         var next: MediaCodec? = null
+        configuredVendorLowLatency = false
         for (attempt in attempts) {
             next = tryConfigure(mime, csd, surface, attempt)
             if (next != null) break
@@ -587,7 +604,8 @@ private class VideoDecoder(
         renderedFrameLogged = false
         submittedFrameLogged = false
         if (next != null) {
-            report("decoder=${next.name} mime=$mime size=${width}x$height")
+            val vendorStatus = if (vendorLowLatency) " vendorLowLatency=$configuredVendorLowLatency" else ""
+            report("decoder=${next.name} mime=$mime size=${width}x$height$vendorStatus")
             Log.i(
                 TAG,
                 "video decoder configured name=${next.name} mime=$mime size=${width}x$height",
@@ -611,8 +629,10 @@ private class VideoDecoder(
         csd: List<ByteArray>,
         surface: Surface,
         attempt: DecoderAttempt,
+        requestVendorLowLatency: Boolean = vendorLowLatency,
     ): MediaCodec? {
         var candidate: MediaCodec? = null
+        var vendorKeys = emptyList<String>()
         return try {
             val format = buildFormat(mime, csd, attempt.tuned)
             val codec = attempt.codecName?.let { MediaCodec.createByCodecName(it) } ?: createDecoder(mime)
@@ -621,20 +641,27 @@ private class VideoDecoder(
                 codec.codecInfo.getCapabilitiesForType(mime).isFeatureSupported("low-latency")) {
                 format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
+            vendorKeys = if (attempt.tuned && requestVendorLowLatency) vendorLowLatencyKeys(codec.name.orEmpty()) else emptyList()
+            vendorKeys.forEach { format.setInteger(it, 1) }
             codec.configure(format, surface, null, 0)
             codec.start()
+            configuredVendorLowLatency = vendorKeys.isNotEmpty()
             codec
         } catch (error: Exception) {
             runCatching { candidate?.release() }
             PerformanceDiagnostics.count(PerformanceCounter.VIDEO_CODEC_FAILURE, PerformanceDiagnostics.token())
-            reportFailure("stage=configure tuned=${attempt.tuned} mime=$mime", error)
+            val vendorContext = if (vendorKeys.isNotEmpty()) " vendorLowLatency=true" else ""
+            reportFailure("stage=configure tuned=${attempt.tuned} mime=$mime$vendorContext", error)
             Log.w(
                 TAG,
                 "video decoder configure failed name=${attempt.codecName ?: "default"} " +
                     "tuned=${attempt.tuned} mime=$mime size=${width}x$height",
                 error,
             )
-            null
+            // Retry the original tuned selection path without the vendor keys before the existing
+            // minimal/software ladder. This keeps standard low-latency support and avoids a
+            // duplicate attempt on non-Qualcomm codecs. The retry cannot recurse again.
+            if (vendorKeys.isNotEmpty()) tryConfigure(mime, csd, surface, attempt, false) else null
         }
     }
 

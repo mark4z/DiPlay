@@ -42,6 +42,7 @@ object AirPlayPersistence {
     private const val KEY_UI_SCALE_PERCENT = "ui_scale_percent"
     private const val KEY_HEVC_ENABLED = "hevc_enabled"
     private const val KEY_HEVC_SOFTWARE_DECODER = "hevc_software_decoder"
+    private const val KEY_LOW_LATENCY_DECODER = "low_latency_decoder"
     private const val KEY_ADVANCED_AUDIO_CHANNEL_MAPPING = "advanced_audio_channel_mapping"
     private const val KEY_AUDIO_FOCUS_ENABLED = "audio_focus_enabled"
     private const val KEY_MEDIA_AUDIO_CHANNEL = "media_audio_channel"
@@ -161,6 +162,13 @@ object AirPlayPersistence {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_HEVC_ENABLED, enabled)
             .apply()
+    }
+
+    fun loadLowLatencyDecoder(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_LOW_LATENCY_DECODER, false)
+
+    fun saveLowLatencyDecoder(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_LOW_LATENCY_DECODER, enabled).apply()
     }
 
     fun loadHevcSoftwareDecoderEnabled(context: Context): Boolean =

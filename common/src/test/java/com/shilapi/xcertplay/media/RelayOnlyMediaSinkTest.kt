@@ -13,7 +13,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28], manifest = Config.NONE)
 class RelayOnlyMediaSinkTest {
     @Test fun relayVideoNeverAllocatesNativeOrMirrorDecoders() {
-        val sink = AndroidMediaSink(relayOnly = true)
+        val sink = AndroidMediaSink(relayOnly = true, vendorLowLatencyDecoder = true)
         try {
             sink.onVideoCodec(110, VideoCodec.H264)
             sink.onVideoConfig(110, byteArrayOf(0, 0, 0, 1, 0x67))
@@ -27,7 +27,7 @@ class RelayOnlyMediaSinkTest {
 
     @Test fun relayAudioNeverCreatesAudioTrackOrMicrophone() {
         val diagnostics = CopyOnWriteArrayList<String>()
-        val sink = AndroidMediaSink(relayOnly = true, onAudioDiagnostic = diagnostics::add)
+        val sink = AndroidMediaSink(relayOnly = true, vendorLowLatencyDecoder = true, onAudioDiagnostic = diagnostics::add)
         try {
             for (codec in AudioCodecKind.values()) {
                 val id = AudioStreamId(96, "media")

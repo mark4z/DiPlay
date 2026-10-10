@@ -3835,6 +3835,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 }
             },
             onMediaAudioChanged = CarPlayMediaKeys::onMediaAudioChanged,
+            vendorLowLatencyDecoder = AirPlayPersistence.loadLowLatencyDecoder(this),
         )
     }
 
