@@ -23,10 +23,10 @@ class BrowserViewerAssets private constructor(private val files: Map<String, Byt
         const val MAX_FILE_BYTES = 512 * 1024
         const val MAX_TOTAL_BYTES = 2 * 1024 * 1024
         val NAMES = listOf("index.html", "viewer.css", "viewer.mjs", "core.mjs",
-            "session.mjs", "controls.mjs", "resolution.mjs", "diagnostics.mjs", "config.mjs")
+            "session.mjs", "rtc-video.mjs", "controls.mjs", "resolution.mjs", "diagnostics.mjs", "config.mjs")
         val CSP = "default-src 'none'; script-src 'self'; style-src 'self'; " +
             "connect-src 'self' wss://$AUTHORITY; worker-src 'self'; " +
-            "img-src 'self'; media-src 'none'; base-uri 'none'; form-action 'none'; " +
+            "img-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; " +
             "object-src 'none'; frame-ancestors 'none'"
 
         fun load(open: (String) -> InputStream): BrowserViewerAssets {

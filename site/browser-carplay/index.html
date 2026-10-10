@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws:; img-src 'self'; media-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws:; img-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>DiPlay · Browser CarPlay preview</title>
   <link rel="stylesheet" href="viewer.css?v=idle-controls-v2">
   <script type="module" src="viewer.mjs?v=idle-controls-v2"></script>
@@ -21,6 +21,15 @@
         <summary>Settings <span id="compact-touch-state">Touch waiting</span></summary>
         <div id="settings-content">
           <button id="settings-close" class="secondary" type="button">Close settings</button>
+          <section id="video-transport-settings" hidden aria-label="Video transport">
+            <label for="video-transport">Video transport <span class="experimental-label">Experimental</span></label>
+            <select id="video-transport" disabled>
+              <option value="wss" selected>WSS · default</option>
+              <option value="webrtc">WebRTC · video only</option>
+            </select>
+            <p id="video-transport-status" role="status" aria-live="polite">WSS video</p>
+            <p>Uses the current codec and resolution. No audio or CarPlay restart. If unsupported, video stays on WSS.</p>
+          </section>
           <section id="resolution-settings" hidden aria-label="Browser resolution">
             <h2>Browser resolution</h2>
             <label class="check"><input id="resolution-follow" type="checkbox" checked disabled> Automatically follow this browser’s size <span id="resolution-follow-state" aria-hidden="true">On</span></label>
@@ -90,6 +99,7 @@
       </div>
     </div>
     <div id="viewport">
+      <video id="rtc-video" autoplay muted playsinline aria-hidden="true"></video>
       <canvas id="video" width="1280" height="720" aria-label="Live CarPlay video with automatic touch control"></canvas>
       <div id="placeholder"><strong id="placeholder-title">Your display will appear here</strong><span id="placeholder-note">Confirm you are parked and enter the bridge address to connect automatically.</span></div>
     </div>

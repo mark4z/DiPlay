@@ -32,7 +32,7 @@ jobs:
           java-version: '25'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
-          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1
       # This namespace is written only by this trusted, credential-free job.
       # Keep paths identical in save/restore: Actions includes them in its cache version.
       - name: Restore safe source dependencies and task outputs
@@ -86,7 +86,7 @@ jobs:
           java-version: '25'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
-          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1
       - name: Restore this run's safe source snapshot (never save)
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:

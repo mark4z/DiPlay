@@ -11,7 +11,21 @@ android {
 
     defaultConfig {
         minSdk = 28
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        externalNativeBuild {
+            cmake {
+                targets += "diplay-rtc"
+                // One JNI library owns every C++ object; no STL ABI crosses libraries.
+                arguments += "-DANDROID_STL=c++_static"
+            }
+        }
     }
+
+    ndkVersion = "28.2.13676358"
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
+    }
+    defaultConfig.consumerProguardFiles("consumer-rules.pro")
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

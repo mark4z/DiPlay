@@ -17,6 +17,8 @@ const port = byId('port');
 const parked = byId('parked');
 const touchStatus = byId('touch-status');
 const canvas = byId('video');
+const rtcVideo = byId('rtc-video');
+let activeRenderer = 'wss';
 const viewport = byId('viewport');
 const placeholder = byId('placeholder');
 const status = byId('status');
@@ -98,6 +100,9 @@ function showDiagnostics({ attempt, transport, events }) {
 showDiagnostics({ attempt: 0, transport: null, events: [] });
 const session = new BrowserSession({ autoTouch: Boolean(window.PointerEvent), WebSocket, VideoDecoder: window.VideoDecoder,
   EncodedVideoChunk: window.EncodedVideoChunk, onState: setState, onFrame: queueFrame, onTouchOwnership: setTouchState,
+  rtc: embeddedViewer && rtcVideo ? { video: rtcVideo, RTCPeerConnection: window.RTCPeerConnection,
+    RTCRtpReceiver: window.RTCRtpReceiver, MediaStream: window.MediaStream } : null,
+  onVideoTransport: showVideoTransport, onRenderer: setRenderer, onRtcFrame: showRtcFrame,
   onDiagnostics: showDiagnostics,
   onBrowserResolution: message => resolutionFollow?.acknowledged(message) });
 
@@ -110,6 +115,8 @@ if (embeddedViewer) {
   byId('settings-content').addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); closeSettings(); }
   });
+  if (byId('video-transport-settings')) byId('video-transport-settings').hidden = false;
+  byId('video-transport')?.addEventListener('change', event => session.selectVideoTransport(event.target.value));
   byId('resolution-settings').hidden = false;
   byId('resolution-follow').checked = true;
   const changed = () => resolutionFollow?.changed();
@@ -128,6 +135,50 @@ if (embeddedViewer) {
   document.addEventListener('fullscreenchange', changed);
 }
 
+function showVideoTransport({ transport, reason }) {
+  const output = byId('video-transport-status');
+  if (!output) return;
+  const reasons = {
+    'unsupported-codec': 'This browser cannot receive the current codec over WebRTC.',
+    'browser-unavailable': 'WebRTC video is unavailable in this browser.',
+    'native-unavailable': 'This Android build does not offer WebRTC video.',
+    'first-frame-timeout': 'No WebRTC frame arrived in time.',
+    'connection-failed': 'The WebRTC connection failed.',
+    'ice-failed': 'The local UDP connection failed.',
+    'no-lan-route': 'No usable local UDP route was found.',
+    'recovery-timeout': 'WebRTC recovery timed out.',
+    'render-failed': 'The browser could not play WebRTC video.',
+    'signaling-too-large': 'WebRTC negotiation exceeded the safe message limit.',
+  };
+  output.textContent = transport === 'webrtc' ? 'WebRTC video active · controls stay on WSS' : transport === 'negotiating'
+    ? 'Trying WebRTC · WSS video stays visible until the first frame'
+    : `WSS video${reason && reason !== 'user-selected-wss' ? ` · ${reasons[reason] || 'WebRTC negotiation did not complete.'}` : ''}`;
+}
+
+function setRenderer(renderer) {
+  releaseContacts();
+  activeRenderer = renderer;
+  // Keep the canvas as the stable pointer surface; the native video sits beneath
+  // it. Both renderers use contain geometry, without introducing a new touch owner.
+  canvas.style.opacity = renderer === 'webrtc' ? '0' : '1';
+  if (renderer === 'webrtc') {
+    if (drawRequest !== null) cancelAnimationFrame(drawRequest);
+    drawRequest = null;
+    pendingFrame?.close();
+    pendingFrame = null;
+  }
+}
+
+function showRtcFrame({ width, height }) {
+  if (activeRenderer !== 'webrtc' || session.closed) return;
+  if (videoWidth !== width || videoHeight !== height) releaseContacts();
+  videoWidth = width;
+  videoHeight = height;
+  placeholder.hidden = true;
+  byId('resolution-actual').textContent = `${width} × ${height} px`;
+  canvas.classList.toggle('touch-enabled', session.touchOwned && live && parkedUseAllowed());
+}
+
 function renderResolutionControl() {
   if (!resolutionFollow) return;
   byId('resolution-follow').checked = resolutionFollow.enabled;
@@ -140,6 +191,7 @@ function updateControls() {
   const active = !session.closed;
   resolutionFollow?.connected(session.authenticated && active && document.visibilityState === 'visible');
   if (embeddedViewer) byId('resolution-follow').disabled = !session.authenticated || !active;
+  if (byId('video-transport')) byId('video-transport').disabled = !session.authenticated || !active;
   enter.disabled = Boolean(blocked) || !session.authenticated || !active || fullscreenPending;
   const fullscreen = document.fullscreenElement === shell;
   enter.hidden = fullscreen;
@@ -193,7 +245,7 @@ function clearPicture() {
 }
 
 function queueFrame(frame) {
-  if (document.visibilityState !== 'visible' || session.closed) { frame.close(); return; }
+  if (activeRenderer !== 'wss' || document.visibilityState !== 'visible' || session.closed) { frame.close(); return; }
   if (pendingFrame) pendingFrame.close();
   pendingFrame = frame;
   if (drawRequest === null) drawRequest = requestAnimationFrame(drawFrame);
@@ -205,7 +257,7 @@ function drawFrame() {
   pendingFrame = null;
   if (!frame) return;
   try {
-    if (!live || document.visibilityState !== 'visible') return;
+    if (!live || activeRenderer !== 'wss' || document.visibilityState !== 'visible') return;
     if (videoWidth !== frame.displayWidth || videoHeight !== frame.displayHeight) releaseContacts();
     videoWidth = frame.displayWidth;
     videoHeight = frame.displayHeight;
@@ -250,6 +302,7 @@ function releaseContacts() {
 
 function point(event, clamp = false) {
   const bounds = canvas.getBoundingClientRect();
+  if (activeRenderer === 'webrtc') return mapPointer(event.clientX, event.clientY, bounds, videoWidth, videoHeight, clamp);
   // Use the actual drawn bitmap, including while CSS resizes it between frames.
   // Re-fitting directly to the new CSS bounds would misidentify the black bars.
   return mapPointer((event.clientX - bounds.left) * canvas.width / bounds.width,

@@ -180,6 +180,7 @@ class BrowserHttpsVpnService : VpnService() {
                 }
             })) return
             if (current.isCancelled) return
+            BrowserOutput.installRtcFactory(com.shilapi.xcertplay.browser.NativeBrowserRtcPeer.Factory)
             BrowserOutput.startSecure(applicationContext, identity, onStage = { startupStage = it }) {
                 main.post { if (session === current && !current.isCancelled) stopSession("LISTENER_STOPPED") }
             }

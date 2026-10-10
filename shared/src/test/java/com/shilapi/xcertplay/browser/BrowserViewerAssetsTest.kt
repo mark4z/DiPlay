@@ -31,11 +31,12 @@ class BrowserViewerAssetsTest {
         for (name in BrowserViewerAssets.NAMES) assertNotNull(assets.resource("/$name"))
     }
 
-    @Test fun removedAudioAssetsAreUnavailableAndMediaPlaybackIsBlocked() {
+    @Test fun removedAudioAssetsStayUnavailableAndOnlyLocalMediaIsAllowed() {
         val assets = assets()
         assertNull(assets.resource("/audio.mjs"))
         assertNull(assets.resource("/audio-protocol.mjs"))
-        assertTrue(BrowserViewerAssets.CSP.contains("media-src 'none';"))
+        assertTrue(BrowserViewerAssets.CSP.contains("media-src 'self' blob:;"))
+        assertNotNull(assets.resource("/rtc-video.mjs"))
     }
 
     @Test fun neverResolvesFilesystemOrEncodedPaths() {

@@ -9,6 +9,64 @@ import java.nio.ByteBuffer
 /** Process-local, explicitly started video/input session. Never persists pairing credentials. */
 object BrowserOutput {
     private val lock = Any()
+    private var rtcFactory: BrowserRtcPeer.Factory? = null
+    private var rtc: BrowserRtcSession? = null
+    private var lastRtcStartNs = 0L
+    fun installRtcFactory(factory: BrowserRtcPeer.Factory) = synchronized(lock) {
+        if (rtcFactory !== factory) { rtc?.let { rtcFallback(it, "native-replaced") }; rtcFactory = factory }
+    }
+    private fun closeRtc() { val old = rtc; rtc = null; old?.close() }
+    private fun rtcFallback(session: BrowserRtcSession, reason: String) {
+        if (rtc !== session) return
+        closeRtc()
+        // Release held contacts without granting/revoking the existing touch lease.
+        if (contacts.isNotEmpty()) touch?.invoke(contacts.map { it.copy(down = false) })
+        contacts = emptyList()
+        waitingForKey = true
+        server?.sendText(session.stateMessage("fallback", reason).toString(), resetVideo = true)
+        sendConfig()
+        requestKeyframe()
+    }
+    private fun receiveRtc(json: JSONObject) {
+        if (json.optString("type") != "rtcStart") { rtc?.receive(json); return }
+        if (!BrowserRtcSession.validIdentity(json, streamId)) return
+        val id = json.getString("negotiationId")
+        if (rtc?.negotiationId == id) return
+        val now = System.nanoTime()
+        if (now - lastRtcStartNs < 2_000_000_000L) return
+        lastRtcStartNs = now
+        rtc?.let { rtcFallback(it, "superseded") }
+        val f = format
+        val factory = rtcFactory
+        val sourceCodec = if (codec == VideoCodec.H264) "h264" else "h265"
+        val hints = json.optJSONArray("codecs")
+        val reason = when {
+            f == null -> "unsupported-codec"
+            factory == null || !factory.available -> "native-unavailable"
+            hints == null || hints.length() !in 1..2 ||
+                (0 until hints.length()).any { hints.optString(it) !in listOf("h264", "h265") } ||
+                (0 until hints.length()).none { hints.optString(it) == sourceCodec } -> "unsupported-codec"
+            else -> null
+        }
+        if (reason != null) {
+            server?.sendText(JSONObject().put("type", "rtcState").put("streamId", streamId)
+                .put("negotiationId", id).put("state", "fallback").put("reason", reason).toString())
+            return
+        }
+        val serverEpoch = serverGeneration
+        val viewerEpoch = viewerGeneration
+        val mediaEpoch = mediaGeneration
+        val stream = streamId
+        val session = BrowserRtcSession(lock, stream, id, sourceCodec,
+            current = { serverEpoch == serverGeneration && viewerEpoch == viewerGeneration &&
+                mediaEpoch == mediaGeneration && stream == streamId && viewerConnected },
+            send = { text, reset -> server?.sendText(text, resetVideo = reset) == true },
+            recover = { requestKeyframe() },
+            fallback = { owner, why -> rtcFallback(owner, why) })
+        rtc = session
+        session.start(factory!!, BrowserRtcConfig(sourceCodec, f!!.rtcFmtp, BrowserRtcSession.lanAddresses(server?.authenticatedRtcRoute())))
+        requestKeyframe()
+    }
     @Volatile private var server: BrowserLanServer? = null
     @Volatile var endpoint: String? = null; private set
     private var secureStopped: (() -> Unit)? = null
@@ -61,6 +119,7 @@ object BrowserOutput {
     fun detachMedia(native: MediaSink?) = synchronized(lock) {
         if (native == null || nativeMedia !== native) return@synchronized
         nativeMedia = null
+        closeRtc()
         ++mediaGeneration
         ++streamId
         format = null; recovery = null; waitingForKey = true
@@ -190,6 +249,7 @@ object BrowserOutput {
             onText = { receive(it, generation) },
             onDisconnected = { synchronized(lock) {
                 if (generation != serverGeneration) return@synchronized
+                closeRtc()
                 ++viewerGeneration
                 waitingForKey = true
                 releaseTouches()
@@ -209,6 +269,7 @@ object BrowserOutput {
 
     private fun viewerAuthenticated(generation: Long) = synchronized(lock) {
         if (generation != serverGeneration) return@synchronized
+        closeRtc()
         ++viewerGeneration
         // Handover must revoke held contacts and pending native transfers
         // before the replacement viewer can request its own touch lease.
@@ -229,6 +290,7 @@ object BrowserOutput {
             secureStopped = null
             activeSecureIdentity = null
             secureReady = false
+            closeRtc()
             ++serverGeneration
             ++viewerGeneration
             server = null; endpoint = null
@@ -259,6 +321,7 @@ object BrowserOutput {
             BrowserOutput.setTouchOwnership = setTouchOwnership
             format = null; waitingForKey = true; recovery = null
             ++streamId
+            closeRtc()
             ++mediaGeneration
         }
         return object : MediaSink by native {
@@ -276,6 +339,7 @@ object BrowserOutput {
                     val previous = format
                     if (updated != null && previous != null && updated.codec == previous.codec &&
                         updated.parameterSets.contentEquals(previous.parameterSets)) return@synchronized
+                    closeRtc()
                     ++streamId
                     releaseTouches()
                     format = updated
@@ -301,6 +365,7 @@ object BrowserOutput {
                 native.onScreenStreamActive(type, active)
                 if (type == 110 && !active) synchronized(lock) {
                     if (generation != mediaGeneration) return@synchronized
+                    closeRtc()
                     ++streamId
                     format = null; recovery = null; waitingForKey = true; releaseTouches()
                     if (viewerConnected) server?.sendText("{\"type\":\"status\",\"code\":\"disconnected\"}", resetVideo = true)
@@ -312,8 +377,10 @@ object BrowserOutput {
     private fun sendConfig() {
         if (!viewerConnected) return
         val f = format ?: return
-        server?.sendText(JSONObject().put("type", "config").put("codec", f.codec)
-            .put("width", width).put("height", height).put("streamId", streamId).toString(), resetVideo = true)
+        val config = JSONObject().put("type", "config").put("codec", f.codec)
+            .put("width", width).put("height", height).put("streamId", streamId)
+        if (rtcFactory?.available == true) config.put("videoTransports", org.json.JSONArray(listOf("wss", "webrtc")))
+        server?.sendText(config.toString(), resetVideo = true)
     }
 
     private fun frame(bytes: ByteArray, generation: Long) = synchronized(lock) {
@@ -330,6 +397,8 @@ object BrowserOutput {
         if (annexB.size + prefix.size + 9 > 4 * 1024 * 1024) { waitingForKey = true; requestKeyframe(); return }
         val timestamp = maxOf((System.nanoTime() - timestampOriginNs) / 1000, lastTimestamp + 1)
         lastTimestamp = timestamp
+        rtc?.let { it.frame(prefix + annexB, timestamp, key) }
+        if (rtc?.active == true) { waitingForKey = false; return }
         val packet = ByteBuffer.allocate(9 + prefix.size + annexB.size)
             .put(if (key) 1.toByte() else 2.toByte()).putLong(timestamp).put(prefix).put(annexB).array()
         waitingForKey = !transport.sendBinary(packet, keyFrame = key)
@@ -358,6 +427,7 @@ object BrowserOutput {
         if (generation != serverGeneration || !viewerConnected) return
         try {
             val json = JSONObject(message)
+            if (json.optString("type").startsWith("rtc")) { receiveRtc(json); return }
             when (json.getString("type")) {
                 "requestKeyframe" -> { waitingForKey = true; requestKeyframe() }
                 "setTouchOwnership" -> changeTouchOwnership(json)

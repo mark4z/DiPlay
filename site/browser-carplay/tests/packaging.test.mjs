@@ -83,11 +83,13 @@ test('Android serving allowlist contains every imported browser runtime asset', 
 test('packaged viewer has no audio forwarding assets, APIs, controls, or diagnostics', () => {
   assert.equal(runtimeAssets.some(name => /audio/i.test(name)), false);
   const scripts = runtimeAssets.filter(name => name.endsWith('.mjs')).map(read).join('\n');
-  assert.doesNotMatch(scripts, /RTCPeerConnection|RTCSessionDescription|RTCIceCandidate|MediaStream|AudioContext|AudioWorklet|BrowserAudio|onAudio|setAudio|sendAudio|getAudioDiagnostics|audioMode|audioReady|audioAlive|audioOffer|audioAnswer|audioIce|localOnly|localPolicy|candidatePair/i);
+  assert.doesNotMatch(scripts, /AudioContext|AudioWorklet|BrowserAudio|onAudio|setAudio|sendAudio|getAudioDiagnostics|audioMode|audioReady|audioAlive|audioOffer|audioAnswer|audioIce|localOnly|localPolicy|candidatePair/i);
   assert.doesNotMatch(scripts, /createElement\(['"]audio['"]\)|new Audio\s*\(/);
   const html = read('index.html');
   assert.doesNotMatch(html, /id="(?:audio(?:-[^"]*)?|compact-audio-error)"|<audio|Play audio here|Test audio|fullscreen \+ audio/i);
-  assert.match(html, /media-src 'none';/);
+  assert.match(html, /media-src 'self' blob:;/);
+  assert.match(html, /<video id="rtc-video" autoplay muted playsinline/);
+  assert.doesNotMatch(scripts, /addTrack\(|createDataChannel\(|addTransceiver\(['"]audio/);
   assert.match(html, /Enter fullscreen<\/button>/);
   assert.match(html, /phone’s direct connection to the car/);
   assert.doesNotMatch(read('viewer.css'), /audio-toolbar|audio-status|compact-audio-error/);

@@ -1,0 +1,15 @@
+# Narrow idempotent patches against dependencies.lock.json. Fail closed on drift.
+include_guard(GLOBAL)
+function(diplay_replace path before after)
+    file(READ "${path}" source)
+    string(FIND "${source}" "${after}" applied)
+    if(applied EQUAL -1)
+        string(FIND "${source}" "${before}" found)
+        if(found EQUAL -1)
+            message(FATAL_ERROR "DiPlay dependency patch mismatch: ${path}")
+        endif()
+        string(REPLACE "${before}" "${after}" source "${source}")
+        file(WRITE "${path}" "${source}")
+    endif()
+endfunction()
+

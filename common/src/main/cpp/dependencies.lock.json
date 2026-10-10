@@ -1,0 +1,38 @@
+{
+  "libdatachannel": {
+    "version": "0.24.1",
+    "repository": "https://github.com/paullouisageneau/libdatachannel",
+    "commit": "a02b751917ac8afc8c58dc6f4461d25ff9465d48",
+    "license": "MPL-2.0"
+  },
+  "mbedtls": {
+    "version": "3.6.5",
+    "repository": "https://github.com/Mbed-TLS/mbedtls",
+    "commit": "e185d7fd85499c8ce5ca2a54f5cf8fe7dbe3f8df",
+    "license": "Apache-2.0 OR GPL-2.0-or-later"
+  },
+  "libjuice": {
+    "version": "1.7.0",
+    "commit": "5948a4162d37bc213d6051b67ee2876ccc5a99a6",
+    "license": "MPL-2.0"
+  },
+  "libsrtp": {
+    "version": "2.7.0",
+    "commit": "ee1a77c9f9dc02c42bda9901038c500c5efe4cfa",
+    "license": "BSD-3-Clause"
+  },
+  "plog": {
+    "version": "1.1.10",
+    "commit": "94899e0b926ac1b0f4750bfbd495167b4a6ae9ef",
+    "license": "MIT"
+  },
+  "usrsctp": {
+    "commit": "fec583d54493f879d2ae44a743423bf8a04371ab",
+    "license": "BSD-3-Clause"
+  },
+  "mbedtls-framework": {
+    "commit": "457996474728cb8e968ed21953b72f74d2f536b2",
+    "repository": "https://github.com/Mbed-TLS/mbedtls-framework",
+    "scope": "build-time submodule pinned by MbedTLS"
+  }
+}

@@ -119,6 +119,11 @@ class BrowserLanServer(
         return synchronized(lock) { owner?.send(1, bytes, resetVideo = resetVideo) ?: false }
     }
 
+    /** Only the current approved owner's real socket addresses; never exposed in diagnostics. */
+    internal fun authenticatedRtcRoute(): Pair<InetAddress, InetAddress>? = synchronized(lock) {
+        owner?.takeIf { it.isLive() }?.rtcRoute()
+    }
+
     fun sendBinary(bytes: ByteArray, keyFrame: Boolean): Boolean {
         if (bytes.size > BrowserLanProtocol.MAX_BINARY_BYTES) return false
         return synchronized(lock) { owner?.send(2, bytes, keyFrame = keyFrame) ?: false }
@@ -330,6 +335,8 @@ internal class BrowserLanConnection(
     }
 
     fun isLive(): Boolean = !stopped.get() && !superseded.get()
+    fun rtcRoute(): Pair<InetAddress, InetAddress>? =
+        if (authenticated && isLive()) socket.localAddress to socket.inetAddress else null
 
     /** Nonblocking: the bounded writer sends 4001, or the watchdog hard-closes it.
      * Keep the socket tracked until its reader exits, including a blocked TLS write. */

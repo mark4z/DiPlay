@@ -32,8 +32,12 @@ jobs:
           java-version: '25'
       - uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1
       - uses: gradle/actions/setup-gradle@v4
+        env:
+          # Include toolchain, native sources, lock and patches in every restore prefix.
+          # Native .cxx/build trees and downloaded CMake sources are deliberately uncached.
+          GRADLE_BUILD_ACTION_CACHE_KEY_PREFIX: public-native-v1-${{ hashFiles('common/src/main/cpp/**', 'common/consumer-rules.pro', '**/*.gradle*', '**/gradle.properties', 'gradle/**', '.github/workflows/android.yml') }}-
         with:
           # Pull requests may restore public source caches but never write them.
           cache-read-only: ${{ github.event_name != 'push' && github.event_name != 'workflow_dispatch' }}
@@ -49,6 +53,9 @@ jobs:
       - name: Verify bundled viewer matches canonical source
         if: ${{ success() }}
         run: python3 scripts/check_embedded_viewer_apk.py mobile/build/outputs/apk/debug/mobile-debug.apk
+      - name: Verify native WebRTC library for every supported ABI
+        if: ${{ success() }}
+        run: python3 scripts/check_native_apk.py mobile/build/outputs/apk/debug/mobile-debug.apk
       - name: Upload credential-free mobile APK directly
         if: ${{ success() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

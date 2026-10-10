@@ -1,4 +1,5 @@
 import { MAX_DECODE_QUEUE, parseConfig, parseEndpoint, parseVideoPacket } from './core.mjs?v=embedded-https-v1';
+import { RtcVideo, sourceCodec } from './rtc-video.mjs?v=rtc-video-v1';
 import { ConnectionDiagnostics } from './diagnostics.mjs?v=embedded-https-v1';
 
 export const PROTOCOL_VERSION = 2;
@@ -15,6 +16,7 @@ const APPROVAL_ERRORS = {
 // backpressure are tested without a network, browser, or real accessory identity.
 export class BrowserSession {
   constructor({ WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame,
+    rtc = null, onVideoTransport = () => {}, onRtcFrame = () => {}, onRenderer = () => {},
     autoTouch = false, onBrowserResolution = () => {}, onTouchOwnership = () => {}, onDiagnostics = () => {},
     now = () => performance.now(),
     // Window timers require their host receiver, not this BrowserSession.
@@ -22,6 +24,54 @@ export class BrowserSession {
     clearTimer = id => globalThis.clearTimeout(id) }) {
     Object.assign(this, { autoTouch, WebSocket, VideoDecoder, EncodedVideoChunk, onState, onFrame, onBrowserResolution, onTouchOwnership, now, setTimer, clearTimer });
     this.diagnostics = new ConnectionDiagnostics({ now, onUpdate: onDiagnostics });
+    this.onVideoTransport = onVideoTransport;
+    this.onRenderer = onRenderer;
+    this.videoTransport = 'wss';
+    this.rtcPresented = false;
+    this.rtcAdvertised = false;
+    this.attemptedRtcConfig = null;
+    this.rtcConfigKey = null;
+    this.fallbackConfigKey = null;
+    this.rtc = rtc ? new RtcVideo({ ...rtc, now, setTimer, clearTimer,
+      send: message => this.sendRtc(message),
+      onStatus: (transport, reason) => {
+        if (transport === 'webrtc' && this.rtcPresented) {
+          ++this.decoderVersion;
+          if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
+          this.decoder = null;
+        }
+        this.onVideoTransport({ selected: this.videoTransport, transport, reason });
+      },
+      onPresent: size => {
+        if (this.closed || !this.authenticated) return;
+        if (size.first) {
+          // Release held contacts without revoking the authoritative ownership grant.
+          this.sendContacts([]);
+          if (this.closed) return;
+          this.rtcPresented = true;
+          this.clearTimer(this.videoTimeout);
+          this.videoTimeout = null;
+          this.streaming = true;
+          this.diagnostics.mark('firstVideo');
+          this.onRenderer('webrtc');
+          this.reportState('live', 'Live display · WebRTC video (experimental).');
+          if ((this.autoTouch || this.touchRequested) && !this.touchOwned && !this.touchPending) this.setTouchOwnership(true);
+        }
+        onRtcFrame(size);
+      },
+      onFallback: ({ presented }) => {
+        this.fallbackConfigKey = this.rtcConfigKey;
+        if (!presented || this.closed) return; // WSS stayed live during negotiation.
+        this.rtcPresented = false;
+        this.suspendTouch(true);
+        if (this.closed) return;
+        this.onRenderer('wss');
+        try { if (this.config) this.makeDecoder(); }
+        catch { this.close('The browser could not restart its video decoder.', true); return; }
+        this.reportState('recovering', 'Returning to WSS video. Waiting for a fresh keyframe…');
+        this.requestKeyframe();
+      },
+    }) : null;
     this.retryBlocked = false;
     this.socket = null;
     this.decoder = null;
@@ -51,6 +101,8 @@ export class BrowserSession {
     const endpoint = parseEndpoint(ip, port, pageOrigin);
     const tls = endpoint.startsWith('wss:');
     this.closed = false;
+    this.attemptedRtcConfig = null;
+    this.fallbackConfigKey = null;
     this.retryBlocked = false;
     this.authenticated = false;
     this.approvalPending = false;
@@ -175,7 +227,9 @@ export class BrowserSession {
       }
       return;
     }
-    if (message.type === 'config') {
+    if (['rtcOffer', 'rtcCandidate', 'rtcState'].includes(message.type)) {
+      void this.rtc?.receive(message);
+    } else if (message.type === 'config') {
       void this.configure(message);
     } else if (message.type === 'browserResolution') {
       // Accept only fixed schema fields, never arbitrary server text in the UI.
@@ -209,6 +263,15 @@ export class BrowserSession {
   }
 
   async configure(message) {
+    const key = JSON.stringify([message.streamId, message.codec, message.width, message.height, message.description]);
+    if (this.fallbackConfigKey === key && this.config) {
+      this.fallbackConfigKey = null;
+      this.requestKeyframe();
+      return;
+    }
+    this.fallbackConfigKey = null;
+    this.rtcConfigKey = key;
+    this.rtcAdvertised = Array.isArray(message.videoTransports) && message.videoTransports.includes('webrtc');
     this.clearDecoder({ preserveTouchIntent: true });
     if (this.closed) return;
     const version = this.configVersion;
@@ -227,9 +290,45 @@ export class BrowserSession {
       this.makeDecoder();
       this.reportState('waiting', 'Ready for video. Waiting for a complete keyframe…');
       this.requestKeyframe();
+      this.startRtc();
     } catch {
       if (!this.closed && version === this.configVersion) this.close('The bridge’s video configuration is unsupported or invalid.', true);
     }
+  }
+
+  selectVideoTransport(transport) {
+    if (!['wss', 'webrtc'].includes(transport)) return false;
+    this.videoTransport = transport;
+    if (transport === 'wss') {
+      this.rtc?.stop();
+      this.onVideoTransport({ selected: transport, transport: 'wss', reason: null });
+    } else {
+      this.attemptedRtcConfig = null; // An explicit selection authorizes one fresh attempt.
+      this.startRtc();
+    }
+    return true;
+  }
+
+  startRtc() {
+    if (this.videoTransport !== 'webrtc' || this.closed || !this.authenticated || !this.config || this.rtc?.attempt || this.attemptedRtcConfig === this.rtcConfigKey) return;
+    this.attemptedRtcConfig = this.rtcConfigKey;
+    if (!this.rtc || !this.rtcAdvertised) {
+      this.onVideoTransport({ selected: this.videoTransport, transport: 'wss', reason: 'native-unavailable' });
+      return;
+    }
+    this.rtc.start(this.streamId, sourceCodec(this.config));
+  }
+
+  sendRtc(message) {
+    // RTC failure never closes the approved control/touch socket. Signaling is bounded
+    // and has no queue; the RTC deadline safely restores WSS on congestion/failure.
+    if (this.closed || !this.authenticated || !this.socket || this.socket.readyState !== 1 || this.socket.bufferedAmount > 16384) return false;
+    try {
+      const text = JSON.stringify(message);
+      if (new TextEncoder().encode(text).length > 8192) return false;
+      this.socket.send(text);
+      return true;
+    } catch { return false; }
   }
 
   makeDecoder() {
@@ -240,7 +339,7 @@ export class BrowserSession {
     this.backpressured = false;
     this.decoder = new this.VideoDecoder({
       output: frame => {
-        if (this.closed || version !== this.decoderVersion) { frame.close(); return; }
+        if (this.closed || this.rtcPresented || version !== this.decoderVersion) { frame.close(); return; }
         // Output queued before a lost dependency cannot revive touch or stale video.
         if (this.backpressured) { frame.close(); return; }
         this.consecutiveRecoveries = 0;
@@ -252,18 +351,18 @@ export class BrowserSession {
           this.reportState('live', this.autoTouch ? 'Live display. Touch control is enabled automatically.' : 'Live display.');
           if ((this.autoTouch || this.touchRequested) && !this.touchOwned && !this.touchPending) this.setTouchOwnership(true);
         }
-        if (this.closed || version !== this.decoderVersion) { frame.close(); return; }
+        if (this.closed || this.rtcPresented || version !== this.decoderVersion) { frame.close(); return; }
         try { this.onFrame(frame); } catch { frame.close(); this.close('The browser could not draw the video frame.', true); }
       },
       error: () => {
-        if (!this.closed && version === this.decoderVersion) this.recover();
+        if (!this.closed && !this.rtcPresented && version === this.decoderVersion) this.recover();
       },
     });
     this.decoder.configure(this.config);
   }
 
   receiveVideo(data) {
-    if (this.closed) return;
+    if (this.closed || this.rtcPresented) return;
     if (!this.authenticated) { this.close(`The bridge sent video before Android approval. ${UPGRADE_ADVICE}`, true); return; }
     let chunk;
     try { chunk = parseVideoPacket(data); } catch { this.close('The bridge sent an invalid video packet.', true); return; }
@@ -408,7 +507,10 @@ export class BrowserSession {
   }
 
   clearDecoder({ preserveTouchIntent = false } = {}) {
+    this.rtc?.close();
+    this.rtcPresented = false;
     this.suspendTouch(preserveTouchIntent);
+    this.onRenderer('wss');
     if (!preserveTouchIntent) {
       this.clearTimer(this.videoTimeout);
       this.videoTimeout = null;

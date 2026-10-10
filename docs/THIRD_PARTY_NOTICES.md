@@ -20,6 +20,29 @@ CarPlay and the CarPlay icon are Apple Inc. marks/assets. This asset is not cove
 
 ## Runtime dependencies
 
+### Optional WebRTC video transport
+
+The JNI bridge and narrow media-send feedback fix are adapted from
+[WheelPlay](https://github.com/fython/wheelplay/tree/c1badd5711159fe0ae9057773fbc240d0e462191)
+(GPL-3.0). DiPlay uses upstream H.264/H.265 packetizers, without WheelPlay's custom
+packetizer or SRTP optimization patches. Encoded video is forwarded without transcoding.
+
+Native dependency commits are recorded in
+`common/src/main/cpp/dependencies.lock.json`. The libdatachannel commit pins its
+submodules. Full dependency notices are packaged in
+`docs/licenses/dependencies/WebRTC-LICENSES.txt`:
+
+- libdatachannel 0.24.1 and libjuice 1.7.0 — MPL-2.0
+- Mbed TLS 3.6.5 — Apache-2.0 OR GPL-2.0-or-later
+- libSRTP 2.7.0 and usrsctp — BSD-style licenses
+- plog 1.1.10 — MIT
+
+The source distribution includes the dependency pins and all local patches.
+The patches preserve the upstream files' MPL-2.0 notices. No media codec
+implementation, audio transport or third-party signaling server is included.
+
+### Managed dependencies
+
 - AndroidX and Jetpack Compose — Android Open Source Project; Apache License 2.0.
 - Kotlin standard library — JetBrains; Apache License 2.0.
 - Bouncy Castle 1.79 — The Legion of the Bouncy Castle Inc.; Bouncy Castle license (MIT-style).

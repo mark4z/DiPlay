@@ -1,0 +1,67 @@
+cmake_minimum_required(VERSION 3.22)
+project(diplay_rtc LANGUAGES C CXX)
+include(FetchContent)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_SKIP_INSTALL_RULES ON)
+# Source-only debug APKs still exercise real-time packetization and SRTP.
+add_compile_options(-O2)
+add_compile_definitions(MBEDTLS_SSL_DTLS_SRTP)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(LIBSRTP_TEST_APPS OFF CACHE BOOL "" FORCE)
+set(NO_TESTS ON CACHE BOOL "" FORCE)
+set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
+set(NO_WEBSOCKET ON CACHE BOOL "" FORCE)
+set(NO_MEDIA OFF CACHE BOOL "" FORCE)
+set(USE_MBEDTLS ON CACHE BOOL "" FORCE)
+set(ENABLE_MBEDTLS ON CACHE BOOL "" FORCE)
+set(ENABLE_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+# Exact commits; do not combine GIT_SHALLOW with a commit hash.
+FetchContent_Declare(mbedtls
+    GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+    GIT_TAG e185d7fd85499c8ce5ca2a54f5cf8fe7dbe3f8df)
+FetchContent_MakeAvailable(mbedtls)
+add_library(MbedTLS::MbedTLS ALIAS mbedtls)
+FetchContent_Declare(libdatachannel
+    GIT_REPOSITORY https://github.com/paullouisageneau/libdatachannel.git
+    GIT_TAG a02b751917ac8afc8c58dc6f4461d25ff9465d48
+    GIT_SUBMODULES deps/plog deps/usrsctp deps/libjuice deps/libsrtp)
+FetchContent_GetProperties(libdatachannel)
+if(NOT libdatachannel_POPULATED)
+    FetchContent_Populate(libdatachannel)
+endif()
+# Audit the gitlinks as well as the top-level commit before applying local patches.
+find_package(Git REQUIRED)
+function(diplay_check_commit directory expected)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${directory}" rev-parse HEAD
+        OUTPUT_VARIABLE actual OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE result)
+    if(NOT result EQUAL 0 OR NOT actual STREQUAL expected)
+        message(FATAL_ERROR "Unexpected native dependency revision: ${directory}")
+    endif()
+endfunction()
+diplay_check_commit("${mbedtls_SOURCE_DIR}" e185d7fd85499c8ce5ca2a54f5cf8fe7dbe3f8df)
+diplay_check_commit("${mbedtls_SOURCE_DIR}/framework" 457996474728cb8e968ed21953b72f74d2f536b2)
+diplay_check_commit("${libdatachannel_SOURCE_DIR}" a02b751917ac8afc8c58dc6f4461d25ff9465d48)
+diplay_check_commit("${libdatachannel_SOURCE_DIR}/deps/libjuice" 5948a4162d37bc213d6051b67ee2876ccc5a99a6)
+diplay_check_commit("${libdatachannel_SOURCE_DIR}/deps/libsrtp" ee1a77c9f9dc02c42bda9901038c500c5efe4cfa)
+diplay_check_commit("${libdatachannel_SOURCE_DIR}/deps/plog" 94899e0b926ac1b0f4750bfbd495167b4a6ae9ef)
+diplay_check_commit("${libdatachannel_SOURCE_DIR}/deps/usrsctp" fec583d54493f879d2ae44a743423bf8a04371ab)
+include(dependency_patch.cmake)
+diplay_replace("${libdatachannel_SOURCE_DIR}/deps/libsrtp/CMakeLists.txt"
+    "  find_package(MbedTLS REQUIRED)" [=[
+  if(TARGET mbedcrypto)
+    set(MBEDTLS_LIBRARIES mbedcrypto)
+    get_target_property(MBEDTLS_INCLUDE_DIRS mbedcrypto INTERFACE_INCLUDE_DIRECTORIES)
+  else()
+    find_package(MbedTLS REQUIRED)
+  endif()]=])
+include(media_send_feedback.cmake)
+add_subdirectory("${libdatachannel_SOURCE_DIR}" "${libdatachannel_BINARY_DIR}")
+add_library(diplay-rtc SHARED rtc_bridge.cpp)
+target_link_libraries(diplay-rtc PRIVATE datachannel-static log)
+target_link_options(diplay-rtc PRIVATE "-Wl,-z,max-page-size=16384")
+
