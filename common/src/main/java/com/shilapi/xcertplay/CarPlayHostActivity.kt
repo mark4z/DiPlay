@@ -554,6 +554,9 @@ class CarPlayHostActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // A newly created host may need permission UI, or may now be in native mode.
+        // Keep it reachable until a successful backend handoff to the launcher task.
+        CarPlayTaskNavigation.setHostExcludedFromRecents(this, false)
         NavigationWidgetUpdater.attach(applicationContext)
         CarPlayCallKeys.install(applicationContext)
         CenterMapOverlay.requestShow = ::showCenterMap
@@ -4544,8 +4547,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun showDiPlayHome(page: String = "home") {
         controller?.sendTouch(emptyList())
-        startActivity(Intent(this, DiPlayActivity::class.java)
-            .putExtra("page", page).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+        CarPlayTaskNavigation.showHome(this, page, backendMode)
     }
 
     private fun openSettingsMenu() {
@@ -5138,3 +5140,4 @@ internal object CarPlayBackgroundSession {
         display = null
     }
 }
+

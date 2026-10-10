@@ -235,8 +235,8 @@ class DiPlayActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (page != "home") { page = "home"; render() }
-                // The retained backend host sits below home. Finishing home would reveal it and
-                // immediately reopen home, trapping Back in a loop. Background the task instead.
+                // Background the launcher without touching the retained backend owner task.
+                // This also avoids a Back loop for tasks retained across an app upgrade.
                 else if (backendSession() && CarPlayBackgroundSession.hasSession()) moveTaskToBack(true)
                 else { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true }
             }
@@ -3603,3 +3603,4 @@ class DiPlayActivity : ComponentActivity() {
         private val WARNING = Color.rgb(255, 196, 128)
     }
 }
+
