@@ -174,7 +174,18 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.equal(elements.video.classes.has('touch-enabled'), true);
   elements.video.dispatch('pointerdown', pointer(100, 500, 100));
   assert.equal(socket.sent.some(m => m.type === 'touch'), false, 'black bars are not touch targets');
+  if (embedded) {
+    for (const [id, timer] of [...timers]) if (timer.delay === 4000) { timers.delete(id); timer.callback(); }
+    assert.equal(elements['embedded-controls'].hidden, true);
+    // Real DOM dispatch observes the original down on document capture first,
+    // then sends that same event to the video. It must not cost an extra tap.
+    document.dispatch('pointerdown', { ...pointer(100, 250, 500), target: elements.video,
+      preventDefault() { assert.fail('reveal must not consume the initial touch'); } });
+    assert.equal(elements['embedded-controls'].hidden, false);
+    assert.equal(elements['embedded-controls'].attributes['data-display-gesture'], 'true');
+  }
   elements.video.dispatch('pointerdown', pointer(100, 250, 500));
+  assert.deepEqual(socket.sent.at(-1).contacts, [{ id: 0, x: .25, y: .5 }], 'the first reveal touch reaches CarPlay immediately');
   elements.video.dispatch('pointerdown', pointer(200, 750, 500));
   assert.deepEqual(socket.sent.at(-1).contacts, [{ id: 0, x: .25, y: .5 }, { id: 1, x: .75, y: .5 }]);
   assert.equal(socket.sent.at(-1).streamId, 1);
@@ -187,6 +198,12 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.deepEqual(socket.sent.at(-1).contacts, [{ id: 1, x: 1, y: 1 }]);
   elements.video.dispatch('pointercancel', pointer(200));
   assert.deepEqual(socket.sent.at(-1).contacts, []);
+  if (embedded) {
+    document.dispatch('pointercancel', pointer(100));
+    assert.equal(elements['embedded-controls'].attributes['data-display-gesture'], undefined);
+    for (const [id, timer] of [...timers]) if (timer.delay === 4000) { timers.delete(id); timer.callback(); }
+    assert.equal(elements['embedded-controls'].hidden, true, 'auto-hide resumes after the full gesture ends');
+  }
   assert.equal(captured.size, 0);
 
   const touchMessagesSince = index => socket.sent.slice(index).filter(message => message.type === 'touch').map(message => message.contacts);
@@ -346,3 +363,4 @@ test(`${embedded ? 'embedded TLS' : 'external LAN'} viewer preserves connection 
   assert.equal(fetches, 0, 'HTTPS viewer never automatically requests the HTTP health endpoint');
 });
 }
+

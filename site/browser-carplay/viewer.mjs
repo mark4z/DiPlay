@@ -1,5 +1,5 @@
 import { followBrowserResolution, observeRenderPixels } from './resolution.mjs?v=fullscreen-state-v1';
-import { floatingControls } from './controls.mjs?v=floating-controls-v1';
+import { floatingControls } from './controls.mjs?v=idle-controls-v2';
 import { Contacts, EMBEDDED_VIEWER_ORIGIN, EMBEDDED_VIEWER_ENDPOINT, fitRect, mapPointer } from './core.mjs?v=embedded-https-v1';
 import { BrowserSession, AutoReconnect } from './session.mjs?v=automatic-viewer-v1';
 import { milestoneText, transportCaption } from './diagnostics.mjs?v=embedded-https-v1';
@@ -378,4 +378,5 @@ if (blocked && embeddedViewer) byId('placeholder-note').textContent = blocked;
 updateControls();
 // Connection attempts are serialized and never run in a hidden page.
 reconnect.update(true);
+
 

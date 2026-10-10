@@ -63,3 +63,61 @@ test('capture failure, nonprimary pointers and hidden page cannot leave a live d
   p.document.visibilityState = 'hidden'; p.document.emit('visibilitychange'); assert.equal(p.timers.size, 0);
   p.document.visibilityState = 'visible'; p.document.emit('visibilitychange'); assert.equal(p.panel.hidden, false);
 });
+
+
+test('touch reveals without consuming or capturing input and keeps chrome out of a multi-contact gesture', () => {
+  const p = fixture(); p.controller.update({ critical: false }); p.tick();
+  const fail = () => assert.fail('activity observer must not consume the original CarPlay event');
+  const contact = { target: {}, preventDefault: fail, stopPropagation: fail, stopImmediatePropagation: fail };
+  p.document.emit('pointerdown', contact);
+  assert.equal(p.panel.hidden, false);
+  assert.equal(p.grip.capture, null);
+  assert.equal(p.panel.attributes['data-display-gesture'], 'true');
+  assert.equal(p.timers.size, 0);
+  p.document.emit('pointerdown', { ...contact, pointerId: 2 });
+  p.document.emit('pointerup');
+  assert.equal(p.panel.attributes['data-display-gesture'], 'true');
+  assert.equal(p.timers.size, 0);
+  p.document.emit('pointercancel', { pointerId: 2 });
+  assert.equal(p.panel.attributes['data-display-gesture'], undefined);
+  p.tick(); assert.equal(p.panel.hidden, true);
+  p.document.emit('pointerdown', contact); p.window.emit('blur');
+  assert.equal(p.panel.attributes['data-display-gesture'], undefined);
+  p.window.emit('focus'); p.tick(); assert.equal(p.panel.hidden, true);
+});
+
+test('pointer focus does not pin controls, while keyboard focus, editing and settings do', () => {
+  const p = fixture(); p.controller.update({ critical: false });
+  p.document.emit('pointerdown', { target: p.grip });
+  p.grip.focus(); p.panel.emit('focusin'); p.tick(); assert.equal(p.panel.hidden, true, 'a pointer-clicked button may auto-hide');
+  p.document.activeElement = null;
+  p.reveal.emit('focus'); assert.equal(p.panel.hidden, false);
+  assert.equal(p.document.activeElement, p.grip);
+  p.tick(); assert.equal(p.panel.hidden, false, 'Tab reveal preserves focused keyboard controls');
+  p.document.emit('pointerdown', { target: p.grip });
+  p.grip.matches = () => true; p.tick(); assert.equal(p.panel.hidden, false, 'text editing is never hidden');
+  p.grip.matches = () => false;
+  p.settings.open = true; p.settings.emit('toggle'); p.tick(); assert.equal(p.panel.hidden, false);
+  p.settings.open = false; p.settings.emit('toggle'); p.tick(); assert.equal(p.panel.hidden, true);
+});
+
+test('idle reveal has no visible or pointer hit area and display gestures cannot hit revealed chrome', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('../viewer.css', import.meta.url), 'utf8');
+  const rule = css.match(/#controls-reveal\s*\{([^}]+)\}/)[1];
+  assert.match(rule, /clip-path:\s*inset\(50%\)/);
+  assert.match(rule, /pointer-events:\s*none/);
+  assert.match(css, /#embedded-controls\[data-display-gesture\] \*\s*\{\s*pointer-events:\s*none/);
+  const source = await readFile(new URL('../controls.mjs', import.meta.url), 'utf8');
+  assert.match(source, /capture: true, passive: true/);
+});
+
+test('assistive reveal activation without a focus event clears stale pointer modality', () => {
+  const p = fixture(); p.controller.update({ critical: false });
+  p.document.emit('pointerdown', { target: p.grip });
+  p.tick(); assert.equal(p.panel.hidden, true);
+  p.reveal.emit('click');
+  assert.equal(p.document.activeElement, p.grip);
+  p.panel.emit('focusin'); p.tick();
+  assert.equal(p.panel.hidden, false, 'assistive activation preserves control focus even without a preceding focus event');
+});
