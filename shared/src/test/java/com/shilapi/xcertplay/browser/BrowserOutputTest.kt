@@ -28,6 +28,36 @@ class BrowserOutputTest {
         assertFalse(BrowserOutput.browserTouchOwned)
     }
 
+    @Test fun connectedFlagWithoutTransportDoesNotProbeRtcOrSerializeConfiguration() {
+        BrowserOutput.stop()
+        val factoryField = BrowserOutput::class.java.getDeclaredField("rtcFactory").apply { isAccessible = true }
+        val previousFactory = factoryField.get(null)
+        var probes = 0
+        var nativeConfigs = 0
+        val factory = object : BrowserRtcPeer.Factory {
+            override val available: Boolean get() { probes++; return false }
+            override fun create(config: BrowserRtcConfig, listener: BrowserRtcPeer.Listener): BrowserRtcPeer =
+                throw AssertionError("No transport must not create an RTC peer")
+        }
+        try {
+            BrowserOutput.installRtcFactory(factory)
+            val tee = BrowserOutput.tee(object : MediaSink {
+                override fun onVideoConfig(type: Int, codecData: ByteArray) { nativeConfigs++ }
+            }, 1280, 720, {}, {})
+            BrowserOutput::class.java.getDeclaredField("viewerConnected").apply { isAccessible = true }
+                .setBoolean(null, true)
+            tee.onVideoCodec(110, VideoCodec.H264)
+            // Intentionally plain JVM: JSONObject's Android stub must never be reached without a server.
+            tee.onVideoConfig(110, byteArrayOf(1,100,0,42,-1,-31,0,4,103,100,0,42,1,0,2,104,1))
+            assertEquals(1, nativeConfigs)
+            assertEquals(0, probes)
+            assertNull(BrowserOutput.endpoint)
+        } finally {
+            BrowserOutput.stop()
+            factoryField.set(null, previousFactory)
+        }
+    }
+
     @Test fun disabledOutputPreservesNativeCallbacksWithoutRemoteRecoveryOrTouch() {
         BrowserOutput.stop()
         var frames = 0; var configs = 0; var recovery = 0; var touches = 0

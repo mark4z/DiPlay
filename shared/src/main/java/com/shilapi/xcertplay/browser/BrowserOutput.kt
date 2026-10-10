@@ -375,12 +375,13 @@ object BrowserOutput {
     }
 
     private fun sendConfig() {
+        val transport = server ?: return
         if (!viewerConnected) return
         val f = format ?: return
         val config = JSONObject().put("type", "config").put("codec", f.codec)
             .put("width", width).put("height", height).put("streamId", streamId)
         if (rtcFactory?.available == true) config.put("videoTransports", org.json.JSONArray(listOf("wss", "webrtc")))
-        server?.sendText(config.toString(), resetVideo = true)
+        transport.sendText(config.toString(), resetVideo = true)
     }
 
     private fun frame(bytes: ByteArray, generation: Long) = synchronized(lock) {
